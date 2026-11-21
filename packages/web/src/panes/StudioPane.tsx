@@ -1,0 +1,380 @@
+/**
+ * Agent Studio: create and edit omp task agents (`.omp/agents/*.md`). Edits are
+ * drafts until published; publishing writes the agent file, which omp picks up
+ * on the next sub-agent spawn. Model routing per agent uses either the file's
+ * `model:` field or omp's `task.agentModelOverrides` setting.
+ */
+import type { PaneSpec } from "@gyre/protocol";
+import { Bot, Copy, FilePlus2, Save, Send, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { api } from "../lib/gateway";
+import { useRoles } from "../lib/roles";
+import { FALLBACK_TOOLS, fetchTools, groupTools, type ToolInfo } from "../lib/tools";
+import { useApp } from "../store/app";
+import { useChats } from "../store/chats";
+
+interface AgentFile {
+	name: string;
+	scope: "user" | "project" | "bundled";
+	path?: string;
+	frontmatter: Record<string, unknown>;
+	instructions: string;
+	shadowed?: boolean;
+}
+
+interface Draft {
+	name: string;
+	description: string;
+	scope: "user" | "project";
+	model: string;
+	thinking: string;
+	tools: string[] | null;
+	spawns: string;
+	instructions: string;
+	previousName?: string;
+	savedAt?: number;
+}
+
+const THINKING = ["", "off", "minimal", "low", "medium", "high", "xhigh"];
+
+function toList(value: unknown): string[] | null {
+	if (value === undefined || value === null || value === "") return null;
+	if (Array.isArray(value)) return value.map(String);
+	return String(value)
+		.split(",")
+		.map(s => s.trim())
+		.filter(Boolean);
+}
+
+function draftFrom(agent: AgentFile): Draft {
+	const fm = agent.frontmatter;
+	const model = Array.isArray(fm.model) ? String(fm.model[0] ?? "") : String(fm.model ?? "");
+	return {
+		name: agent.name,
+		description: String(fm.description ?? ""),
+		scope: agent.scope === "project" ? "project" : "user",
+		model,
+		thinking: String(fm.thinking ?? fm["thinking-level"] ?? ""),
+		tools: toList(fm.tools),
+		spawns: Array.isArray(fm.spawns) ? fm.spawns.join(", ") : String(fm.spawns ?? ""),
+		instructions: agent.instructions,
+		previousName: agent.scope === "bundled" ? undefined : agent.name,
+	};
+}
+
+const EMPTY: Draft = { name: "", description: "", scope: "user", model: "", thinking: "", tools: null, spawns: "", instructions: "" };
+
+export function StudioPane({ pane }: { pane: PaneSpec }) {
+	const projects = useApp(s => s.projects);
+	const [projectId, setProjectId] = useState<string | undefined>(pane.projectId ?? projects[0]?.id);
+	const [agents, setAgents] = useState<AgentFile[]>([]);
+	const [selected, setSelected] = useState<string | null>(null);
+	const [draft, setDraft] = useState<Draft>(EMPTY);
+	const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+	const [overrides, setOverrides] = useState<Record<string, string>>({});
+	const [tools, setTools] = useState<ToolInfo[]>(FALLBACK_TOOLS);
+	const [message, setMessage] = useState<string | null>(null);
+	const { roles } = useRoles();
+	const chatId = useChats(s => Object.values(s.chats).find(c => c.info.status === "ready" && (!projectId || c.info.projectId === projectId))?.info.chatId);
+
+	const reload = async () => {
+		const [list, saved, routing] = await Promise.all([
+			api<AgentFile[]>(`/api/agents${projectId ? `?projectId=${projectId}` : ""}`),
+			api<Record<string, Draft> | null>("/api/kv/ui.agentDrafts"),
+			api<{ value: Record<string, string> | null }>("/api/omp/config?key=task.agentModelOverrides").catch(() => ({ value: {} })),
+		]);
+		setAgents(list);
+		setDrafts(saved ?? {});
+		setOverrides(routing.value ?? {});
+	};
+
+	useEffect(() => {
+		void reload().catch(e => setMessage(String((e as Error).message)));
+		// biome-ignore lint/correctness/useExhaustiveDependencies: reload on project change
+	}, [projectId]);
+
+	useEffect(() => {
+		if (chatId) void fetchTools(chatId).then(list => list.length && setTools(list.filter(t => t.name !== "submit_plan")));
+	}, [chatId]);
+
+	const select = (agent: AgentFile | null) => {
+		const key = agent ? `${agent.scope}:${agent.name}` : "new";
+		setSelected(key);
+		setDraft(drafts[key] ?? (agent ? draftFrom(agent) : { ...EMPTY }));
+		setMessage(null);
+	};
+
+	const saveDraft = async () => {
+		const key = selected ?? "new";
+		const next = { ...drafts, [key]: { ...draft, savedAt: Date.now() } };
+		await api("/api/kv/ui.agentDrafts", { method: "PUT", body: JSON.stringify(next) });
+		setDrafts(next);
+		setMessage("Draft saved (not yet visible to omp).");
+	};
+
+	const publish = async () => {
+		setMessage(null);
+		const frontmatter: Record<string, unknown> = {
+			description: draft.description,
+			model: draft.model || undefined,
+			thinking: draft.thinking || undefined,
+			tools: draft.tools ?? undefined,
+			spawns: draft.spawns.trim() ? (draft.spawns.trim() === "*" ? "*" : draft.spawns.split(",").map(s => s.trim()).filter(Boolean)) : undefined,
+		};
+		try {
+			await api("/api/agents", {
+				method: "PUT",
+				body: JSON.stringify({ scope: draft.scope, projectId, name: draft.name, previousName: draft.previousName, frontmatter, instructions: draft.instructions }),
+			});
+			const next = { ...drafts };
+			delete next[selected ?? "new"];
+			await api("/api/kv/ui.agentDrafts", { method: "PUT", body: JSON.stringify(next) });
+			await reload();
+			setSelected(`${draft.scope}:${draft.name}`);
+			setDraft(d => ({ ...d, previousName: d.name }));
+			setMessage(`Published ${draft.name}. omp uses it on the next sub-agent spawn.`);
+		} catch (e) {
+			setMessage(String((e as Error).message));
+		}
+	};
+
+	const remove = async (agent: AgentFile) => {
+		if (agent.scope === "bundled" || !confirm(`Delete agent ${agent.name}?`)) return;
+		await api(`/api/agents?scope=${agent.scope}&name=${encodeURIComponent(agent.name)}${projectId ? `&projectId=${projectId}` : ""}`, { method: "DELETE" });
+		await reload();
+		select(null);
+	};
+
+	const setOverride = async (name: string, selector: string) => {
+		const next = { ...overrides };
+		if (selector) next[name] = selector;
+		else delete next[name];
+		await api("/api/omp/config", { method: "PUT", body: JSON.stringify({ key: "task.agentModelOverrides", value: next }) });
+		setOverrides(next);
+	};
+
+	const groups = useMemo(() => groupTools(tools), [tools]);
+	const toolSet = new Set(draft.tools ?? tools.map(t => t.name));
+	const toggleTool = (name: string) => {
+		const next = new Set(toolSet);
+		if (next.has(name)) next.delete(name);
+		else next.add(name);
+		setDraft(d => ({ ...d, tools: [...next] }));
+	};
+	const toggleArea = (names: string[], on: boolean) => {
+		const next = new Set(toolSet);
+		for (const n of names) on ? next.add(n) : next.delete(n);
+		setDraft(d => ({ ...d, tools: [...next] }));
+	};
+	const current = agents.find(a => `${a.scope}:${a.name}` === selected);
+	const readOnly = current?.scope === "bundled";
+
+	return (
+		<div className="flex h-full min-h-0" style={{ background: "var(--panel)" }}>
+			{/* agent list */}
+			<div className="flex w-60 shrink-0 flex-col border-r" style={{ borderColor: "var(--border-strong)" }}>
+				<div className="flex items-center gap-1.5 p-2">
+					<select className="gy-input h-7 min-w-0 flex-1 text-[12px]" value={projectId ?? ""} onChange={e => setProjectId(e.target.value || undefined)}>
+						<option value="">No project (user only)</option>
+						{projects.map(p => (
+							<option key={p.id} value={p.id}>
+								{p.name}
+							</option>
+						))}
+					</select>
+					<button type="button" className="gy-btn" onClick={() => select(null)} title="New agent" data-jump="new-agent">
+						<FilePlus2 size={12} />
+					</button>
+				</div>
+				<div className="min-h-0 flex-1 overflow-auto">
+					{(["project", "user", "bundled"] as const).map(scope => {
+						const list = agents.filter(a => a.scope === scope);
+						if (list.length === 0) return null;
+						return (
+							<div key={scope}>
+								<div className="gy-section py-1">{scope}</div>
+								{list.map(agent => {
+									const key = `${agent.scope}:${agent.name}`;
+									return (
+										<button
+											type="button"
+											key={key}
+											className="gy-row w-full text-left"
+											style={selected === key ? { background: "var(--tint-tool)" } : undefined}
+											onClick={() => select(agent)}
+										>
+											<Bot size={13} className="shrink-0" />
+											<div className="min-w-0 flex-1">
+												<div className="truncate text-[13px] font-medium" style={agent.shadowed ? { textDecoration: "line-through" } : undefined}>
+													{agent.name}
+													{drafts[key] && <span className="gy-chip warn ml-1.5">draft</span>}
+												</div>
+												<div className="truncate text-[11px]" style={{ color: "var(--muted)" }}>
+													{String(agent.frontmatter.description ?? "")}
+												</div>
+											</div>
+										</button>
+									);
+								})}
+							</div>
+						);
+					})}
+				</div>
+			</div>
+
+			{/* editor */}
+			<div className="min-w-0 flex-1 overflow-auto">
+				{selected === null ? (
+					<div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+						<Bot size={28} />
+						<div className="text-[15px] font-medium">Agent Studio</div>
+						<div className="max-w-sm text-[12.5px]" style={{ color: "var(--text-dim)" }}>
+							Build sub-agents the main agent can delegate to: a description, the model or role it runs on, the tools it may use, and its instructions.
+						</div>
+						<button type="button" className="gy-btn primary" onClick={() => select(null)}>
+							<FilePlus2 size={12} /> New agent
+						</button>
+					</div>
+				) : (
+					<div className="space-y-0">
+						<div className="gy-section">
+							{readOnly ? "Bundled agent (read-only)" : draft.previousName ? `Edit ${draft.previousName}` : "New agent"}
+							<span className="ml-auto flex gap-1.5 font-normal tracking-normal normal-case">
+								{readOnly ? (
+									<button type="button" className="gy-btn" onClick={() => setDraft(d => ({ ...d, previousName: undefined, scope: "user", name: `${d.name}-custom` }))}>
+										<Copy size={11} /> Customize
+									</button>
+								) : (
+									<>
+										{current && (
+											<button type="button" className="gy-btn danger" onClick={() => void remove(current)}>
+												<Trash2 size={11} /> Delete
+											</button>
+										)}
+										<button type="button" className="gy-btn" onClick={() => void saveDraft()}>
+											<Save size={11} /> Save draft
+										</button>
+										<button type="button" className="gy-btn primary" onClick={() => void publish()} disabled={!draft.name || !draft.description} data-testid="publish-agent">
+											<Send size={11} /> Publish
+										</button>
+									</>
+								)}
+							</span>
+						</div>
+						{message && <div className="gy-row text-[12px]">{message}</div>}
+						<fieldset disabled={readOnly} className="contents">
+							<div className="gy-row">
+								<label className="w-28 shrink-0 text-[12.5px]">Name</label>
+								<input className="gy-input flex-1" value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} placeholder="reviewer-strict" data-testid="agent-name" />
+								<select className="gy-input" value={draft.scope} onChange={e => setDraft(d => ({ ...d, scope: e.target.value as Draft["scope"] }))}>
+									<option value="user">User (all projects)</option>
+									<option value="project" disabled={!projectId}>
+										This project
+									</option>
+								</select>
+							</div>
+							<div className="gy-row">
+								<label className="w-28 shrink-0 text-[12.5px]">Description</label>
+								<input
+									className="gy-input flex-1"
+									value={draft.description}
+									onChange={e => setDraft(d => ({ ...d, description: e.target.value }))}
+									placeholder="One sentence: when should the main agent use this agent?"
+									data-testid="agent-description"
+								/>
+							</div>
+							<div className="gy-row">
+								<label className="w-28 shrink-0 text-[12.5px]">Model</label>
+								<select className="gy-input" value={draft.model.startsWith("@") || draft.model === "" ? draft.model : "custom"} onChange={e => setDraft(d => ({ ...d, model: e.target.value === "custom" ? "" : e.target.value }))}>
+									<option value="">Inherit (task role)</option>
+									{roles
+										.filter(r => r.section === "chat")
+										.map(r => (
+											<option key={r.id} value={`@${r.id}`}>
+												Role: {r.name}
+											</option>
+										))}
+									<option value="custom">Specific model…</option>
+								</select>
+								{!draft.model.startsWith("@") && (
+									<input className="gy-input flex-1" placeholder="provider/model-id" value={draft.model} onChange={e => setDraft(d => ({ ...d, model: e.target.value }))} />
+								)}
+								<label className="text-[12.5px]">Thinking</label>
+								<select className="gy-input" value={draft.thinking} onChange={e => setDraft(d => ({ ...d, thinking: e.target.value }))}>
+									{THINKING.map(t => (
+										<option key={t} value={t}>
+											{t || "default"}
+										</option>
+									))}
+								</select>
+							</div>
+							<div className="gy-row">
+								<label className="w-28 shrink-0 text-[12.5px]">Can spawn</label>
+								<input className="gy-input flex-1" value={draft.spawns} onChange={e => setDraft(d => ({ ...d, spawns: e.target.value }))} placeholder="Agent names, comma-separated, or * (needs the task tool)" />
+							</div>
+						</fieldset>
+						<div className="gy-row">
+							<label className="w-28 shrink-0 text-[12.5px]">Routing override</label>
+							<select className="gy-input" value={overrides[draft.name] ?? ""} onChange={e => void setOverride(draft.name, e.target.value)} disabled={!draft.name}>
+								<option value="">None (use the agent's model)</option>
+								{roles
+									.filter(r => r.section === "chat")
+									.map(r => (
+										<option key={r.id} value={`@${r.id}`}>
+											Role: {r.name}
+										</option>
+									))}
+							</select>
+							<span className="text-[11.5px]" style={{ color: "var(--muted)" }}>
+								omp setting <span className="font-mono">task.agentModelOverrides</span>; applies to bundled agents too.
+							</span>
+						</div>
+						<div className="gy-section">
+							Actions
+							<span className="ml-auto font-normal tracking-normal normal-case">
+								<button type="button" className="gy-btn ghost" disabled={readOnly} onClick={() => setDraft(d => ({ ...d, tools: null }))}>
+									Use default toolset
+								</button>
+							</span>
+						</div>
+						{draft.tools === null && (
+							<div className="gy-row text-[12px]" style={{ color: "var(--muted)" }}>
+								Default toolset (all built-ins). Untick anything to make an explicit allowlist; MCP and extension tools are always added by omp.
+							</div>
+						)}
+						{groups.map(group => {
+							const names = group.tools.map(t => t.name);
+							const all = names.every(n => toolSet.has(n));
+							return (
+								<div key={group.area} className="border-b" style={{ borderColor: "color-mix(in srgb, var(--border-strong) 20%, transparent)" }}>
+									<label className="flex items-center gap-2 px-3 py-1.5 text-[12.5px] font-semibold" style={{ background: "var(--panel)" }}>
+										<input type="checkbox" disabled={readOnly} checked={all} onChange={e => toggleArea(names, e.target.checked)} />
+										{group.area}
+									</label>
+									<div className="grid grid-cols-1 gap-x-4 px-8 pb-2 md:grid-cols-2">
+										{group.tools.map(tool => (
+											<label key={tool.name} className="flex items-start gap-2 py-0.5 text-[12px]" title={tool.description}>
+												<input type="checkbox" disabled={readOnly} checked={toolSet.has(tool.name)} onChange={() => toggleTool(tool.name)} />
+												<span className="font-mono">{tool.name}</span>
+											</label>
+										))}
+									</div>
+								</div>
+							);
+						})}
+						<div className="gy-section">Instructions</div>
+						<div className="p-3">
+							<textarea
+								className="gy-input min-h-48 w-full py-2 font-mono text-[12.5px]"
+								value={draft.instructions}
+								disabled={readOnly}
+								onChange={e => setDraft(d => ({ ...d, instructions: e.target.value }))}
+								placeholder="The agent's system prompt."
+							/>
+						</div>
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}

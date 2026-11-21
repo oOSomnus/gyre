@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Gyre loads its UI from the local gateway and needs no Tauri IPC permissions.",
+  "windows": ["main"],
+  "permissions": []
+}

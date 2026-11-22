@@ -10,11 +10,14 @@
 #
 # Flags:
 #   --web | --desktop             what to install (default: ask; web if not interactive)
+#   --deb | --appimage            how to install the desktop app (default: ask; AppImage if not interactive)
 #   --install-omp | --no-omp      install omp if it is missing, or skip the omp step
 #   --with-plannotator | --no-plannotator
 #   --version vX.Y.Z              a specific release (default: latest)
 #   --yes, -y                     accept the recommended answer for every question
 #   --uninstall                   remove what this script installed (keeps ~/.gyre data)
+#   --update --from X.Y.Z         update mode, used by `gyre update`: stop if X.Y.Z is
+#                                 already the latest, offer to match omp, skip optional steps
 #   --help
 #
 # Environment:
@@ -37,6 +40,9 @@ PLANNOTATOR_CHOICE=""
 VERSION="latest"
 ASSUME_YES=0
 UNINSTALL=0
+UPDATE=0
+FROM_VERSION=""
+DESKTOP_HOW=""
 
 # ------------------------------------------------------------------ output
 
@@ -118,11 +124,15 @@ Gyre installer
   curl -fsSL …/install.sh | bash -s -- [flags]
 
   --web | --desktop                       what to install (default: ask)
+  --deb | --appimage                      how to install the desktop app (default: ask)
   --install-omp | --no-omp                install omp if missing, or skip that step
   --with-plannotator | --no-plannotator   install the Plannotator plan-review plugin, or not
   --version vX.Y.Z                        a specific release (default: latest)
   --yes, -y                               accept the recommended answer for every question
   --uninstall                             remove what this script installed (keeps ~/.gyre)
+
+  Once installed, `gyre update` updates Gyre to the latest release
+  (`gyre update --version vX.Y.Z` for a specific one).
 
   GYRE_INSTALL_DIR (default ~/.local/share/gyre), GYRE_BIN_DIR (default ~/.local/bin)
 USAGE
@@ -132,6 +142,8 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 		--web) WHAT=web ;;
 		--desktop) WHAT=desktop ;;
+		--deb) DESKTOP_HOW=1 ;;
+		--appimage) DESKTOP_HOW=2 ;;
 		--install-omp) OMP_CHOICE=install ;;
 		--no-omp) OMP_CHOICE=skip ;;
 		--with-plannotator) PLANNOTATOR_CHOICE=install ;;
@@ -144,6 +156,13 @@ while [ $# -gt 0 ]; do
 		--version=*) VERSION="${1#--version=}" ;;
 		-y | --yes) ASSUME_YES=1 ;;
 		--uninstall) UNINSTALL=1 ;;
+		--update) UPDATE=1 ;;
+		--from)
+			[ $# -ge 2 ] || die "--from needs a value, e.g. --from 0.1.0"
+			FROM_VERSION="$2"
+			shift
+			;;
+		--from=*) FROM_VERSION="${1#--from=}" ;;
 		-h | --help)
 			usage
 			exit 0
@@ -264,7 +283,11 @@ else
 	BASE="https://github.com/$REPO/releases/download/v${VERSION#v}"
 fi
 
-printf '\n%s  ◎ Gyre installer%s\n' "$B" "$R"
+if [ "$UPDATE" = 1 ]; then
+	printf '\n%s  ◎ Gyre update%s\n' "$B" "$R"
+else
+	printf '\n%s  ◎ Gyre installer%s\n' "$B" "$R"
+fi
 note "A tiled desktop UI for the omp coding agent · $OS-$ARCH · release: $VERSION"
 [ "$INTERACTIVE" = 1 ] || note "No terminal for questions: using flags and recommended defaults."
 
@@ -295,14 +318,37 @@ verify "$TMP/gyre-manifest.json" gyre-manifest.json
 GYRE_VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$TMP/gyre-manifest.json")"
 OMP_VERSION="$(sed -n 's/.*"ompVersion": *"\([^"]*\)".*/\1/p' "$TMP/gyre-manifest.json")"
 ok "Gyre $GYRE_VERSION (tested with omp $OMP_VERSION)"
+if [ "$UPDATE" = 1 ] && [ "$VERSION" = latest ] && [ -n "$FROM_VERSION" ] && [ "${FROM_VERSION#v}" = "${GYRE_VERSION#v}" ]; then
+	printf '\n%s  ◎ Gyre %s is already up to date%s\n' "$B$GRN" "$GYRE_VERSION" "$R"
+	exit 0
+fi
 
 # ------------------------------------------------------------------ 2. install Gyre
 
 step "Installing Gyre"
-# write_launcher BODY: the `gyre` command, which starts the installed version.
+# write_launcher MODE_FLAGS BODY: the `gyre` command, which starts the installed
+# version. `gyre update [flags]` re-runs the latest installer with MODE_FLAGS, so an
+# update replaces this install in place without asking what to install again.
 write_launcher() {
 	mkdir -p "$BIN_DIR"
-	printf '#!/bin/sh\n# Gyre launcher (installed by install.sh).\n%s\n' "$1" >"$BIN_DIR/gyre"
+	cat >"$BIN_DIR/gyre" <<LAUNCHER
+#!/bin/sh
+# Gyre launcher (installed by install.sh).
+GYRE_VERSION='$GYRE_VERSION'
+# \`gyre update [--version vX.Y.Z]\` installs the latest (or given) release over this one.
+if [ "\${1:-}" = update ]; then
+	shift
+	export GYRE_BIN_DIR="$BIN_DIR" GYRE_INSTALL_DIR="$INSTALL_DIR"
+	url="\${GYRE_INSTALLER_URL:-https://raw.githubusercontent.com/$REPO/main/install.sh}"
+	if command -v curl >/dev/null 2>&1; then
+		script="\$(curl -fsSL --proto '=https,file' "\$url")"
+	else
+		script="\$(wget -qO- "\$url")"
+	fi || { echo "gyre update: could not download the installer from \$url" >&2; exit 1; }
+	exec bash -c "\$script" install.sh --update --from "\$GYRE_VERSION" $1 "\$@"
+fi
+$2
+LAUNCHER
 	chmod +x "$BIN_DIR/gyre"
 	ok "Launcher → $BIN_DIR/gyre"
 	if ! on_path "$BIN_DIR"; then
@@ -324,15 +370,17 @@ install_web() {
 	rm -rf "$INSTALL_DIR"
 	mv "$INSTALL_DIR.new" "$INSTALL_DIR"
 	ok "Web version → $INSTALL_DIR"
-	write_launcher "# \`gyre --no-open\` prints the URL instead of opening the browser.
+	write_launcher --web "# \`gyre --no-open\` prints the URL instead of opening the browser.
 open=--open
 if [ \"\${1:-}\" = \"--no-open\" ]; then open=; shift; fi
 exec \"$INSTALL_DIR/gyre-gateway\" \$open \"\$@\""
 }
 
 install_desktop() {
-	local how=2 app
-	if have apt-get && have dpkg; then
+	local how=2 how_flag app
+	if [ -n "$DESKTOP_HOW" ]; then
+		how="$DESKTOP_HOW"
+	elif have apt-get && have dpkg; then
 		choose "How should the desktop app be installed?" 1 \
 			"System package (.deb, uses sudo apt; adds Gyre to your app menu)" \
 			"AppImage in $BIN_DIR (no sudo)"
@@ -340,7 +388,11 @@ install_desktop() {
 		# Non-interactive runs never prompt for a sudo password.
 		if [ "$INTERACTIVE" = 0 ] || [ "$ASSUME_YES" = 1 ]; then how=2; fi
 	fi
+	if [ "$how" = 1 ] && ! { have apt-get && have dpkg; }; then
+		die "--deb needs apt-get and dpkg; use --appimage"
+	fi
 	if [ "$how" = 1 ]; then
+		how_flag=--deb
 		local asset="gyre-desktop-linux-x64.deb"
 		note "Downloading $asset"
 		download "$BASE/$asset" "$TMP/$asset"
@@ -350,6 +402,7 @@ install_desktop() {
 		app=/usr/bin/gyre-desktop
 		ok "Desktop app installed (.deb)"
 	else
+		how_flag=--appimage
 		local asset="gyre-desktop-linux-x64.AppImage"
 		note "Downloading $asset"
 		download "$BASE/$asset" "$TMP/$asset"
@@ -379,7 +432,7 @@ EOF
 			cmd "sudo apt install libwebkit2gtk-4.1-0"
 		fi
 	fi
-	write_launcher "# Starts the desktop app in the background; its output goes to ~/.gyre/desktop.log.
+	write_launcher "--desktop $how_flag" "# Starts the desktop app in the background; its output goes to ~/.gyre/desktop.log.
 mkdir -p \"\$HOME/.gyre\"
 nohup \"$app\" \"\$@\" >\"\$HOME/.gyre/desktop.log\" 2>&1 &"
 }
@@ -419,12 +472,25 @@ if find_omp; then
 	if check_omp; then
 		ok "omp $OMP_HAVE found at $OMP"
 		if [ -n "$OMP_VERSION" ] && [ "$OMP_HAVE" != "$OMP_VERSION" ]; then
-			note "This Gyre release is tested with omp $OMP_VERSION. To match it:"
-			cmd "bun install -g $OMP_PKG@$OMP_VERSION"
+			if [ "$UPDATE" = 1 ] && [ "$OMP_CHOICE" != skip ] && have bun &&
+				ask_yn "Update omp $OMP_HAVE to $OMP_VERSION (the version this release is tested with)?" y; then
+				if bun install -g "$OMP_PKG@$OMP_VERSION" && check_omp; then
+					ok "omp $OMP_HAVE installed at $OMP"
+				else
+					warn "omp could not be updated. To try again:"
+					cmd "bun install -g $OMP_PKG@$OMP_VERSION"
+				fi
+			else
+				note "This Gyre release is tested with omp $OMP_VERSION. To match it:"
+				cmd "bun install -g $OMP_PKG@$OMP_VERSION"
+			fi
 		fi
 	else
 		manual_omp
 	fi
+elif [ "$UPDATE" = 1 ]; then
+	warn "omp is not installed. Gyre needs it to run chats."
+	manual_omp
 elif [ "$OMP_CHOICE" = skip ]; then
 	warn "omp is not installed (skipped with --no-omp). Gyre needs it to run chats."
 	manual_omp
@@ -471,6 +537,9 @@ if [ -z "$OMP" ]; then
 	manual_plannotator
 elif "$OMP" plugin list --json 2>/dev/null | grep -q "\"$PLANNOTATOR_PKG\""; then
 	ok "Plannotator is already installed"
+elif [ "$UPDATE" = 1 ]; then
+	note "Not installed; updates leave it out."
+	manual_plannotator
 elif [ "$PLANNOTATOR_CHOICE" = skip ]; then
 	note "Skipped (--no-plannotator)."
 	manual_plannotator
@@ -506,8 +575,13 @@ fi
 
 # ------------------------------------------------------------------ summary
 
-printf '\n%s  ◎ Done%s\n' "$B$GRN" "$R"
-case "$WHAT" in
+if [ "$UPDATE" = 1 ]; then
+	printf '\n%s  ◎ Updated Gyre %s → %s%s\n' "$B$GRN" "${FROM_VERSION:-?}" "$GYRE_VERSION" "$R"
+	say "  Restart Gyre if it is running to use the new version."
+else
+	printf '\n%s  ◎ Done%s\n' "$B$GRN" "$R"
+fi
+[ "$UPDATE" = 1 ] || case "$WHAT" in
 	web)
 		say "  Run ${B}gyre${R} to start the local server and open Gyre in your browser."
 		note "${B}gyre --no-open${R}${D} prints the URL instead. Ctrl-C stops the server."

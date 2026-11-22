@@ -63,7 +63,8 @@ describe.skipIf(!version)(`omp ${version ?? "(missing)"} RPC contract`, () => {
 			expect(typeof row.provider).toBe("string");
 			expect(typeof row.id).toBe("string");
 		}
-	});
+		// Longer than the 60s call: bun's 5s default kills omp mid-call and fails every later test.
+	}, 90_000);
 
 	test("set_ask_dialog is accepted", async () => {
 		const response = await proc.send({ type: "set_ask_dialog", enabled: true });

@@ -246,7 +246,7 @@ describe("plan mode", () => {
 		await h.commands.get("plan")?.("", h.ctx);
 		h.writePlan("x-plan.md", "v1");
 		await h.submit("local://x-plan.md");
-		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "refine", feedback: "split step 2" }), h.ctx);
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "refine", revision: h.lastState().revision, feedback: "split step 2" }), h.ctx);
 		expect(h.lastState().phase).toBe("planning");
 		expect(h.userMessages.at(-1)).toContain("split step 2");
 		h.writePlan("x-plan.md", "v2");
@@ -259,7 +259,7 @@ describe("plan mode", () => {
 		await h.commands.get("plan")?.("", h.ctx);
 		h.writePlan("x-plan.md", "# The plan");
 		await h.submit("local://x-plan.md");
-		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", feedback: "use bun" }), h.ctx);
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: h.lastState().revision, feedback: "use bun" }), h.ctx);
 		expect(h.activeTools).not.toContain(SUBMIT_TOOL);
 		expect(h.model.id).toBe("thinker");
 		expect(h.calls).toEqual(["compact"]);
@@ -279,14 +279,44 @@ describe("plan mode", () => {
 		h.writePlan("x-plan.md", "reviewed");
 		await h.submit("local://x-plan.md");
 		h.writePlan("x-plan.md", "unreviewed");
-		await h.commands.get("gyre-plan")?.('{"action":"approve"}', h.ctx);
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: h.lastState().revision }), h.ctx);
 		expect(h.lastState().phase).toBe("reviewing");
 		expect(h.lastState().error).toContain("changed after submission");
 		expect(h.userMessages).toEqual([]);
 		expect(h.activeTools).toContain(SUBMIT_TOOL);
 		await h.submit("local://x-plan.md");
-		await h.commands.get("gyre-plan")?.('{"action":"approve"}', h.ctx);
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: h.lastState().revision }), h.ctx);
 		expect(h.userMessages.at(-1)).toContain("unreviewed");
+	});
+
+	test("approve and refine reject a decision for an older displayed revision", async () => {
+		await h.commands.get("plan")?.("", h.ctx);
+		h.writePlan("x-plan.md", "v1");
+		await h.submit("local://x-plan.md");
+		const displayed = h.lastState().revision;
+		h.writePlan("x-plan.md", "v2");
+		await h.submit("local://x-plan.md");
+		for (const action of ["approve", "refine"]) {
+			await h.commands.get("gyre-plan")?.(JSON.stringify({ action, revision: displayed }), h.ctx);
+			expect(h.lastState().phase).toBe("reviewing");
+			expect(h.lastState().error).toContain("plan changed");
+			expect(h.userMessages).toEqual([]);
+		}
+	});
+
+	test("a failed fresh-session setup cannot compact or execute without the plan copy", async () => {
+		h.setPrefs({ role: "default", context: "fresh" });
+		await h.commands.get("plan")?.("", h.ctx);
+		h.writePlan("x-plan.md", "reviewed");
+		await h.submit("local://x-plan.md");
+		// A file in place of the artifact directory makes the real copy fail.
+		writeFileSync(join(h.dir, "fresh"), "not a directory");
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: h.lastState().revision }), h.ctx);
+		expect(h.calls).toEqual(["newSession"]);
+		expect(h.lastState().phase).toBe("reviewing");
+		expect(h.lastState().error).toBeTruthy();
+		expect(h.userMessages).toEqual([]);
+		expect(h.activeTools).toContain(SUBMIT_TOOL);
 	});
 
 	test("local plan content may contain example patch headers without granting nonlocal edits", async () => {
@@ -304,7 +334,7 @@ describe("plan mode", () => {
 		await h.commands.get("plan")?.("", h.ctx);
 		h.writePlan("x-plan.md", "p");
 		await h.submit("local://x-plan.md");
-		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve" }), h.ctx);
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: h.lastState().revision }), h.ctx);
 		expect(h.calls).toEqual(["newSession"]);
 		expect(readFileSync(join(h.dir, "fresh/local/x-plan.md"), "utf8")).toBe("p");
 		expect(h.model.id).toBe("worker");
@@ -316,7 +346,7 @@ describe("plan mode", () => {
 		await h.commands.get("plan")?.("", h.ctx);
 		h.writePlan("x-plan.md", "p");
 		await h.submit("local://x-plan.md");
-		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve" }), h.ctx);
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: h.lastState().revision }), h.ctx);
 		expect(h.calls).toEqual([]);
 		expect(h.userMessages.at(-1)).toContain("History usable");
 	});

@@ -259,11 +259,12 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		});
 	}
 
-	async function decide(ctx: ExtensionContext, decision: { approved: boolean; feedback?: string; reviewId?: string }): Promise<void> {
+	async function decide(ctx: ExtensionContext, decision: { approved: boolean; feedback?: string; reviewId?: string; revision?: number }): Promise<void> {
 		if (rt.phase !== "reviewing" || rt.busy) return;
 		if (decision.reviewId !== undefined && decision.reviewId !== rt.reviewId) return;
 		rt.busy = true;
 		try {
+			if (decision.revision !== rt.revision) throw new Error("The plan changed. Review the current revision before deciding.");
 			if (!decision.approved) {
 				rt.phase = "planning";
 				rt.reviewUrl = undefined;
@@ -278,6 +279,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		} catch (error) {
 			rt.phase = "reviewing";
 			rt.error = error instanceof Error ? error.message : String(error);
+			await pi.setActiveTools([...new Set([...(rt.saved?.tools ?? pi.getActiveTools()), SUBMIT_TOOL])]);
 			notify(ctx, `Plan approval failed: ${rt.error}`, "error");
 			publish(ctx);
 		} finally {
@@ -314,8 +316,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 							if (!name || name.includes("..") || name.includes("\\")) throw new Error("Invalid local plan path");
 							await Bun.write(`${artifacts}/local/${name}`, content);
 						},
-					})
-					.catch(() => ({ cancelled: true }));
+					});
 				if (result.cancelled) context = "compact";
 			} else {
 				context = "compact";
@@ -361,7 +362,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			rt.commandCtx = ctx;
 			rt.ctx = ctx;
-			let body: { action?: string; feedback?: string; prompt?: string };
+			let body: { action?: string; feedback?: string; prompt?: string; revision?: number };
 			try {
 				body = JSON.parse(args || "{}");
 			} catch {
@@ -376,10 +377,10 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 					if (rt.phase !== "idle") await cancel(ctx);
 					return;
 				case "approve":
-					await decide(ctx, { approved: true, feedback: body.feedback });
+					await decide(ctx, { approved: true, feedback: body.feedback, revision: body.revision });
 					return;
 				case "refine":
-					await decide(ctx, { approved: false, feedback: body.feedback ?? "" });
+					await decide(ctx, { approved: false, feedback: body.feedback ?? "", revision: body.revision });
 					return;
 				case "status":
 					publish(ctx);
@@ -408,7 +409,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 			const params = rawParams as { plan?: string; title?: string };
 			rt.ctx = ctx;
 			rt.decided = true;
-			if (rt.phase !== "planning" && rt.phase !== "reviewing") {
+			if (rt.busy || (rt.phase !== "planning" && rt.phase !== "reviewing")) {
 				return { content: [{ type: "text", text: "Plan mode is not active; nothing to submit." }], details: { ok: false } };
 			}
 			const plan = String(params.plan ?? "").trim();
@@ -545,6 +546,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 			approved: result.approved,
 			feedback: typeof result.feedback === "string" ? result.feedback : undefined,
 			reviewId: result.reviewId,
+			revision: rt.revision,
 		});
 	});
 	const offClosed = pi.events.on(PLANNOTATOR_CLOSED, (data: unknown) => {

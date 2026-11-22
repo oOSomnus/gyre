@@ -49,6 +49,7 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 	const [prefs, setPrefs] = useState<PlanPrefs>({ role: "default", context: "compact" });
 	const [comments, setComments] = useState<Record<number, string>>({});
 	const [overall, setOverall] = useState("");
+	const [prefRetry, setPrefRetry] = useState(0);
 	const [prefsLoaded, setPrefsLoaded] = useState(false);
 	const [savingPrefs, setSavingPrefs] = useState(false);
 	const prefWrites = useRef<Promise<unknown>>(Promise.resolve());
@@ -65,6 +66,7 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 		if (!chatId) return;
 		const generation = ++prefGeneration.current;
 		setPrefsLoaded(false);
+		setError(null);
 		void api<PlanPrefs>(`/api/chats/${encodeURIComponent(chatId)}/plan-prefs`)
 			.then(value => {
 				if (prefGeneration.current === generation) {
@@ -78,7 +80,7 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 		return () => {
 			prefGeneration.current++;
 		};
-	}, [chatId]);
+	}, [chatId, prefRetry]);
 
 	// Track revisions so replaced plans collapse into history.
 	useEffect(() => {
@@ -100,13 +102,14 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 		const save = prefWrites.current
 			.catch(() => {})
 			.then(() => api(`/api/chats/${encodeURIComponent(chatId)}/plan-prefs`, { method: "PUT", body: JSON.stringify(next) }));
-		prefWrites.current = save;
+		const tail = save.catch(() => {});
+		prefWrites.current = tail;
 		void save
 			.catch(e => {
 				if (generation === prefGeneration.current) setError((e as Error).message);
 			})
 			.finally(() => {
-				if (prefWrites.current === save && generation === prefGeneration.current) setSavingPrefs(false);
+				if (prefWrites.current === tail && generation === prefGeneration.current) setSavingPrefs(false);
 			});
 	};
 
@@ -118,7 +121,7 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 		try {
 			await prefWrites.current;
 			await api(`/api/chats/${encodeURIComponent(chatId)}/plan-prefs`, { method: "PUT", body: JSON.stringify(prefs) });
-			await sendControl(chatId, body);
+			await sendControl(chatId, { ...body, revision: plan?.revision });
 		} catch (e) {
 			setError(String((e as Error).message));
 		} finally {
@@ -187,6 +190,7 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 					</button>
 				)}
 			</div>
+			{!prefsLoaded && error && <button type="button" className="gy-btn" onClick={() => setPrefRetry(n => n + 1)}>Retry preferences</button>}
 			{error && (
 				<div className="px-3 py-1.5 text-[12px]" style={{ background: "var(--tint-error)" }}>
 					{error}

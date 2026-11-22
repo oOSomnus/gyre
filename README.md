@@ -129,6 +129,8 @@ To upgrade omp, see [the upgrade procedure](docs/architecture.md#upgrade-procedu
 
 ## Licensing
 
+Gyre is released under the [MIT License](LICENSE).
+
 - omp is MIT licensed and runs as a separate, unmodified program.
 - Fonts: Space Grotesk and JetBrains Mono (SIL Open Font License), bundled through `@fontsource`.
 - Plannotator is optional; when installed, Gyre embeds its review page.

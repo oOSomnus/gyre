@@ -28,22 +28,22 @@ interface PtyHandle {
 	listeners: Set<PtyListener>;
 	cols: number;
 	rows: number;
+	closing?: boolean;
+	closeTimer?: ReturnType<typeof setTimeout>;
 }
 
 export class PtyManager {
 	readonly ptys = new Map<string, PtyHandle>();
 
 	/** Reattach to the shell for `key`, or start one. Returns the pty id and whether it was reused. */
-	open(params: {
-		key?: string;
-		projectId: string;
-		cwd: string;
+	open(params: { key?: string; projectId: string; cwd: string; cols: number; rows: number; listener: PtyListener }): {
+		ptyId: string;
+		reused: boolean;
 		cols: number;
 		rows: number;
-		listener: PtyListener;
-	}): { ptyId: string; reused: boolean; cols: number; rows: number } {
+	} {
 		if (params.key) {
-			const existing = [...this.ptys.values()].find(p => p.key === params.key);
+			const existing = [...this.ptys.values()].find(p => p.key === params.key && p.projectId === params.projectId && !p.closing);
 			if (existing) {
 				// Replay at the size the output was produced at; the client resizes afterwards.
 				existing.listeners.add(params.listener);
@@ -90,7 +90,9 @@ export class PtyManager {
 		handle.terminal = (child as unknown as { terminal: PtyHandle["terminal"] }).terminal;
 		this.ptys.set(id, handle);
 		void child.exited.then(code => {
+			clearTimeout(handle.closeTimer);
 			this.ptys.delete(id);
+			handle.terminal.close?.();
 			for (const listener of handle.listeners) listener.exit(code);
 		});
 		return { ptyId: id, reused: false, cols: params.cols, rows: params.rows };
@@ -118,18 +120,22 @@ export class PtyManager {
 
 	close(id: string): void {
 		const handle = this.ptys.get(id);
-		if (!handle) return;
-		this.ptys.delete(id);
+		if (!handle || handle.closing) return;
+		handle.closing = true;
 		handle.process.kill("SIGHUP");
-		for (const listener of handle.listeners) listener.exit(null);
+		handle.closeTimer = setTimeout(() => {
+			if (this.ptys.get(id) === handle) handle.process.kill("SIGKILL");
+		}, 1000);
 	}
 
-	closeByKey(key: string): void {
-		for (const handle of this.ptys.values()) if (handle.key === key) this.close(handle.id);
+	closeByKey(key: string, projectId: string): void {
+		for (const handle of this.ptys.values()) if (handle.key === key && handle.projectId === projectId) this.close(handle.id);
 	}
 
-	closeAll(): void {
-		for (const id of [...this.ptys.keys()]) this.close(id);
+	async closeAll(): Promise<void> {
+		const handles = [...this.ptys.values()];
+		for (const handle of handles) this.close(handle.id);
+		await Promise.all(handles.map(handle => handle.process.exited));
 	}
 
 	list(): PtyInfo[] {

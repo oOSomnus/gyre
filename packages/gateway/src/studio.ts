@@ -73,11 +73,7 @@ function readAgentDir(dir: string, scope: Scope): AgentFile[] {
 		});
 }
 
-export function listAgents(params: {
-	agentDir: string;
-	projectPath?: string;
-	bundled: Array<{ name: string; content: string }>;
-}): AgentFile[] {
+export function listAgents(params: { agentDir: string; projectPath?: string; bundled: Array<{ name: string; content: string }> }): AgentFile[] {
 	const project = params.projectPath ? readAgentDir(join(params.projectPath, ".omp", "agents"), "project") : [];
 	const user = readAgentDir(join(params.agentDir, "agents"), "user");
 	const bundled: AgentFile[] = params.bundled.map(b => {
@@ -109,20 +105,25 @@ export function saveAgent(params: {
 	if (!description) throw new StudioError("description is required");
 	const dir = agentDirFor(params.scope, params.agentDir, params.projectPath);
 	mkdirSync(dir, { recursive: true });
-	const path = join(dir, `${name}.md`);
+	const existing = readAgentDir(dir, params.scope).filter(a => a.name === (params.previousName ?? name));
+	if (existing.length > 1) throw new StudioError("ambiguous agent name; remove duplicate definitions first", 409);
+	const previousPath = existing[0]?.path;
+	const path = (!params.previousName || params.previousName === name) && previousPath ? previousPath : join(dir, `${name}.md`);
 	const frontmatter = { ...params.frontmatter, name, description };
 	const tmp = `${path}.tmp-${process.pid}`;
 	writeFileSync(tmp, renderAgentMarkdown(frontmatter, params.instructions));
 	renameSync(tmp, path);
-	if (params.previousName && params.previousName !== name && AGENT_NAME.test(params.previousName)) {
-		rmSync(join(dir, `${params.previousName}.md`), { force: true });
+	if (previousPath && previousPath !== path) {
+		rmSync(previousPath, { force: true });
 	}
 	return { name, scope: params.scope, path, frontmatter, instructions: params.instructions };
 }
 
 export function deleteAgent(params: { scope: Scope; agentDir: string; projectPath?: string; name: string }): void {
 	if (!AGENT_NAME.test(params.name)) throw new StudioError("invalid agent name");
-	rmSync(join(agentDirFor(params.scope, params.agentDir, params.projectPath), `${params.name}.md`), { force: true });
+	const matches = readAgentDir(agentDirFor(params.scope, params.agentDir, params.projectPath), params.scope).filter(a => a.name === params.name);
+	if (matches.length > 1) throw new StudioError("ambiguous agent name; remove duplicate definitions first", 409);
+	if (matches[0]?.path) rmSync(matches[0].path, { force: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -206,9 +207,18 @@ export function saveMcp(params: {
 	const file = readMcp(path);
 	const servers = { ...(file.mcpServers ?? {}) };
 	if (params.previousName && params.previousName !== name) delete servers[params.previousName];
-	servers[name] = config;
-	writeMcp(path, { ...file, mcpServers: servers });
-	return { name, scope: params.scope, config, enabled: config.enabled !== false };
+	const old = file.mcpServers?.[params.previousName ?? name] ?? {};
+	const merged = { ...old, ...config };
+	for (const key of ["command", "args", "url", "auth"]) if (!(key in config)) delete merged[key];
+	const oldHeaders = old.headers && typeof old.headers === "object" ? (old.headers as Record<string, unknown>) : {};
+	const headers = Object.fromEntries(Object.entries(oldHeaders).filter(([key]) => key.toLowerCase() !== "authorization"));
+	Object.assign(headers, config.headers ?? {});
+	if (Object.keys(headers).length) merged.headers = headers;
+	else delete merged.headers;
+	servers[name] = merged;
+	const disabledServers = file.disabledServers?.map(n => (n === params.previousName ? name : n));
+	writeMcp(path, { ...file, disabledServers, mcpServers: servers });
+	return { name, scope: params.scope, config: merged, enabled: merged.enabled !== false && !disabledServers?.includes(name) };
 }
 
 export function setMcpEnabled(params: { scope: Scope; agentDir: string; projectPath?: string; name: string; enabled: boolean }): void {
@@ -232,5 +242,5 @@ export function deleteMcp(params: { scope: Scope; agentDir: string; projectPath?
 	if (!file.mcpServers?.[params.name]) return;
 	const servers = { ...file.mcpServers };
 	delete servers[params.name];
-	writeMcp(path, { ...file, mcpServers: servers });
+	writeMcp(path, { ...file, disabledServers: file.disabledServers?.filter(n => n !== params.name), mcpServers: servers });
 }

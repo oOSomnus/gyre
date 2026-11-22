@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerMessage } from "@gyre/protocol";
@@ -12,6 +12,11 @@ import { deleteMcp, listAgents, listMcp, parseAgentMarkdown, renderAgentMarkdown
 const FAKE_OMP = join(import.meta.dir, "fixtures/fake-omp.ts");
 const tmp = mkdtempSync(join(tmpdir(), "gyre-test-"));
 const settingsTmp = mkdtempSync(join(tmpdir(), "gyre-settings-"));
+
+afterAll(() => {
+	rmSync(tmp, { recursive: true, force: true });
+	rmSync(settingsTmp, { recursive: true, force: true });
+});
 
 function collector() {
 	const messages: ServerMessage[] = [];
@@ -129,7 +134,8 @@ describe("HTTP + WebSocket gateway", () => {
 		bad.onopen = () => bad.send(JSON.stringify({ t: "hello", token: "wrong" }));
 		expect(await closed).toBe(4401);
 
-		const projects = await (await fetch(`${gateway.url}/api/projects`, { headers: authed })).json();
+		const registered = await (await fetch(`${gateway.url}/api/projects`, { method: "POST", headers: authed, body: JSON.stringify({ path: project }) })).json();
+		const projects = [registered];
 		const ws = new WebSocket(`ws://127.0.0.1:${gateway.port}/ws`);
 		const messages: ServerMessage[] = [];
 		ws.onmessage = e => messages.push(JSON.parse(String(e.data)));
@@ -187,17 +193,29 @@ describe("Agent Studio files", () => {
 		expect(() => saveAgent({ scope: "user", agentDir, name: "main", frontmatter: { description: "d" }, instructions: "" })).toThrow(/reserved/);
 		expect(() => saveAgent({ scope: "user", agentDir, name: "ok", frontmatter: {}, instructions: "" })).toThrow(/description/);
 		expect(() => saveAgent({ scope: "project", agentDir, name: "ok", frontmatter: { description: "d" }, instructions: "" })).toThrow(/projectId/);
-		const saved = saveAgent({ scope: "user", agentDir, name: "reviewer", frontmatter: { description: "Strict review", model: "@slow" }, instructions: "Review hard." });
+		const saved = saveAgent({
+			scope: "user",
+			agentDir,
+			name: "reviewer",
+			frontmatter: { description: "Strict review", model: "@slow" },
+			instructions: "Review hard.",
+		});
 		expect(saved.path).toBe(join(agentDir, "agents", "reviewer.md"));
 		expect(readFileSync(saved.path ?? "", "utf8")).toContain('model: "@slow"');
 	});
 
 	test("rename removes the old file; list applies omp precedence", () => {
+		saveAgent({ scope: "user", agentDir, name: "reviewer", frontmatter: { description: "Old" }, instructions: "" });
+		expect(existsSync(join(agentDir, "agents", "reviewer.md"))).toBe(true);
 		saveAgent({ scope: "user", agentDir, name: "reviewer2", previousName: "reviewer", frontmatter: { description: "Renamed" }, instructions: "" });
 		expect(existsSync(join(agentDir, "agents", "reviewer.md"))).toBe(false);
 		mkdirSync(project, { recursive: true });
 		saveAgent({ scope: "project", agentDir, projectPath: project, name: "scout", frontmatter: { description: "Project scout" }, instructions: "" });
-		const list = listAgents({ agentDir, projectPath: project, bundled: [{ name: "scout", content: "---\nname: scout\ndescription: Bundled scout\n---\nbody" }] });
+		const list = listAgents({
+			agentDir,
+			projectPath: project,
+			bundled: [{ name: "scout", content: "---\nname: scout\ndescription: Bundled scout\n---\nbody" }],
+		});
 		const scouts = list.filter(a => a.name === "scout");
 		expect(scouts.map(a => [a.scope, Boolean(a.shadowed)])).toEqual([
 			["project", false],
@@ -207,6 +225,7 @@ describe("Agent Studio files", () => {
 	});
 
 	test("MCP servers: save, enable/disable, delete, preserving other keys", () => {
+		mkdirSync(agentDir, { recursive: true });
 		writeFileSync(join(agentDir, "mcp.json"), JSON.stringify({ $schema: "x", mcpServers: { keep: { type: "stdio", command: "keep" } } }));
 		expect(() => saveMcp({ scope: "user", agentDir, name: "bad name", config: { command: "x" } })).toThrow(StudioError);
 		expect(() => saveMcp({ scope: "user", agentDir, name: "web", config: { type: "http", url: "not a url" } })).toThrow(/url/);
@@ -297,7 +316,11 @@ describe("Gateway: settings, plan prefs, remote access and terminals", () => {
 	test("omp config: allowlisted keys read/write, others refused", async () => {
 		const got = await (await fetch(`${gateway.url}/api/omp/config?key=modelRoles`, { headers: authed })).json();
 		expect(got.value).toEqual({ smol: "a/b" });
-		const put = await fetch(`${gateway.url}/api/omp/config`, { method: "PUT", headers: authed, body: JSON.stringify({ key: "modelRoles", value: { plan: "x/y" } }) });
+		const put = await fetch(`${gateway.url}/api/omp/config`, {
+			method: "PUT",
+			headers: authed,
+			body: JSON.stringify({ key: "modelRoles", value: { plan: "x/y" } }),
+		});
 		expect(put.status).toBe(200);
 		expect(cli.store.modelRoles).toEqual({ plan: "x/y" });
 		const refused = await fetch(`${gateway.url}/api/omp/config?key=providers.openai.apiKey`, { headers: authed });
@@ -305,16 +328,26 @@ describe("Gateway: settings, plan prefs, remote access and terminals", () => {
 	});
 
 	test("plan prefs are sanitized and reach the chat's omp process", async () => {
-		const bad = await (await fetch(`${gateway.url}/api/chats/c9/plan-prefs`, { method: "PUT", headers: authed, body: JSON.stringify({ role: "../x", context: "weird" }) })).json();
+		const bad = await (
+			await fetch(`${gateway.url}/api/chats/c9/plan-prefs`, { method: "PUT", headers: authed, body: JSON.stringify({ role: "../x", context: "weird" }) })
+		).json();
 		expect(bad).toEqual({ role: "default", context: "compact" });
-		const good = await (await fetch(`${gateway.url}/api/chats/c9/plan-prefs`, { method: "PUT", headers: authed, body: JSON.stringify({ role: "slow", context: "fresh" }) })).json();
+		const good = await (
+			await fetch(`${gateway.url}/api/chats/c9/plan-prefs`, { method: "PUT", headers: authed, body: JSON.stringify({ role: "slow", context: "fresh" }) })
+		).json();
 		expect(good).toEqual({ role: "slow", context: "fresh" });
 		const created = await (await fetch(`${gateway.url}/api/projects`, { method: "POST", headers: authed, body: JSON.stringify({ path: project }) })).json();
 		const chat = await gateway.chats.open({ projectId: created.id, cwd: project, chatId: "c9" });
 		const env = await chat.process.call<{ planPrefs: string; inbox: string }>({ type: "get_env" });
 		expect(JSON.parse(readFileSync(env.planPrefs, "utf8"))).toEqual({ role: "slow", context: "fresh" });
 		expect(env.inbox).toBe("0");
-		const stat = await (await fetch(`${gateway.url}/api/fs/stat`, { method: "POST", headers: authed, body: JSON.stringify({ projectId: created.id, paths: ["src/a.ts", "src", "nope.ts", "../secret"] }) })).json();
+		const stat = await (
+			await fetch(`${gateway.url}/api/fs/stat`, {
+				method: "POST",
+				headers: authed,
+				body: JSON.stringify({ projectId: created.id, paths: ["src/a.ts", "src", "nope.ts", "../secret"] }),
+			})
+		).json();
 		expect(stat).toEqual({ "src/a.ts": "file", src: "dir" });
 	});
 
@@ -327,7 +360,11 @@ describe("Gateway: settings, plan prefs, remote access and terminals", () => {
 		expect(saved.status).toBe(200);
 		const list = await (await fetch(`${gateway.url}/api/agents`, { headers: authed })).json();
 		expect(list.map((a: { name: string }) => a.name)).toContain("helper");
-		const invalid = await fetch(`${gateway.url}/api/agents`, { method: "PUT", headers: authed, body: JSON.stringify({ scope: "user", name: "a b", frontmatter: { description: "x" } }) });
+		const invalid = await fetch(`${gateway.url}/api/agents`, {
+			method: "PUT",
+			headers: authed,
+			body: JSON.stringify({ scope: "user", name: "a b", frontmatter: { description: "x" } }),
+		});
 		expect(invalid.status).toBe(400);
 		await fetch(`${gateway.url}/api/kv/ui.agentDrafts`, { method: "PUT", headers: authed, body: JSON.stringify({ a: 1 }) });
 		expect(await (await fetch(`${gateway.url}/api/kv/ui.agentDrafts`, { headers: authed })).json()).toEqual({ a: 1 });
@@ -354,7 +391,8 @@ describe("Gateway: settings, plan prefs, remote access and terminals", () => {
 	});
 
 	test("terminals survive detach and replay scrollback on reattach", async () => {
-		const projects = await (await fetch(`${gateway.url}/api/projects`, { headers: authed })).json();
+		const registered = await (await fetch(`${gateway.url}/api/projects`, { method: "POST", headers: authed, body: JSON.stringify({ path: project }) })).json();
+		const projects = [registered];
 		const ws = new WebSocket(`ws://127.0.0.1:${gateway.port}/ws`);
 		const inbox: ServerMessage[] = [];
 		ws.onmessage = e => inbox.push(JSON.parse(String(e.data)));
@@ -365,7 +403,7 @@ describe("Gateway: settings, plan prefs, remote access and terminals", () => {
 		await until(() => inbox.some(m => m.t === "result" && m.reqId === "p1"));
 		const first = inbox.find(m => m.t === "result" && m.reqId === "p1") as { data: { ptyId: string; reused: boolean } };
 		expect(first.data.reused).toBe(false);
-		ws.send(JSON.stringify({ t: "pty_input", ptyId: first.data.ptyId, data: "echo gy-$((6*7))\n" }));
+		ws.send(JSON.stringify({ t: "pty_input", ptyId: first.data.ptyId, data: "printf 'gy-%s\\n' 42\n" }));
 		await until(() => inbox.some(m => m.t === "pty_data" && m.data.includes("gy-42")));
 		ws.send(JSON.stringify({ t: "pty_detach", ptyId: first.data.ptyId }));
 		inbox.length = 0;

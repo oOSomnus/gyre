@@ -34,6 +34,8 @@ export interface ChatInfo {
 	busy?: boolean;
 	/** Process start time (ms). */
 	startedAt?: number;
+	/** Unique identity of the current omp process. */
+	generation?: string;
 	/** Number of connected UI subscribers. */
 	subscribers?: number;
 }
@@ -67,7 +69,8 @@ export type ClientMessage =
 	/** Stop receiving output; the shell keeps running (pane hidden or remounted). */
 	| { t: "pty_detach"; ptyId: string }
 	/** Kill the shell. */
-	| { t: "pty_close"; ptyId: string };
+	| { t: "pty_close"; ptyId: string }
+	| { t: "pty_close_key"; key: string; projectId: string };
 
 // ---------------------------------------------------------------------------
 // Gateway -> client
@@ -78,6 +81,7 @@ export type ServerMessage =
 	| { t: "error"; message: string }
 	| { t: "result"; reqId: string; ok: true; data: unknown }
 	| { t: "result"; reqId: string; ok: false; error: string; code?: string }
+	| { t: "chat_replay"; chat: ChatInfo }
 	| { t: "chat"; chat: ChatInfo }
 	| { t: "frame"; chatId: string; frame: OmpFrame }
 	| { t: "pty_data"; ptyId: string; data: string }
@@ -153,11 +157,11 @@ export interface FloatRect {
 }
 
 /** Binary-split tiling layout. */
-export type LayoutNode =
-	| { type: "pane"; paneId: string }
-	| { type: "split"; direction: "row" | "column"; sizes: number[]; children: LayoutNode[] };
+export type LayoutNode = { type: "pane"; paneId: string } | { type: "split"; direction: "row" | "column"; sizes: number[]; children: LayoutNode[] };
 
 export interface Workspace {
+	/** Server revision; absent on legacy layouts and unsaved workspaces. */
+	revision?: number;
 	id: string;
 	name: string;
 	panes: Record<string, PaneSpec>;

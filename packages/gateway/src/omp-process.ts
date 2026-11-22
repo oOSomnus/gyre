@@ -164,7 +164,10 @@ export class OmpProcess {
 		if ((await Promise.race([child.exited, timeout])) === "timeout") {
 			child.kill("SIGTERM");
 			const second = new Promise<"timeout">(resolve => setTimeout(() => resolve("timeout"), graceMs));
-			if ((await Promise.race([child.exited, second])) === "timeout") child.kill("SIGKILL");
+			if ((await Promise.race([child.exited, second])) === "timeout") {
+				child.kill("SIGKILL");
+				await child.exited;
+			}
 		}
 	}
 

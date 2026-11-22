@@ -2,6 +2,8 @@
 import { readdir, realpath, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import type { FsEntry } from "@gyre/protocol";
+import { closeSync, fstatSync, readSync } from "node:fs";
+import { isContained, openContained } from "./contained-file";
 
 const MAX_READ_BYTES = 2 * 1024 * 1024;
 const HIDDEN_DIRS = new Set([".git", "node_modules", ".venv", "__pycache__", "target", "dist", ".next"]);
@@ -17,7 +19,13 @@ export class FsAccessError extends Error {
 
 /** Resolve `relPath` inside `root`, rejecting traversal and symlink escapes. */
 export async function resolveInside(root: string, relPath: string): Promise<string> {
-	const realRoot = await realpath(root);
+	let realRoot: string;
+	try {
+		realRoot = await realpath(root);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new FsAccessError("project directory not found", 404);
+		throw error;
+	}
 	const candidate = resolve(realRoot, relPath || ".");
 	let real: string;
 	try {
@@ -25,7 +33,7 @@ export async function resolveInside(root: string, relPath: string): Promise<stri
 	} catch {
 		throw new FsAccessError("not found", 404);
 	}
-	if (real !== realRoot && !real.startsWith(realRoot + sep)) throw new FsAccessError("path escapes project", 403);
+	if (!isContained(realRoot, real)) throw new FsAccessError("path escapes project", 403);
 	return real;
 }
 
@@ -41,7 +49,8 @@ export async function listDir(root: string, relPath: string, showHidden = false)
 		let size: number | undefined;
 		if (entry.isSymbolicLink()) {
 			try {
-				const info = await stat(abs);
+				const target = await resolveInside(realRoot, relative(realRoot, abs));
+				const info = await stat(target);
 				kind = info.isDirectory() ? "dir" : "file";
 				size = info.size;
 			} catch {
@@ -54,21 +63,35 @@ export async function listDir(root: string, relPath: string, showHidden = false)
 	return result;
 }
 
-export async function readText(
-	root: string,
-	relPath: string,
-): Promise<{ path: string; content: string; truncated: boolean; binary: boolean; size: number }> {
+export async function readText(root: string, relPath: string): Promise<{ path: string; content: string; truncated: boolean; binary: boolean; size: number }> {
 	const abs = await resolveInside(root, relPath);
-	const info = await stat(abs);
-	if (!info.isFile()) throw new FsAccessError("not a file", 400);
-	const file = Bun.file(abs);
-	const bytes = new Uint8Array(await file.slice(0, MAX_READ_BYTES).arrayBuffer());
-	const binary = bytes.subarray(0, 8000).includes(0);
-	return {
-		path: relPath,
-		content: binary ? "" : new TextDecoder().decode(bytes),
-		truncated: info.size > MAX_READ_BYTES,
-		binary,
-		size: info.size,
-	};
+	const realRoot = await realpath(root);
+	let fd: number;
+	try {
+		fd = openContained(realRoot, abs);
+	} catch {
+		throw new FsAccessError("file changed or escapes project", 403);
+	}
+	try {
+		const info = fstatSync(fd);
+		if (!info.isFile()) throw new FsAccessError("not a file", 400);
+		const buffer = Buffer.alloc(Math.min(info.size, MAX_READ_BYTES));
+		let length = 0;
+		while (length < buffer.length) {
+			const n = readSync(fd, buffer, length, buffer.length - length, null);
+			if (!n) break;
+			length += n;
+		}
+		const bytes = buffer.subarray(0, length);
+		const binary = bytes.subarray(0, 8000).includes(0);
+		return {
+			path: relPath,
+			content: binary ? "" : new TextDecoder().decode(bytes),
+			truncated: info.size > MAX_READ_BYTES,
+			binary,
+			size: info.size,
+		};
+	} finally {
+		closeSync(fd);
+	}
 }

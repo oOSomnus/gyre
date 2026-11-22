@@ -7,6 +7,7 @@ import { OmpProcess, type OmpProcessOptions } from "./omp-process";
 
 export interface Subscriber {
 	send(message: ServerMessage): void;
+	connected?: boolean;
 }
 
 export interface ChatManagerOptions {
@@ -92,7 +93,7 @@ export class Chat {
 	}
 
 	replayTo(subscriber: Subscriber): void {
-		subscriber.send({ t: "chat", chat: this.info });
+		subscriber.send({ t: "chat_replay", chat: this.info });
 		for (const frame of this.sticky.values()) subscriber.send({ t: "frame", chatId: this.info.chatId, frame });
 		for (const frame of this.pendingUi.values()) subscriber.send({ t: "frame", chatId: this.info.chatId, frame });
 	}
@@ -100,6 +101,7 @@ export class Chat {
 
 export class ChatManager {
 	readonly chats = new Map<string, Chat>();
+	stopping = false;
 
 	constructor(private readonly options: ChatManagerOptions = {}) {}
 
@@ -111,13 +113,8 @@ export class ChatManager {
 	 * Open (or reattach to) a chat. A new chat spawns omp in `cwd`; when
 	 * `sessionPath` is given it switches to that persisted session.
 	 */
-	async open(params: {
-		projectId: string;
-		cwd: string;
-		chatId?: string;
-		sessionPath?: string;
-		subscriber?: Subscriber;
-	}): Promise<Chat> {
+	async open(params: { projectId: string; cwd: string; chatId?: string; sessionPath?: string; subscriber?: Subscriber }): Promise<Chat> {
+		if (this.stopping) throw new Error("gateway is shutting down");
 		const existing = params.chatId ? this.chats.get(params.chatId) : undefined;
 		if (existing && existing.info.status !== "exited") {
 			if (params.subscriber) this.subscribe(existing, params.subscriber);
@@ -155,6 +152,7 @@ export class ChatManager {
 				status: "starting",
 				sessionPath: params.sessionPath,
 				startedAt: Date.now(),
+				generation: crypto.randomUUID(),
 				busy: false,
 			},
 			process,
@@ -171,6 +169,7 @@ export class ChatManager {
 				await process.call({ type: "switch_session", sessionPath: params.sessionPath }, 120_000);
 			}
 			const state = await process.call<{ sessionFile?: string }>({ type: "get_state" }).catch(() => undefined);
+			if (!process.running || this.stopping) throw new Error("omp exited during initialization");
 			chat.setInfo({ status: "ready", sessionPath: state?.sessionFile ?? params.sessionPath, error: undefined });
 		} catch (error) {
 			chat.setInfo({ status: "exited", error: error instanceof Error ? error.message : String(error) });
@@ -184,12 +183,14 @@ export class ChatManager {
 			clearTimeout(chat.reapTimer);
 			chat.reapTimer = null;
 		}
+		if (subscriber.connected === false) return;
 		chat.subscribers.add(subscriber);
 		chat.info = { ...chat.info, subscribers: chat.subscribers.size };
 		chat.replayTo(subscriber);
 	}
 
 	unsubscribeAll(subscriber: Subscriber): void {
+		subscriber.connected = false;
 		for (const chat of this.chats.values()) {
 			if (!chat.subscribers.delete(subscriber)) continue;
 			chat.info = { ...chat.info, subscribers: chat.subscribers.size };
@@ -205,10 +206,13 @@ export class ChatManager {
 		const chat = this.chats.get(chatId);
 		if (!chat) return undefined;
 		const subscribers = [...chat.subscribers];
+		const state = await chat.process.call<{ sessionFile?: string }>({ type: "get_state" }).catch(() => undefined);
+		if (state) chat.info.sessionPath = state.sessionFile;
 		const { projectId, cwd, sessionPath } = chat.info;
 		await this.close(chatId);
 		const next = await this.open({ projectId, cwd, chatId, sessionPath });
-		for (const subscriber of subscribers) this.subscribe(next, subscriber);
+		for (const subscriber of subscribers) if (subscriber.connected !== false) this.subscribe(next, subscriber);
+		if (next.subscribers.size === 0) this.#scheduleReap(next);
 		return next;
 	}
 
@@ -221,6 +225,7 @@ export class ChatManager {
 	}
 
 	async closeAll(): Promise<void> {
+		this.stopping = true;
 		await Promise.all([...this.chats.keys()].map(id => this.close(id)));
 	}
 
@@ -234,7 +239,7 @@ export class ChatManager {
 		if (delay <= 0) return;
 		chat.reapTimer = setTimeout(() => {
 			chat.reapTimer = null;
-			if (chat.subscribers.size > 0) return;
+			if (this.chats.get(chat.info.chatId) !== chat || chat.subscribers.size > 0) return;
 			if (chat.busy) {
 				this.#scheduleReap(chat);
 				return;

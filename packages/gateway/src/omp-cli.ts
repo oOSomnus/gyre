@@ -39,11 +39,22 @@ export function configKeyAllowed(key: string): boolean {
 
 export class OmpCli {
 	#agentDir: string | undefined;
+	#stopping = false;
+	#running = new Set<{ kill(signal?: number | NodeJS.Signals): void }>();
+	stop(): void {
+		this.#stopping = true;
+		for (const child of this.#running) {
+			try {
+				child.kill("SIGKILL");
+			} catch {}
+		}
+	}
 	#bundledAgents: Array<{ name: string; file: string; content: string }> | undefined;
 
 	constructor(private readonly ompPath = "omp") {}
 
 	async run(args: string[], cwd?: string, timeoutMs = 20_000): Promise<{ code: number; stdout: string; stderr: string }> {
+		if (this.#stopping) throw new OmpCliError("gateway is shutting down", 503);
 		const proc = Bun.spawn([this.ompPath, ...args], {
 			cwd,
 			stdout: "pipe",
@@ -51,10 +62,37 @@ export class OmpCli {
 			stdin: "ignore",
 			env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
 		});
-		const timer = setTimeout(() => proc.kill(), timeoutMs);
-		const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-		clearTimeout(timer);
-		return { code, stdout, stderr };
+		this.#running.add(proc);
+		const out = proc.stdout.getReader();
+		const err = proc.stderr.getReader();
+		const collect = async (reader: ReadableStreamDefaultReader<Uint8Array>) => {
+			const decoder = new TextDecoder();
+			let text = "";
+			for (;;) {
+				const { value, done } = await reader.read();
+				if (done) return text + decoder.decode();
+				text += decoder.decode(value, { stream: true });
+			}
+		};
+		const stdout = collect(out);
+		const stderr = collect(err);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([
+				Promise.all([stdout, stderr, proc.exited]).then(([stdout, stderr, code]) => ({ code, stdout, stderr })),
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(() => {
+						proc.kill("SIGKILL");
+						void out.cancel().catch(() => {});
+						void err.cancel().catch(() => {});
+						reject(new OmpCliError(`omp command timed out after ${timeoutMs}ms`, 504));
+					}, timeoutMs);
+				}),
+			]);
+		} finally {
+			clearTimeout(timer);
+			this.#running.delete(proc);
+		}
 	}
 
 	async json<T>(args: string[], cwd?: string): Promise<T> {

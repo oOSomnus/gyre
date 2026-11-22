@@ -24,10 +24,9 @@ import { startGateway } from "./server";
 const dataDir = process.env.GYRE_DATA_DIR ?? join(homedir(), ".gyre");
 mkdirSync(dataDir, { recursive: true });
 
-const defaultWebDist = [
-	join(dirname(process.execPath), "web"),
-	join(import.meta.dir, "../../web/dist"),
-].find(dir => Bun.file(join(dir, "index.html")).size > 0);
+const defaultWebDist = [join(dirname(process.execPath), "web"), join(import.meta.dir, "../../web/dist")].find(
+	dir => Bun.file(join(dir, "index.html")).size > 0,
+);
 
 /**
  * Find omp. Desktop launchers often start apps without the user's shell PATH,
@@ -52,6 +51,7 @@ function resolveExtension(): string | undefined {
 }
 
 const token = process.env.GYRE_TOKEN ?? crypto.randomUUID();
+if (!token.trim()) throw new Error("GYRE_TOKEN must not be empty");
 const extension = resolveExtension();
 const gateway = await startGateway({
 	host: process.env.GYRE_HOST ?? "127.0.0.1",
@@ -62,11 +62,13 @@ const gateway = await startGateway({
 	ompPath: resolveOmp(),
 	ompArgs: process.env.GYRE_OMP_ARGS?.split(" ").filter(Boolean),
 	extensions: extension ? [extension] : [],
-	allowedHosts: process.env.GYRE_ALLOWED_HOSTS?.split(",").map(h => h.trim()).filter(Boolean),
+	allowedHosts: process.env.GYRE_ALLOWED_HOSTS?.split(",")
+		.map(h => h.trim())
+		.filter(Boolean),
 });
 
 console.log(`GYRE_READY ${JSON.stringify({ url: gateway.url, port: gateway.port, token })}`);
-console.error(`Gyre gateway listening on ${gateway.url}  (open ${gateway.url}/#token=${token})`);
+console.error(`Gyre gateway listening on ${gateway.url}`);
 if (!extension) console.error("Gyre omp extension not found: plan mode is unavailable");
 
 let stopping = false;

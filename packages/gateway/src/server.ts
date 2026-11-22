@@ -1,33 +1,20 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import {
-	type ClientMessage,
-	GATEWAY_VERSION,
-	type PlanPrefs,
-	type Project,
-	type ServerMessage,
-	type Workspace,
-} from "@gyre/protocol";
+import { type ClientMessage, GATEWAY_VERSION, type PlanPrefs, type Project, type ServerMessage, type Workspace } from "@gyre/protocol";
 import type { ServerWebSocket } from "bun";
 import { ChatManager, type ChatManagerOptions, type Subscriber } from "./chats";
-import { Store } from "./db";
+import { Store, WorkspaceConflictError } from "./db";
+import { validWorkspace, validClientMessage } from "./validation";
+import { isContained, openContained } from "./contained-file";
+import { closeSync, fstatSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { FsAccessError, listDir, readText, resolveInside } from "./fs";
 import { OmpCli, OmpCliError } from "./omp-cli";
 import { OmpCommandError } from "./omp-process";
 import { PtyManager, type PtyListener } from "./pty";
 import { listSessions } from "./sessions";
-import {
-	deleteAgent,
-	deleteMcp,
-	listAgents,
-	listMcp,
-	type Scope,
-	StudioError,
-	saveAgent,
-	saveMcp,
-	setMcpEnabled,
-} from "./studio";
+import { deleteAgent, deleteMcp, listAgents, listMcp, type Scope, StudioError, saveAgent, saveMcp, setMcpEnabled } from "./studio";
 
 export interface GatewayConfig {
 	host: string;
@@ -66,21 +53,27 @@ export interface Gateway {
 
 export async function detectOmpVersion(ompPath = "omp"): Promise<string | null> {
 	try {
-		const proc = Bun.spawn([ompPath, "--version"], { stdout: "pipe", stderr: "ignore" });
-		const text = await new Response(proc.stdout).text();
-		await proc.exited;
-		return text.trim().replace(/^omp\//, "") || null;
+		const result = await new OmpCli(ompPath).run(["--version"], undefined, 5000);
+		return result.code === 0 ? result.stdout.trim().replace(/^omp\//, "") || null : null;
 	} catch {
 		return null;
 	}
 }
 
 export async function startGateway(config: GatewayConfig): Promise<Gateway> {
+	if (!config.token.trim()) throw new Error("gateway token must not be empty");
+	let stopping = false;
+	const inFlight = new Set<Promise<unknown>>();
+	const track = <T>(work: Promise<T>): Promise<T> => {
+		inFlight.add(work);
+		void work.finally(() => inFlight.delete(work)).catch(() => {});
+		return work;
+	};
 	mkdirSync(config.dataDir, { recursive: true });
 	const store = new Store(join(config.dataDir, "gyre.db"));
 	const planPrefsDir = join(config.dataDir, "plan-prefs");
 	mkdirSync(planPrefsDir, { recursive: true });
-	const planPrefsPath = (chatId: string) => join(planPrefsDir, `${chatId.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
+	const planPrefsPath = (chatId: string) => join(planPrefsDir, `${new Bun.CryptoHasher("sha256").update(chatId).digest("hex")}.json`);
 	const chats = new ChatManager({
 		ompPath: config.ompPath,
 		ompArgs: config.ompArgs,
@@ -106,12 +99,13 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 	const cookieToken = (req: Request) =>
 		(req.headers.get("cookie") ?? "")
 			.split(/;\s*/)
-			.map(part => part.split("="))
+			.map(part => {
+				const at = part.indexOf("=");
+				return [part.slice(0, at), part.slice(at + 1)];
+			})
 			.find(([name]) => name === "gyre_token")?.[1];
 	const authorized = (req: Request, url: URL) =>
-		req.headers.get("x-gyre-token") === config.token ||
-		url.searchParams.get("token") === config.token ||
-		cookieToken(req) === config.token;
+		req.headers.get("x-gyre-token") === config.token || url.searchParams.get("token") === config.token || cookieToken(req) === config.token;
 	const SESSION_COOKIE = `gyre_token=${config.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`;
 
 	const projectOr404 = (id: string | null): Project => {
@@ -163,7 +157,8 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			const wsMatch = path.match(/^\/api\/workspaces\/([^/]+)$/);
 			if (wsMatch?.[1]) {
 				if (method === "PUT") {
-					const body = (await req.json()) as Workspace;
+					const body: unknown = await req.json();
+					if (!validWorkspace(body)) return fail("invalid workspace layout", 400);
 					return json(store.saveWorkspace({ ...body, id: wsMatch[1] }));
 				}
 				if (method === "DELETE") {
@@ -187,9 +182,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 
 			if (path === "/api/fs/list" && method === "GET") {
 				const project = projectOr404(url.searchParams.get("projectId"));
-				return json(
-					await listDir(project.path, url.searchParams.get("path") ?? "", url.searchParams.get("hidden") === "1"),
-				);
+				return json(await listDir(project.path, url.searchParams.get("path") ?? "", url.searchParams.get("hidden") === "1"));
 			}
 			if (path === "/api/fs/read" && method === "GET") {
 				const project = projectOr404(url.searchParams.get("projectId"));
@@ -246,8 +239,15 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			const restartProject = path.match(/^\/api\/projects\/([^/]+)\/restart-chats$/);
 			if (restartProject?.[1] && method === "POST") {
 				const ids = [...chats.chats.values()].filter(c => c.info.projectId === restartProject[1]).map(c => c.info.chatId);
-				for (const id of ids) await chats.restart(id);
-				return json({ restarted: ids.length });
+				const failed: string[] = [];
+				for (const id of ids) {
+					try {
+						if ((await chats.restart(id))?.info.status !== "ready") failed.push(id);
+					} catch {
+						failed.push(id);
+					}
+				}
+				return json({ restarted: ids.length - failed.length, failed });
 			}
 			if (path === "/api/ptys" && method === "GET") return json(ptys.list());
 			const ptyMatch = path.match(/^\/api\/ptys\/([^/]+)$/);
@@ -263,11 +263,13 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				if (method === "GET") return json({ key, value: await ompCli.configGet(key, cwd) });
 				if (method === "PUT") {
 					const body = (await req.json()) as { key?: string; value?: unknown; projectId?: string };
+					if (body.projectId) return fail("Project-scoped settings writes are not supported by omp; edit global settings instead.", 400);
 					const value = await ompCli.configSet(body.key ?? "", body.value, optionalProject(body.projectId)?.path);
 					return json({ key: body.key, value });
 				}
 				if (method === "DELETE") {
-					await ompCli.configReset(key, cwd);
+					if (cwd) return fail("Project-scoped settings resets are not supported by omp; edit global settings instead.", 400);
+					await ompCli.configReset(key);
 					return json({ ok: true });
 				}
 			}
@@ -368,6 +370,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 
 			return fail("not found", 404);
 		} catch (error) {
+			if (error instanceof WorkspaceConflictError) return fail(error.message, 409);
 			if (error instanceof FsAccessError) return fail(error.message, error.status);
 			if (error instanceof OmpCliError || error instanceof StudioError) return fail(error.message, error.status);
 			return fail(error instanceof Error ? error.message : String(error), 500);
@@ -376,15 +379,37 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 
 	async function serveStatic(url: URL, trusted: boolean): Promise<Response> {
 		if (!config.webDist) return new Response("Gyre gateway: web UI not built", { status: 404 });
-		const root = resolve(config.webDist);
+		const root = await realpath(config.webDist);
 		const requested = resolve(root, `.${decodeURIComponent(url.pathname)}`);
-		if (requested.startsWith(root) && requested !== root) {
-			const file = Bun.file(requested);
-			if (await file.exists()) return new Response(file);
+		if (!isContained(root, requested)) return fail("forbidden path", 403);
+		if (requested !== root) {
+			let fd: number | undefined;
+			try {
+				const canonical = await realpath(requested);
+				if (!isContained(root, canonical)) return fail("forbidden path", 403);
+				fd = openContained(root, canonical);
+				if (fstatSync(fd).isFile()) {
+					const file = Bun.file(fd);
+					return new Response(await file.arrayBuffer(), { headers: { "content-type": Bun.file(requested).type } });
+				}
+			} catch {
+				/* Missing assets use the SPA fallback. */
+			} finally {
+				if (fd !== undefined) closeSync(fd);
+			}
 		}
 		// SPA fallback. Local (loopback) clients and remote clients that already
 		// logged in get the token injected; anyone else sees the token login screen.
-		const index = await Bun.file(join(root, "index.html")).text();
+		let index: string;
+		let indexFd: number | undefined;
+		try {
+			indexFd = openContained(root, await realpath(join(root, "index.html")));
+			index = await Bun.file(indexFd).text();
+		} catch {
+			return fail("web UI index unavailable", 404);
+		} finally {
+			if (indexFd !== undefined) closeSync(indexFd);
+		}
 		const boot = `<script>window.__GYRE__=${JSON.stringify(trusted ? { token: config.token } : { remote: true })}</script>`;
 		return new Response(index.replace("</head>", `${boot}</head>`), {
 			headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
@@ -392,6 +417,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 	}
 
 	async function handleMessage(ws: ServerWebSocket<SocketData>, message: ClientMessage): Promise<void> {
+		if (stopping) return;
 		const send = (msg: ServerMessage) => ws.send(JSON.stringify(msg));
 		if (!ws.data.authed) {
 			if (message.t === "hello" && message.token === config.token) {
@@ -450,7 +476,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 						});
 					if (message.command.type === "switch_session" || message.command.type === "new_session" || message.command.type === "fork") {
 						const state = await chat.process.call<{ sessionFile?: string }>({ type: "get_state" }).catch(() => undefined);
-						chat.setInfo({ sessionPath: state?.sessionFile });
+						if (state) chat.setInfo({ sessionPath: state.sessionFile });
 					}
 				} catch (error) {
 					send({
@@ -519,20 +545,23 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				ws.data.ptyListeners.delete(message.ptyId);
 				return;
 			}
+			case "pty_close_key":
+				ptys.closeByKey(message.key, message.projectId);
+				return;
 			case "pty_close":
 				ptys.close(message.ptyId);
 				return;
 		}
 	}
 
-	const isAllowedHost = (hostName: string) =>
-		LOOPBACK_HOSTS.has(hostName) || hostName === config.host || allowedHosts.has(hostName) || allowedHosts.has("*");
+	const isAllowedHost = (hostName: string) => LOOPBACK_HOSTS.has(hostName) || hostName === config.host || allowedHosts.has(hostName) || allowedHosts.has("*");
 
 	const server: ReturnType<typeof Bun.serve<SocketData, never>> = Bun.serve<SocketData, never>({
 		hostname: config.host,
 		port: config.port,
 		idleTimeout: 120,
 		async fetch(req, srv) {
+			if (stopping) return fail("gateway is shutting down", 503);
 			const url = new URL(req.url);
 			// DNS-rebinding guard: only answer requests addressed to loopback names.
 			const hostName = (req.headers.get("host") ?? "").replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
@@ -550,32 +579,38 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			}
 			if (url.pathname.startsWith("/api/")) {
 				if (url.pathname !== "/api/health" && !authorized(req, url)) return fail("unauthorized", 401);
-				return handleApi(req, url);
+				return track(handleApi(req, url));
 			}
 			const peer = srv.requestIP(req)?.address ?? "";
 			const trusted = (isLoopbackAddress(peer) && LOOPBACK_HOSTS.has(hostName)) || cookieToken(req) === config.token;
-			return serveStatic(url, trusted);
+			return track(serveStatic(url, trusted));
 		},
 		websocket: {
 			maxPayloadLength: 64 * 1024 * 1024,
 			open(ws) {
 				if (DEBUG) console.error("[ws] open");
-				ws.data.subscriber = { send: msg => ws.send(JSON.stringify(msg)) };
+				ws.data.subscriber = { connected: true, send: msg => ws.send(JSON.stringify(msg)) };
 				ws.data.ptyListeners = new Map();
 			},
 			message(ws, raw) {
 				let message: ClientMessage;
 				try {
-					message = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw)) as ClientMessage;
+					const parsed: unknown = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
+					if (!validClientMessage(parsed)) throw new Error("malformed message");
+					message = parsed;
 				} catch {
 					ws.send(JSON.stringify({ t: "error", message: "malformed message" } satisfies ServerMessage));
 					return;
 				}
 				if (DEBUG) console.error(`[ws] message ${message.t}`);
-				void handleMessage(ws, message);
+				void track(handleMessage(ws, message)).catch(error => {
+					console.error("WebSocket dispatch failed:", errorText(error));
+					ws.send(JSON.stringify({ t: "error", message: "message dispatch failed" }));
+				});
 			},
 			close(ws, code) {
 				if (DEBUG) console.error(`[ws] close ${code}`);
+				ws.data.subscriber.connected = false;
 				chats.unsubscribeAll(ws.data.subscriber);
 				// Terminals keep running for the pane to reattach; just stop streaming to this socket.
 				for (const [ptyId, listener] of ws.data.ptyListeners) ptys.detach(ptyId, listener);
@@ -587,13 +622,17 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 	const port = server.port ?? config.port;
 	return {
 		port,
-		url: `http://${config.host}:${port}`,
+		url: `http://${config.host.includes(":") ? `[${config.host}]` : config.host}:${port}`,
 		chats,
 		store,
 		async stop() {
-			ptys.closeAll();
-			await chats.closeAll();
+			if (stopping) return;
+			stopping = true;
+			chats.stopping = true;
 			server.stop(true);
+			ompCli.stop();
+			await Promise.all([ptys.closeAll(), chats.closeAll()]);
+			await Promise.allSettled([...inFlight]);
 			store.close();
 		},
 	};

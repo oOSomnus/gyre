@@ -9,9 +9,9 @@ import { RpcFrameEncoder } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-frame";
 const encoder = new RpcFrameEncoder();
 const write = (frame: object) => process.stdout.write(encoder.encode(frame));
 const respond = (id: unknown, command: string, data?: unknown) => write({ type: "response", id, command, success: true, data });
-const fail = (id: unknown, command: string, error: string, code?: string) =>
-	write({ type: "response", id, command, success: false, error, code });
+const fail = (id: unknown, command: string, error: string, code?: string) => write({ type: "response", id, command, success: false, error, code });
 
+let sessionFile = "/tmp/fake-session.jsonl";
 let pendingUi: ((response: Record<string, unknown>) => void) | null = null;
 
 write({ type: "ready", protocolVersion: 1, supportedProtocolVersions: [1, 2], maxFrameBytes: 1048576 });
@@ -35,9 +35,10 @@ async function runTurn(id: unknown) {
 	write({ type: "session_settled" });
 }
 
+const stdinDecoder = new TextDecoder();
 let buffer = "";
 for await (const chunk of Bun.stdin.stream()) {
-	buffer += new TextDecoder().decode(chunk);
+	buffer += stdinDecoder.decode(chunk, { stream: true });
 	let nl = buffer.indexOf("\n");
 	while (nl !== -1) {
 		const line = buffer.slice(0, nl).trim();
@@ -54,12 +55,14 @@ for await (const chunk of Bun.stdin.stream()) {
 				respond(cmd.id, "set_ask_dialog", { enabled: true });
 				break;
 			case "get_state":
-				respond(cmd.id, "get_state", { model: { id: "fake", provider: "test" }, sessionId: "s1", sessionFile: "/tmp/fake-session.jsonl", isStreaming: false });
+				if (process.env.FAKE_EXIT_DURING_STATE === "1") process.exit(1);
+				respond(cmd.id, "get_state", { model: { id: "fake", provider: "test" }, sessionId: "s1", sessionFile, isStreaming: false });
 				break;
 			case "get_available_commands":
 				respond(cmd.id, "get_available_commands", { commands: [{ name: "hello", source: "builtin" }] });
 				break;
 			case "switch_session":
+				sessionFile = String(cmd.sessionPath);
 				respond(cmd.id, "switch_session", { cancelled: false });
 				break;
 			case "get_env":

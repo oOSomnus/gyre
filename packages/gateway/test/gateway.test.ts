@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ServerMessage } from "@gyre/protocol";
-import { ChatManager, type Subscriber } from "../src/chats";
+import { type ServerMessage, uiRequestKind } from "@gyre/protocol";
+import { Chat, ChatManager, type Subscriber } from "../src/chats";
 import { configKeyAllowed, OmpCli } from "../src/omp-cli";
 import { OmpCommandError, OmpProcess } from "../src/omp-process";
 import { type Gateway, startGateway } from "../src/server";
@@ -81,6 +81,35 @@ describe("ChatManager", () => {
 		expect(chat.pendingUi.size).toBe(0);
 
 		await manager.closeAll();
+	});
+
+	test("replays exactly what a late subscriber needs: sticky presentation, open and unknown dialogs", () => {
+		const chat = new Chat({ chatId: "c", projectId: "p", cwd: tmp, status: "ready" }, {} as OmpProcess);
+		const ui = (method: string, extra: Record<string, unknown> = {}) => ({ type: "extension_ui_request", id: `${method}-${Math.random()}`, method, ...extra });
+		const frames = [
+			ui("setStatus", { statusKey: "lint", statusText: "old" }),
+			ui("setStatus", { statusKey: "lint", statusText: "new" }),
+			ui("setWidget", { widgetKey: "w", widgetLines: ["x"] }),
+			ui("setTitle", { title: "T" }),
+			ui("notify", { message: "one-shot" }),
+			ui("open_url", { url: "https://example.com" }),
+			{ ...ui("select", { options: ["a"] }), id: "keep" },
+			{ ...ui("confirm"), id: "withdrawn" },
+			ui("cancel", { targetId: "withdrawn" }),
+			// A method omp may add later: it might be waiting for an answer, so it is kept.
+			{ ...ui("pick_file"), id: "future" },
+		];
+		for (const frame of frames) chat.trackFrame(frame);
+
+		const late = collector();
+		chat.replayTo(late.subscriber);
+		expect(late.messages[0]).toMatchObject({ t: "chat_replay" });
+		const replayed = late.frames();
+		expect(replayed.filter(f => f.method === "setStatus").map(f => f.statusText)).toEqual(["new"]);
+		expect(replayed.some(f => f.method === "setWidget")).toBe(true);
+		expect(replayed.some(f => f.method === "setTitle")).toBe(true);
+		expect(replayed.some(f => f.method === "notify" || f.method === "open_url" || f.method === "cancel")).toBe(false);
+		expect(replayed.filter(f => uiRequestKind(String(f.method)) === "dialog").map(f => f.id)).toEqual(["keep", "future"]);
 	});
 
 	test("reports a failed start without throwing", async () => {

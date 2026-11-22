@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isKnownUiMethod, UI_CANCEL_METHOD, UI_DIALOG_METHODS, UI_PRESENTATION_METHODS } from "@gyre/protocol";
 import { OmpProcess } from "../src/omp-process";
 import { detectOmpVersion } from "../src/server";
 import { listSessions } from "../src/sessions";
@@ -170,5 +171,25 @@ describe.skipIf(!version)("omp CLI surfaces used by settings", () => {
 		const text = await file.text();
 		expect(text).toContain("local://<slug>-plan.md");
 		expect(text).toContain("propose");
+	});
+});
+
+describe("extension UI request methods (pinned omp source)", () => {
+	test("every method omp can send is classified explicitly by Gyre", async () => {
+		// Read omp's own type for `extension_ui_request` so a new method fails here (and in the
+		// daily "latest omp" CI job) instead of falling back to a generic dialog unnoticed.
+		const rel = "@oh-my-pi/pi-coding-agent/src/modes/rpc/rpc-types.ts";
+		const path = join(import.meta.dir, "../node_modules", rel);
+		const alt = join(import.meta.dir, "../../../node_modules", rel);
+		const source = await Bun.file((await Bun.file(path).exists()) ? path : alt).text();
+		const start = source.indexOf("export type RpcExtensionUIRequest");
+		expect(start).toBeGreaterThan(-1);
+		const end = source.indexOf("export ", start + 1);
+		const union = source.slice(start, end === -1 ? undefined : end);
+		const methods = [...new Set([...union.matchAll(/method:\s*"([A-Za-z_]+)"/g)].map(m => m[1] as string))].sort();
+		expect(methods.length).toBeGreaterThan(0);
+		expect(methods.filter(method => !isKnownUiMethod(method))).toEqual([]);
+		// And Gyre does not classify methods omp no longer sends.
+		expect([...UI_DIALOG_METHODS, ...UI_PRESENTATION_METHODS, UI_CANCEL_METHOD].sort()).toEqual(methods);
 	});
 });

@@ -2,7 +2,7 @@
  * Per-chat state, built by folding omp frames. Unknown frames are kept in the
  * raw log (Events pane) so new upstream events are visible without code changes.
  */
-import { type ChatInfo, type OmpFrame, PLAN_WIDGET_KEY, type PlanState } from "@gyre/protocol";
+import { type ChatInfo, type OmpFrame, PLAN_WIDGET_KEY, type PlanState, uiRequestKind } from "@gyre/protocol";
 import { create } from "zustand";
 import { gateway } from "../lib/gateway";
 import { openChatPane } from "./app";
@@ -78,7 +78,6 @@ export interface ChatState {
 }
 
 const MAX_FRAMES = 600;
-const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor", "ask", "form"]);
 const REFRESH_ON = new Set([
 	"agent_end",
 	"session_settled",
@@ -211,9 +210,10 @@ export function applyFrame(chat: ChatState, frame: OmpFrame): ChatState {
 		case "extension_ui_request": {
 			const request = frame as unknown as UiRequest;
 			const method = request.method;
-			if (DIALOG_METHODS.has(method)) {
+			const kind = uiRequestKind(method);
+			if (kind === "dialog") {
 				if (!next.pendingUi.some(existing => existing.id === request.id)) next.pendingUi = [...next.pendingUi, request];
-			} else if (method === "cancel") {
+			} else if (kind === "cancel") {
 				next.pendingUi = next.pendingUi.filter(existing => existing.id !== f.targetId);
 			} else if (method === "notify") {
 				next.items = [

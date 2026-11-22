@@ -4,15 +4,18 @@ Gyre's UI (themes, window manager, panes, keyboard) and the omp RPC commands, ev
 
 ## Design language (`packages/web/src/styles.css`)
 
-- **Themes** (Settings → General, the workspace-name menu, or `Theme:` in the palette; stored in `localStorage` `gyre.theme`). Every theme defines the same token set in `styles.css`; non-CSS consumers (xterm, graph minimap, shiki/mermaid/Monaco light or dark) read `lib/themes.tsx`. Fonts: Space Grotesk and JetBrains Mono.
+- **Themes** (Settings → General, the workspace-name menu, or `Theme:` in the palette; stored in `localStorage` `gyre.theme`). Themes come in light/dark pairs (`THEME_FAMILIES` in `lib/themes.tsx`); Settings and the workspace menu lay them out as a grid with one row per family and Light / Dark columns. Every theme defines the same token set in `styles.css`; non-CSS consumers (xterm, graph minimap, shiki/mermaid/Monaco light or dark) read `lib/themes.tsx`. Fonts: Space Grotesk and JetBrains Mono.
 
-  | Theme | Look | Title bars |
-  |---|---|---|
-  | **Graphite** (default) | ink-blue chrome, cool porcelain panes; cyan = working, orange = needs you, violet = plan | solid dark bar with a 3px stripe in the pane's colour |
-  | **Riso** | riso-blue chrome, off-white paper, pink and blue spot inks, square corners | flat spot colour with a black halftone, hard offset shadow when focused |
-  | **Phosphor** | dark green-black throughout; green = working, amber = needs you | dark bar, pane colour as text and rule, glow when focused |
-  | **Dune** | dark slate chrome around warm sand panes | gradient bar per pane kind |
-  | **Dusk** | Dune's dark variant | gradient bar per pane kind |
+  | Family | Theme | Look | Title bars |
+  |---|---|---|---|
+  | Graphite | **Graphite** (default, light) | ink-blue chrome, cool porcelain panes; cyan = working, orange = needs you, violet = plan | solid dark bar with a 3px stripe in the pane's colour |
+  | | **Carbon** (dark) | Graphite's chrome around deep slate panes | as Graphite |
+  | Riso | **Riso** (light) | riso-blue chrome, off-white paper, pink and blue spot inks, square corners | flat spot colour with a black halftone, hard offset shadow when focused |
+  | | **Blacklight** (dark) | deep riso-blue chrome, warm-black paper, fluorescent inks, off-white outlines | as Riso, with a pink offset shadow |
+  | Phosphor | **Greenbar** (light) | green-black chrome around pale green printer-paper panes | as Phosphor, on a light bar |
+  | | **Phosphor** (dark) | dark green-black throughout; green = working, amber = needs you | dark bar, pane colour as text and rule, glow when focused |
+  | Dune | **Dune** (light) | dark slate chrome around warm sand panes | gradient bar per pane kind |
+  | | **Dusk** (dark) | warm greys, teal accents | gradient bar per pane kind |
 
 - **Halftone**: every theme carries a dot texture on the chrome (top bar, gutters, hidden bar, phone tab strip), the title bars and the chat strip (`--halftone`, `--halftone-head`).
 - **The gyroscope** (`shell/Gyroscope.tsx`, `lib/gyro.ts`) is Gyre's mark: three gimbal rings on pivot pins around a rotor on its axle, drawn on a 2D canvas with its own small 3D projection and lighting (no WebGL). *Idle*: slow drift in the theme's metal. *Working* (any agent busy): the rotor spins up and the ring edges catch the working colour. *Needs you* (a pending dialog or plan review): the outer ring turns to face you in the alert colour and stops. One shared animation loop; off-screen instances are skipped, nothing runs while the page is hidden, and reduced-motion users get a still pose. The app icon and favicon are renders of the same mark (`packages/e2e/render-icon.ts`).

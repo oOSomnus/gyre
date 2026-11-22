@@ -29,4 +29,11 @@ describe("isPlanSubmitAbort", () => {
 		expect(check([msg(aborted())], {})).toBe(false);
 		expect(check([msg(call("submit_plan")), msg({ role: "assistant", stopReason: "error", content: [] })], { c1: result("c1", true) })).toBe(false);
 	});
+
+	test("does not reach back across a run boundary", () => {
+		const ok = { c1: result("c1", true) };
+		expect(check([msg(call("submit_plan")), msg(result("c1", true)), msg(aborted())], ok)).toBe(true);
+		expect(check([msg(call("submit_plan")), msg({ role: "user", content: "now do X" }), msg(aborted())], ok)).toBe(false);
+		expect(check([msg(call("submit_plan")), msg({ role: "custom", customType: "gyre-plan-reminder", display: false, content: "…" }), msg(aborted())], ok)).toBe(false);
+	});
 });

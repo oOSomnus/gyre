@@ -370,6 +370,12 @@ describe("plan mode", () => {
 		expect(h.lastState().error).toBeTruthy();
 		expect(h.userMessages).toEqual([]);
 		expect(h.activeTools).toContain(SUBMIT_TOOL);
+		// omp already switched sessions; a retry still checks and sends the reviewed plan.
+		h.setPrefs({ role: "default", context: "keep" });
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: h.lastState().revision }), h.ctx);
+		expect(h.lastState().error).toBeUndefined();
+		expect(h.userMessages.at(-1)).toContain("Plan approved.");
+		expect(h.userMessages.at(-1)).toContain("reviewed");
 	});
 
 	test("local plan content may contain example patch headers without granting nonlocal edits", async () => {

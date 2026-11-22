@@ -26,7 +26,10 @@ export function isPlanSubmitAbort(items: TranscriptItem[], index: number, toolRe
 	if (message.role !== "assistant" || message.stopReason !== "aborted" || hasVisibleContent(message)) return false;
 	for (let i = index - 1; i >= 0; i--) {
 		const previous = items[i];
-		if (previous?.kind !== "message" || previous.message.role !== "assistant") continue;
+		// Notices and events can sit between the submission and its abort; tool results belong to the call.
+		if (previous?.kind !== "message" || previous.message.role === "toolResult") continue;
+		// A user prompt or a custom message (feedback, reminder) starts a new run: stop there.
+		if (previous.message.role !== "assistant") return false;
 		const blocks = Array.isArray(previous.message.content) ? previous.message.content : [];
 		const call = blocks.filter((block): block is ToolCallBlock => block.type === "toolCall").at(-1);
 		if (call?.name !== SUBMIT_PLAN_TOOL) return false;

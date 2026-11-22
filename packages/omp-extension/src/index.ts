@@ -87,6 +87,8 @@ interface Runtime {
 	executionStarted: boolean;
 	/** Tool call id of a successful submit_plan whose run must stop once its result is recorded. */
 	pendingStop?: string;
+	/** Session file the reviewed revision was submitted from; a failed fresh approval may switch away from it. */
+	reviewSessionFile?: string;
 	/** Latest command context: needed for newSession() on "fresh" approval. */
 	commandCtx?: ExtensionCommandContext;
 	ctx?: ExtensionContext;
@@ -156,7 +158,15 @@ async function readPlan(ctx: ExtensionContext, planFilePath: string): Promise<st
 		}
 	}
 	// Fallback: local://name lives next to the session file.
-	const sessionFile = (ctx.sessionManager as { getSessionFile?: () => string | undefined }).getSessionFile?.();
+	return readLocalPlan(sessionFileOf(ctx), planFilePath);
+}
+
+function sessionFileOf(ctx: ExtensionContext): string | undefined {
+	return (ctx.sessionManager as { getSessionFile?: () => string | undefined }).getSessionFile?.();
+}
+
+/** Read `local://name` from a given session's artifact directory. */
+async function readLocalPlan(sessionFile: string | undefined, planFilePath: string): Promise<string | null> {
 	if (!isLocalUrl(planFilePath) || !sessionFile) return null;
 	const name = planFilePath.trim().slice("local://".length);
 	if (!name || name.includes("..")) return null;
@@ -292,7 +302,10 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 	async function approve(ctx: ExtensionContext, notes?: string): Promise<void> {
 		const planFilePath = rt.planFilePath;
 		if (!planFilePath) throw new Error("no plan was submitted");
-		const content = await readPlan(ctx, planFilePath);
+		// omp switches sessions before a fresh approval's setup runs, so a failed setup
+		// leaves us in the new session: read the reviewed file from the session it came from.
+		const reviewed = rt.reviewSessionFile;
+		const content = reviewed && reviewed !== sessionFileOf(ctx) ? await readLocalPlan(reviewed, planFilePath) : await readPlan(ctx, planFilePath);
 		if (content !== rt.planContent) throw new Error("The plan changed after submission. Submit it again for review before approval.");
 		if (!content?.trim()) throw new Error(`the plan file ${planFilePath} is empty or missing`);
 		const prefs = readPrefs();
@@ -334,6 +347,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		rt.executionStarted = false;
 		rt.planContent = content;
 		rt.reviewUrl = undefined;
+		rt.error = undefined;
 		publish(ctx);
 		await pi.sendUserMessage(planApprovedPrompt({ planFilePath, planContent: content, contextPreserved: context !== "fresh", notes }));
 	}
@@ -439,6 +453,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 			rt.planFilePath = plan;
 			rt.title = String(params.title ?? "").trim() || plan;
 			rt.planContent = content;
+			rt.reviewSessionFile = sessionFileOf(ctx);
 			rt.revision += 1;
 			rt.phase = "reviewing";
 			rt.reviewUrl = undefined;

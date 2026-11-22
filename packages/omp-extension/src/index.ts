@@ -165,6 +165,47 @@ function sessionFileOf(ctx: ExtensionContext): string | undefined {
 	return (ctx.sessionManager as { getSessionFile?: () => string | undefined }).getSessionFile?.();
 }
 
+type LocalRootOptions = { getArtifactsDir?: () => string | null; getSessionId?: () => string | null };
+
+/** The file name inside a session's local:// root; rejects paths that would escape it. */
+export function localPlanName(planFilePath: string): string {
+	const name = planFilePath.trim().slice("local://".length);
+	if (!isLocalUrl(planFilePath) || !name || name.includes("..") || name.includes("\\")) throw new Error(`Invalid local plan path: ${planFilePath}`);
+	return name;
+}
+
+/** Where omp resolves `local://` for a session (omp's own resolver, so Windows short roots match). */
+async function localRootFor(options: LocalRootOptions): Promise<string> {
+	try {
+		const { resolveLocalRoot } = await import("@oh-my-pi/pi-coding-agent/internal-urls/local-root");
+		return resolveLocalRoot(options);
+	} catch (error) {
+		if (!(error instanceof Error) || !/Cannot find module|not found/i.test(error.message)) throw error;
+	}
+	const artifacts = options.getArtifactsDir?.();
+	if (!artifacts) throw new Error("The session has no artifact directory for the approved plan.");
+	return `${artifacts}/local`;
+}
+
+function sessionLocalOptions(ctx: ExtensionContext): LocalRootOptions {
+	if (ctx.localProtocolOptions) return ctx.localProtocolOptions;
+	const manager = ctx.sessionManager as { getArtifactsDir?: () => string | null; getSessionId?: () => string | null };
+	return { getArtifactsDir: () => manager.getArtifactsDir?.() ?? null, getSessionId: () => manager.getSessionId?.() ?? null };
+}
+
+/**
+ * Make `local://<name>` resolve to the approved plan in the current session. The approval
+ * prompt advertises that path for subagent handoff and recovery, and approval can run in a
+ * different session than the one the plan was written in (fresh context, or a retry after a
+ * failed fresh setup).
+ */
+async function ensurePlanInSession(options: LocalRootOptions, planFilePath: string, content: string): Promise<void> {
+	const name = localPlanName(planFilePath);
+	const file = Bun.file(`${await localRootFor(options)}/${name}`);
+	if ((await file.exists()) && (await file.text()) === content) return;
+	await Bun.write(file, content);
+}
+
 /** Read `local://name` from a given session's artifact directory. */
 async function readLocalPlan(sessionFile: string | undefined, planFilePath: string): Promise<string | null> {
 	if (!isLocalUrl(planFilePath) || !sessionFile) return null;
@@ -325,11 +366,8 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 				const result = await commandCtx
 					.newSession({
 						setup: async manager => {
-							const artifacts = manager.getArtifactsDir();
-							if (!artifacts) throw new Error("The new session has no artifact directory for the approved plan.");
-							const name = planFilePath.slice("local://".length);
-							if (!name || name.includes("..") || name.includes("\\")) throw new Error("Invalid local plan path");
-							await Bun.write(`${artifacts}/local/${name}`, content);
+							if (!manager.getArtifactsDir()) throw new Error("The new session has no artifact directory for the approved plan.");
+							await ensurePlanInSession({ getArtifactsDir: () => manager.getArtifactsDir(), getSessionId: () => manager.getSessionId() }, planFilePath, content);
 						},
 					});
 				if (result.cancelled) context = "compact";
@@ -342,6 +380,9 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 				notify(ctx, `Compaction skipped: ${error instanceof Error ? error.message : String(error)}`, "info");
 			});
 		}
+
+		// Whatever session we ended up in, the advertised local:// path must hold the reviewed plan.
+		await ensurePlanInSession(sessionLocalOptions(ctx), planFilePath, content);
 
 		rt.phase = "executing";
 		rt.executionStarted = false;

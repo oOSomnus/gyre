@@ -42,7 +42,7 @@ function makeHarness(opts: { plannotator?: boolean } = {}) {
 		cwd: dir,
 		agent: { kind: "main", id: "Main" },
 		localProtocolOptions: undefined,
-		sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "s1" },
+		sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => "s1", getArtifactsDir: () => sessionFile.replace(/\.jsonl$/, "") },
 		get model() {
 			return current;
 		},
@@ -60,7 +60,7 @@ function makeHarness(opts: { plannotator?: boolean } = {}) {
 		newSession: async (options?: { setup?: (manager: { getArtifactsDir(): string }) => Promise<void> }) => {
 			calls.push("newSession");
 			sessionFile = join(dir, "fresh.jsonl");
-			await options?.setup?.({ getArtifactsDir: () => join(dir, "fresh") });
+			await options?.setup?.({ getArtifactsDir: () => join(dir, "fresh"), getSessionId: () => "s2" } as any);
 			return { cancelled: false };
 		},
 	};
@@ -370,12 +370,30 @@ describe("plan mode", () => {
 		expect(h.lastState().error).toBeTruthy();
 		expect(h.userMessages).toEqual([]);
 		expect(h.activeTools).toContain(SUBMIT_TOOL);
-		// omp already switched sessions; a retry still checks and sends the reviewed plan.
+		// While the new session cannot hold the plan, a keep retry fails rather than advertising a dead path.
 		h.setPrefs({ role: "default", context: "keep" });
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: h.lastState().revision }), h.ctx);
+		expect(h.lastState().phase).toBe("reviewing");
+		expect(h.userMessages).toEqual([]);
+		// omp already switched sessions; once it is writable, a retry copies and sends the reviewed plan.
+		rmSync(join(h.dir, "fresh"));
 		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: h.lastState().revision }), h.ctx);
 		expect(h.lastState().error).toBeUndefined();
 		expect(h.userMessages.at(-1)).toContain("Plan approved.");
 		expect(h.userMessages.at(-1)).toContain("reviewed");
+		expect(readFileSync(join(h.dir, "fresh/local/x-plan.md"), "utf8")).toBe("reviewed");
+	});
+
+	test("keep approval after a session switch copies the reviewed plan into the current session", async () => {
+		h.setPrefs({ role: "default", context: "keep" });
+		await h.commands.get("plan")?.("", h.ctx);
+		h.writePlan("x-plan.md", "reviewed");
+		await h.submit("local://x-plan.md");
+		// Simulate omp having moved to another session (e.g. a failed fresh setup) before the decision.
+		await h.ctx.newSession();
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: h.lastState().revision }), h.ctx);
+		expect(h.userMessages.at(-1)).toContain("local://x-plan.md");
+		expect(readFileSync(join(h.dir, "fresh/local/x-plan.md"), "utf8")).toBe("reviewed");
 	});
 
 	test("local plan content may contain example patch headers without granting nonlocal edits", async () => {

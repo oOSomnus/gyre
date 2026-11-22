@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 
@@ -6,6 +6,16 @@ import { delimiter, dirname, join } from "node:path";
 type Env = Record<string, string | undefined>;
 
 const bunBin = (env: Env, home: string) => join(env.BUN_INSTALL ?? join(home, ".bun"), "bin");
+
+/** True for a file the current user may execute, which is what `env` needs. */
+export function isExecutable(path: string): boolean {
+	try {
+		accessSync(path, constants.X_OK);
+		return statSync(path).isFile();
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Find omp. Desktop launchers often start apps without the user's shell PATH,
@@ -20,12 +30,12 @@ export function resolveOmp(env: Env = process.env, home = homedir(), exists: (pa
 
 /**
  * omp is a Bun script (`#!/usr/bin/env bun`), so `bun` must be on PATH whenever
- * omp runs. Returns PATH with bun's folder in front when PATH lacks it (same
- * desktop-launcher case as above), or PATH unchanged.
+ * omp runs. Returns PATH with bun's folder in front when PATH lacks a runnable
+ * bun (same desktop-launcher case as above), or PATH unchanged.
  */
-export function pathWithBun(env: Env, ompPath: string | undefined, home = homedir(), exists: (path: string) => boolean = existsSync): string | undefined {
+export function pathWithBun(env: Env, ompPath: string | undefined, home = homedir(), runnable: (path: string) => boolean = isExecutable): string | undefined {
 	const dirs = (env.PATH ?? "").split(delimiter).filter(Boolean);
-	if (dirs.some(dir => exists(join(dir, "bun")))) return env.PATH;
-	const dir = [ompPath && dirname(ompPath), bunBin(env, home)].find(d => d && exists(join(d, "bun")));
+	if (dirs.some(dir => runnable(join(dir, "bun")))) return env.PATH;
+	const dir = [ompPath && dirname(ompPath), bunBin(env, home)].find(d => d && runnable(join(d, "bun")));
 	return dir ? [dir, ...dirs].join(delimiter) : env.PATH;
 }

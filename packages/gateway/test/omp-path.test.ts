@@ -1,6 +1,9 @@
 /** Finding omp, and keeping bun on PATH so omp's `#!/usr/bin/env bun` works. */
-import { describe, expect, test } from "bun:test";
-import { pathWithBun, resolveOmp } from "../src/omp-path";
+import { afterAll, describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { isExecutable, pathWithBun, resolveOmp } from "../src/omp-path";
 
 const home = "/home/u";
 const existing = (...paths: string[]) => (p: string) => paths.includes(p);
@@ -35,5 +38,33 @@ describe("pathWithBun", () => {
 	test("returns PATH unchanged when bun is nowhere", () => {
 		expect(pathWithBun({ PATH: "/usr/bin" }, "/usr/local/bin/omp", home, existing())).toBe("/usr/bin");
 		expect(pathWithBun({}, undefined, home, existing())).toBeUndefined();
+	});
+
+	describe("only counts a bun that can run", () => {
+		const root = mkdtempSync(join(tmpdir(), "gyre-omp-path-"));
+		afterAll(() => rmSync(root, { recursive: true, force: true }));
+		const bunIn = (dir: string, mode: number) => {
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "bun"), "#!/bin/sh\n");
+			chmodSync(join(dir, "bun"), mode);
+			return dir;
+		};
+		const onPath = bunIn(join(root, "path"), 0o644);
+		const bunHome = bunIn(join(root, "home/.bun/bin"), 0o755);
+
+		test("isExecutable rejects non-executable files and folders", () => {
+			expect(isExecutable(join(onPath, "bun"))).toBe(false);
+			expect(isExecutable(join(bunHome, "bun"))).toBe(true);
+			expect(isExecutable(bunHome)).toBe(false);
+		});
+
+		test("adds the fallback folder when the bun on PATH is not executable", () => {
+			expect(pathWithBun({ PATH: onPath }, undefined, join(root, "home"))).toBe(`${bunHome}:${onPath}`);
+		});
+
+		test("keeps PATH when it already has a runnable bun", () => {
+			const runnablePath = bunIn(join(root, "runnable"), 0o755);
+			expect(pathWithBun({ PATH: `${onPath}:${runnablePath}` }, undefined, join(root, "home"))).toBe(`${onPath}:${runnablePath}`);
+		});
 	});
 });

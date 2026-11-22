@@ -54,7 +54,7 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
   - `rpc{chatId, command}`, which forwards **any** omp command
   - `ui_response{chatId, response}`
   - `subscribe`, `close_chat`
-  - `pty_open{reqId, key?}`, `pty_input`, `pty_resize`, `pty_detach{ptyId, attachmentId}`, `pty_close`, `pty_close_key{projectId, key}`. Open results include an attachment ID, so a delayed detach cannot release a newer attachment on the same socket.
+  - `pty_open{reqId, key?}`, `pty_input`, `pty_resize`, `pty_detach{ptyId, attachmentId}`, `pty_close`, `pty_close_key{projectId, key}`. The open result's attachment ID is that open request's `reqId`, and a detach only releases the attachment whose ID it names. A delayed detach therefore cannot release a newer attachment on the same socket, provided the client never reuses a `reqId` on that socket; the gateway does not enforce unique IDs.
 - **Gateway → client:**
   - `welcome`
   - `result{reqId, ok, data|error, code}`

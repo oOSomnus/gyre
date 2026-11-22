@@ -35,6 +35,7 @@ function makeHarness(opts: { plannotator?: boolean } = {}) {
 	const customMessages: any[] = [];
 	const notices: string[] = [];
 	const calls: string[] = [];
+	let plannotatorRequests = 0;
 
 	const ctx: any = {
 		hasUI: true,
@@ -49,6 +50,9 @@ function makeHarness(opts: { plannotator?: boolean } = {}) {
 		ui: {
 			setWidget: (key: string, lines: string[] | undefined) => key === PLAN_WIDGET_KEY && widgets.push(lines),
 			notify: (message: string) => notices.push(message),
+		},
+		abort: () => {
+			calls.push("abort");
 		},
 		compact: async () => {
 			calls.push("compact");
@@ -71,6 +75,7 @@ function makeHarness(opts: { plannotator?: boolean } = {}) {
 				return () => {};
 			},
 			emit: (channel: string, data: any) => {
+				if (channel === "plannotator:request") plannotatorRequests += 1;
 				if (channel === "plannotator:request" && opts.plannotator) {
 					data.respond({ status: "handled", result: { status: "pending", reviewId: "rv1" } });
 					for (const h of busHandlers.get("plannotator:session-opened") ?? []) {
@@ -114,7 +119,8 @@ function makeHarness(opts: { plannotator?: boolean } = {}) {
 		return lines ? JSON.parse(lines[0] ?? "{}") : { phase: "idle" };
 	};
 	const writePlan = (name: string, text: string) => writeFileSync(join(localDir, name), text);
-	const submit = (plan: string, title = "T") => tools.get(SUBMIT_TOOL).execute("c1", { plan, title }, undefined, undefined, ctx);
+	const submit = (plan: string, title = "T", id = "c1") => tools.get(SUBMIT_TOOL).execute(id, { plan, title }, undefined, undefined, ctx);
+	const toolEnd = (toolCallId: string, isError = false) => emit("tool_execution_end", { toolName: SUBMIT_TOOL, toolCallId, isError, result: {} });
 	const setPrefs = (prefs: object) => {
 		writeFileSync(prefsFile, JSON.stringify(prefs));
 		process.env.GYRE_PLAN_PREFS = prefsFile;
@@ -130,11 +136,15 @@ function makeHarness(opts: { plannotator?: boolean } = {}) {
 		lastState,
 		writePlan,
 		submit,
+		toolEnd,
 		setPrefs,
 		userMessages,
 		customMessages,
 		notices,
 		calls,
+		get plannotatorRequests() {
+			return plannotatorRequests;
+		},
 		get activeTools() {
 			return activeTools;
 		},
@@ -240,6 +250,49 @@ describe("plan mode", () => {
 		expect(state.planContent).toContain("step");
 		expect(state.revision).toBe(1);
 		expect(state.reviewUrl).toBeUndefined();
+	});
+
+	test("a successful submit_plan ends the run once its result is recorded", async () => {
+		await h.commands.get("plan")?.("", h.ctx);
+		await h.emit("agent_start");
+		h.writePlan("x-plan.md", "# Plan");
+		await h.submit("local://x-plan.md", "X", "call-1");
+		expect(h.calls).toEqual([]);
+		await h.toolEnd("call-1");
+		expect(h.calls).toEqual(["abort"]);
+		// A replayed end event does not abort again.
+		await h.toolEnd("call-1");
+		expect(h.calls).toEqual(["abort"]);
+		expect(h.lastState().phase).toBe("reviewing");
+		expect(h.lastState().revision).toBe(1);
+		await h.emit("agent_end");
+		expect(h.customMessages).toHaveLength(0);
+	});
+
+	test("a failed submit_plan does not end the run", async () => {
+		await h.commands.get("plan")?.("", h.ctx);
+		await h.submit("local://missing-plan.md", "X", "call-1");
+		await h.toolEnd("call-1");
+		await h.toolEnd("call-1", true);
+		expect(h.calls).toEqual([]);
+		expect(h.lastState().phase).toBe("planning");
+	});
+
+	test("an unchanged resubmission keeps the open review; a changed plan becomes a new revision", async () => {
+		await h.commands.get("plan")?.("", h.ctx);
+		h.writePlan("x-plan.md", "v1");
+		await h.submit("local://x-plan.md", "X", "call-1");
+		const again = await h.submit("local://x-plan.md", "X", "call-2");
+		expect(again.details).toMatchObject({ ok: true, duplicate: true, revision: 1 });
+		expect(h.lastState().revision).toBe(1);
+		expect(h.plannotatorRequests).toBe(1);
+		await h.toolEnd("call-2");
+		expect(h.calls).toEqual(["abort"]);
+		h.writePlan("x-plan.md", "v2");
+		const changed = await h.submit("local://x-plan.md", "X", "call-3");
+		expect(changed.details.duplicate).toBeUndefined();
+		expect(h.lastState().revision).toBe(2);
+		expect(h.plannotatorRequests).toBe(2);
 	});
 
 	test("refine sends feedback and returns to planning; resubmission bumps the revision", async () => {

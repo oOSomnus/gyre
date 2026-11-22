@@ -9,6 +9,7 @@ import { AssistantMessage, CommandOutputCard, EventRow, GenericMessage, NoticeCa
 import { ChatStrip } from "./ChatStrip";
 import { Composer } from "./Composer";
 import { DialogCard } from "./DialogCard";
+import { isPlanSubmitAbort } from "./planAbort";
 import { Gyroscope } from "../shell/Gyroscope";
 
 const opening = new Set<string>();
@@ -106,7 +107,7 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 					{chat.info.status === "ready" && chat.historyLoaded && !visibleItems.some(i => i.kind === "message" || i.kind === "command_output") && (
 						<EmptyChat chatId={pane.id} />
 					)}
-					{visibleItems.map(item => {
+					{visibleItems.map((item, index) => {
 						switch (item.kind) {
 							case "message": {
 								const m = item.message;
@@ -120,6 +121,7 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 											toolExec={chat.toolExec}
 											toolResults={chat.toolResults}
 											chatId={pane.id}
+											hideAbort={isPlanSubmitAbort(visibleItems, index, chat.toolResults)}
 										/>
 									);
 								return <GenericMessage key={item.key} message={m} />;

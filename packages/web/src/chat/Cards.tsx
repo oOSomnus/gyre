@@ -195,16 +195,20 @@ export const AssistantMessage = memo(function AssistantMessage({
 	toolExec,
 	toolResults,
 	chatId,
+	hideAbort,
 }: {
 	message: AgentMessage;
 	streaming: boolean;
 	toolExec: Record<string, ToolExecution>;
 	toolResults: Record<string, AgentMessage>;
 	chatId?: string;
+	/** The abort is internal control flow (e.g. the run ended after submit_plan): no "Turn aborted" card. */
+	hideAbort?: boolean;
 }) {
 	const blocks = (Array.isArray(message.content) ? message.content : []) as ContentBlock[];
 	const fullText = textOf(message.content);
-	const failed = message.stopReason === "error" || message.stopReason === "aborted";
+	const failed = message.stopReason === "error" || (message.stopReason === "aborted" && !hideAbort);
+	if (hideAbort && !failed && blocks.length === 0 && !streaming) return null;
 	const firstTextIndex = blocks.findIndex(b => b.type === "text" && (b as { text: string }).text.trim());
 	return (
 		<div className="space-y-2.5">

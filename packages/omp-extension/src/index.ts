@@ -85,6 +85,8 @@ interface Runtime {
 	busy: boolean;
 	/** The approved plan's run has started (executing → idle at its end). */
 	executionStarted: boolean;
+	/** Tool call id of a successful submit_plan whose run must stop once its result is recorded. */
+	pendingStop?: string;
 	/** Latest command context: needed for newSession() on "fresh" approval. */
 	commandCtx?: ExtensionCommandContext;
 	ctx?: ExtensionContext;
@@ -405,7 +407,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		defaultInactive: true,
 		loadMode: "essential",
 		approval: "read",
-		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, rawParams, _signal, _onUpdate, ctx) {
 			const params = rawParams as { plan?: string; title?: string };
 			rt.ctx = ctx;
 			rt.decided = true;
@@ -420,6 +422,20 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 			if (!content?.trim()) {
 				return { content: [{ type: "text", text: `${plan} is missing or empty. Write the plan there first.` }], details: { ok: false } };
 			}
+			if (rt.phase === "reviewing" && plan === rt.planFilePath && content === rt.planContent) {
+				// Unchanged resubmission: keep the open review instead of starting another one.
+				rt.pendingStop = toolCallId;
+				const title = rt.title ?? plan;
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Plan "${title}" (revision ${rt.revision}) is already awaiting review. End your turn now; the user's decision arrives as the next message.`,
+						},
+					],
+					details: { ok: true, duplicate: true, planFilePath: plan, title, revision: rt.revision },
+				};
+			}
 			rt.planFilePath = plan;
 			rt.title = String(params.title ?? "").trim() || plan;
 			rt.planContent = content;
@@ -428,6 +444,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 			rt.reviewUrl = undefined;
 			rt.reviewId = undefined;
 			rt.error = undefined;
+			rt.pendingStop = toolCallId;
 			publish(ctx);
 			void requestPlannotatorReview(ctx);
 			return {
@@ -484,10 +501,26 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		}
 	});
 
+	// A submitted plan ends the run, as omp's own TUI does: the model otherwise reads
+	// "submitted" and keeps revising and resubmitting in a loop. Abort only after the
+	// tool result is recorded, so the transcript keeps the submission.
+	pi.on("tool_execution_end", (event, ctx) => {
+		if (!isMain(ctx) || event.toolName !== SUBMIT_TOOL || event.isError) return;
+		if (rt.pendingStop === undefined || event.toolCallId !== rt.pendingStop) return;
+		rt.pendingStop = undefined;
+		if (rt.phase !== "reviewing") return;
+		try {
+			ctx.abort();
+		} catch (error) {
+			pi.logger.warn("gyre plan: could not end the run after submit_plan", { error: String(error) });
+		}
+	});
+
 	pi.on("agent_start", (_event, ctx) => {
 		if (!isMain(ctx)) return;
 		rt.ctx = ctx;
 		rt.decided = false;
+		rt.pendingStop = undefined;
 		if (rt.phase === "executing") rt.executionStarted = true;
 	});
 

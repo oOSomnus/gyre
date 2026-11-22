@@ -7,6 +7,7 @@
 import type { PaneSpec } from "@gyre/protocol";
 import { Bot, Copy, FilePlus2, Save, Send, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createDraftStore, type Draft, DraftConflictError, type Drafts } from "../lib/agent-drafts";
 import { api, apiWithEtag, GatewayError } from "../lib/gateway";
 import { useRoles } from "../lib/roles";
 import { useRoutingStore } from "../lib/config-map";
@@ -23,18 +24,23 @@ interface AgentFile {
 	shadowed?: boolean;
 }
 
-interface Draft {
-	name: string;
-	description: string;
-	scope: "user" | "project";
-	model: string;
-	thinking: string;
-	tools: string[] | null;
-	spawns: string;
-	instructions: string;
-	previousName?: string;
-	savedAt?: number;
-}
+const DRAFTS_URL = "/api/kv/ui.agentDrafts";
+/** Shared draft record; every write is conditional on the version read (`If-Match`). */
+const draftStore = createDraftStore({
+	async read() {
+		const { body, etag } = await apiWithEtag<Drafts | null>(DRAFTS_URL);
+		return { body, etag: etag ?? '"absent"' };
+	},
+	async write(body, etag) {
+		try {
+			await api(DRAFTS_URL, { method: "PUT", body: JSON.stringify(body), headers: { "if-match": etag } });
+			return true;
+		} catch (error) {
+			if (error instanceof GatewayError && error.status === 412) return false;
+			throw error;
+		}
+	},
+});
 
 const THINKING = ["", "off", "minimal", "low", "medium", "high", "xhigh"];
 
@@ -86,7 +92,7 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 	const [agents, setAgents] = useState<AgentFile[]>([]);
 	const [selected, setSelected] = useState<string | null>(null);
 	const [draft, setDraft] = useState<Draft>(EMPTY);
-	const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+	const [drafts, setDrafts] = useState<Drafts>({});
 	const overrides = useRoutingStore(s => s.assignments);
 	const [tools, setTools] = useState<ToolInfo[]>(FALLBACK_TOOLS);
 	const [message, setMessage] = useState<string | null>(null);
@@ -99,14 +105,12 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 		const request = ++reloadGeneration.current;
 		const [list, saved] = await Promise.all([
 			api<AgentFile[]>(`/api/agents${projectId ? `?projectId=${projectId}` : ""}`),
-			api<Record<string, Draft> | null>("/api/kv/ui.agentDrafts"),
+			draftStore.load(),
 			useRoutingStore.getState().load(),
 		]);
 		if (request !== reloadGeneration.current) return;
 		setAgents(list);
-		const restored = { ...saved };
-		if (restored.new?.scope === "user" && !restored["new:user"]) restored["new:user"] = restored.new;
-		setDrafts(restored);
+		setDrafts(saved);
 		setLoaded(true);
 		// Shared routing store was loaded above.
 	};
@@ -148,32 +152,20 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 	};
 
 	const saveDraft = async () => {
+		const epoch = editorEpoch.current;
 		const key = draftKey();
-		const next = { ...drafts, [key]: { ...draft, savedAt: Date.now() } };
-		await api("/api/kv/ui.agentDrafts", { method: "PUT", body: JSON.stringify(next) });
-		setDrafts(next);
-		setMessage("Draft saved (not yet visible to omp).");
+		try {
+			const { drafts: next } = await draftStore.save(key, draft, drafts[key]?.savedAt);
+			setDrafts(next);
+			if (epoch === editorEpoch.current) setMessage("Draft saved (not yet visible to omp).");
+		} catch (error) {
+			// Adopt the newer stored version as the base, so saving again replaces it on purpose.
+			if (error instanceof DraftConflictError) setDrafts(error.drafts);
+			if (epoch === editorEpoch.current) setMessage((error as Error).message);
+		}
 	};
 
-	/**
-	 * Remove the published draft, unless a newer one was saved while publishing. The write is
-	 * conditional on the version read (`If-Match`), so a draft saved in between is never lost;
-	 * `removed: false` means the stored draft was newer and was kept.
-	 */
-	const cleanDraft = async (key: string, expectedSavedAt: number | undefined): Promise<{ removed: boolean; drafts: Record<string, Draft> }> => {
-		const { body: latest, etag } = await apiWithEtag<Record<string, Draft> | null>("/api/kv/ui.agentDrafts");
-		const next = { ...latest };
-		if (!next[key]) return { removed: true, drafts: next };
-		if (next[key].savedAt !== expectedSavedAt) return { removed: false, drafts: next };
-		delete next[key];
-		try {
-			await api("/api/kv/ui.agentDrafts", { method: "PUT", body: JSON.stringify(next), headers: etag ? { "if-match": etag } : {} });
-		} catch (error) {
-			if (!(error instanceof GatewayError) || error.status !== 412) throw error;
-			return { removed: false, drafts: { ...(await api<Record<string, Draft> | null>("/api/kv/ui.agentDrafts")) } };
-		}
-		return { removed: true, drafts: next };
-	};
+	const cleanDraft = (key: string, publishedSavedAt: number | undefined) => draftStore.removePublished(key, publishedSavedAt);
 	const KEPT_NEWER = "Published; kept the newer draft saved meanwhile.";
 	const retryCleanup = async () => {
 		if (!cleanupKey) return;

@@ -31,6 +31,7 @@ Then run `gyre`. For the web version it starts the server and opens your browser
 | Flag | Effect |
 |---|---|
 | `--web`, `--desktop` | What to install (default: ask) |
+| `--deb`, `--appimage` | How to install the desktop app (default: ask; AppImage without a terminal) |
 | `--install-omp`, `--no-omp` | Install omp if missing without asking, or skip the omp step |
 | `--with-plannotator`, `--no-plannotator` | Install Plannotator without asking, or skip it |
 | `--version vX.Y.Z` | A specific release instead of the latest |
@@ -38,6 +39,15 @@ Then run `gyre`. For the web version it starts the server and opens your browser
 | `--uninstall` | Remove what the installer added; keeps your data in `~/.gyre` |
 
 The `gyre` command and the AppImage go to `~/.local/bin`, and the web version to `~/.local/share/gyre` (override with `GYRE_BIN_DIR`, `GYRE_INSTALL_DIR`). Gyre's data (projects, workspaces) lives in `~/.gyre`.
+
+### Updating
+
+```bash
+gyre update                    # the latest release
+gyre update --version v0.2.0   # a specific release
+```
+
+`gyre update` downloads the current installer and reinstalls Gyre the way you installed it: the web version or the desktop app (`.deb` or AppImage), in the same folders. It stops if you already have the latest release. If omp doesn't match the version the new release is tested with, it offers to update omp. It doesn't ask about Plannotator again. Restart Gyre afterwards if it was running. Installs made before `gyre update` existed don't have it yet; re-run the install command above once to get it.
 
 ### Installing omp manually
 

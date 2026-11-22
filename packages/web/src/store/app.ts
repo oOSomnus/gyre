@@ -272,7 +272,10 @@ async function flushWorkspace(id: string): Promise<void> {
 							useApp.setState(state => {
 								const local = state.workspaces.find(ws => ws.id === id);
 								const saved = fresh.find(ws => ws.id === id);
-								for (const pane of Object.values(local?.panes ?? {})) if (!saved?.panes[pane.id]) closePaneResources(pane);
+								// Close only panes no workspace holds any more (a pane may have moved to another one).
+								const stillHeld = (paneId: string) =>
+									fresh.some(ws => ws.panes[paneId]) || state.workspaces.some(ws => ws.id !== id && ws.panes[paneId]);
+								for (const pane of Object.values(local?.panes ?? {})) if (!saved?.panes[pane.id] && !stillHeld(pane.id)) closePaneResources(pane);
 								const workspaces = state.workspaces.flatMap(ws => (ws.id === id ? fresh.filter(ws => ws.id === id).map(normalize) : [ws]));
 								return {
 									workspaces,

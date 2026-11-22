@@ -20,6 +20,8 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 	const [ptys, setPtys] = useState<PtyInfo[]>([]);
 	const [loaded, setLoaded] = useState(false);
 	const pollGeneration = useRef(0);
+	const polling = useRef(false);
+	const rerun = useRef(false);
 	const reload = useRef<() => void>(() => {});
 	const [error, setError] = useState<string | null>(null);
 	const [actionError, setActionError] = useState<string | null>(null);
@@ -38,6 +40,12 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 	useEffect(() => {
 		let live = true;
 		const load = async () => {
+			// One poll at a time: an action that lands mid-poll queues a fresh read instead.
+			if (polling.current) {
+				rerun.current = true;
+				return;
+			}
+			polling.current = true;
 			const request = ++pollGeneration.current;
 			try {
 				const [c, p] = await Promise.all([api<ChatInfo[]>("/api/chats"), api<PtyInfo[]>("/api/ptys")]);
@@ -49,11 +57,20 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 				}
 			} catch (e) {
 				if (live && request === pollGeneration.current) setError(String((e as Error).message));
+			} finally {
+				polling.current = false;
+				if (live && rerun.current) {
+					rerun.current = false;
+					void load();
+				}
 			}
 		};
 		reload.current = () => void load();
 		void load();
-		const timer = setInterval(load, 2000);
+		// Interval ticks skip while a poll is pending, so a slow poll can still land.
+		const timer = setInterval(() => {
+			if (!polling.current) void load();
+		}, 2000);
 		return () => {
 			live = false;
 			clearInterval(timer);

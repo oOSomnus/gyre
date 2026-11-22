@@ -67,6 +67,8 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 		if (!chatId) return;
 		const generation = ++prefGeneration.current;
 		setPrefsLoaded(false);
+		// A save for the previous context can no longer clear this flag (its generation is stale).
+		setSavingPrefs(false);
 		setError(null);
 		void api<PlanPrefs>(`/api/chats/${encodeURIComponent(chatId)}/plan-prefs`)
 			.then(value => {

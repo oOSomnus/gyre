@@ -77,6 +77,8 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 	const publishing = useRef(false);
 	const [pendingPublish, setPendingPublish] = useState(false);
 	const [cleanupKey, setCleanupKey] = useState<string | null>(null);
+	/** `savedAt` of the stored draft that the pending cleanup may remove. */
+	const cleanupVersion = useRef<number | undefined>(undefined);
 	useEffect(() => () => {
 		editorEpoch.current++;
 	}, []);
@@ -153,9 +155,11 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 		setMessage("Draft saved (not yet visible to omp).");
 	};
 
-	const cleanDraft = async (key: string) => {
+	/** Remove the published draft, unless a newer one was saved while publishing. */
+	const cleanDraft = async (key: string, expectedSavedAt: number | undefined) => {
 		const latest = await api<Record<string, Draft> | null>("/api/kv/ui.agentDrafts");
 		const next = { ...latest };
+		if (next[key] && next[key].savedAt !== expectedSavedAt) return next;
 		delete next[key];
 		await api("/api/kv/ui.agentDrafts", { method: "PUT", body: JSON.stringify(next) });
 		return next;
@@ -164,7 +168,7 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 		if (!cleanupKey) return;
 		const epoch = editorEpoch.current;
 		try {
-			const next = await cleanDraft(cleanupKey);
+			const next = await cleanDraft(cleanupKey, cleanupVersion.current);
 			if (epoch !== editorEpoch.current) return;
 			setDrafts(next);
 			setCleanupKey(null);
@@ -180,6 +184,7 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 		const epoch = editorEpoch.current;
 		const ownsEditor = () => epoch === editorEpoch.current;
 		const savedDraftKey = draftKey();
+		const publishedVersion = drafts[savedDraftKey]?.savedAt;
 		setMessage(null);
 		const frontmatter: Record<string, unknown> = {
 			description: draft.description,
@@ -213,10 +218,11 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 				setDraft(d => ({ ...d, previousName: draft.name }));
 			}
 			try {
-				const next = await cleanDraft(savedDraftKey);
+				const next = await cleanDraft(savedDraftKey, publishedVersion);
 				if (ownsEditor()) setDrafts(next);
 			} catch (error) {
 				if (ownsEditor()) {
+					cleanupVersion.current = publishedVersion;
 					setCleanupKey(savedDraftKey);
 					setMessage(`Published; draft cleanup failed: ${(error as Error).message}`);
 				}

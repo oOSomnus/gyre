@@ -1838,6 +1838,10 @@ button.gy-gyro {
 	color: var(--frame-b);
 	border-bottom: 1px solid color-mix(in srgb, var(--frame-b) 55%, transparent);
 }
+/* greenbar's bar is light: deepen the pane colour so title text stays >= 4.5:1; the rule and glow keep the raw colour */
+[data-theme="greenbar"] .gy-frame-head {
+	color: color-mix(in srgb, var(--frame-b) 60%, var(--title-text));
+}
 :is([data-theme="graphite"], [data-theme="carbon"], [data-theme="riso"], [data-theme="blacklight"], [data-theme="greenbar"], [data-theme="phosphor"]) .gy-frame-title {
 	text-shadow: none;
 }

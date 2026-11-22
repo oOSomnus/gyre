@@ -65,6 +65,9 @@ Legend: `cmd` RPC command, `evt` event frame, `ui` `extension_ui_request` method
 | TUI-only omp commands (`/clear`, `/new`, `/resume`, `/model`, `/settings`) | `chat/localCommands.ts` (composer and palette) | `cmd new_session` (`/clear` links the old session as parent), Sessions pane, model picker, Settings pane. omp's own version wins if it ever advertises one over RPC |
 | Terminal, Send to AI | `panes/TerminalPane.tsx` | `gw` PTY (`pty_open {key}`, `pty_detach`, `pty_close`) |
 | Files, sessions, settings/providers, raw events | `FilePane`, `SessionsPane`, `SettingsPane`, `EventsPane` | as in v0.1 |
+| omp setup guidance (omp missing / no provider) | `shell/OmpSetup.tsx` in dead chat panes, the empty workspace, the phone layout and Settings → Providers; TopBar "Add a provider" chip | `gw` `ompStatus` from `/api/health` and `welcome`; Re-check: `gw` `POST /api/omp/recheck`, then restarts dead chat panes |
+| Add project (folder browser) | `projects/AddProjectDialog.tsx`: path field, breadcrumbs, filterable folder list with git badges, hidden toggle, keyboard (↑↓ Enter Backspace) | `gw` `GET /api/fs/browse`, `POST /api/projects` |
+| Manage projects | Settings → Projects (also TopBar New menu and palette "Manage projects…"): rename, new chat, remove with a confirmation listing what stops | `gw` `PATCH/DELETE /api/projects/:id`, `/api/projects/:id/usage`; removal closes the project's panes in every workspace |
 
 ## Plan mode
 

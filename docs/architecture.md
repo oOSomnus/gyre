@@ -40,7 +40,11 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
   - Endpoints added in v0.2: `/api/omp/config` (allowlisted `omp config` keys), `/api/omp/skills`, `/api/agents`, `/api/mcp`, `/api/chats/:id/{restart,kill,plan-prefs}`, `/api/projects/:id/restart-chats`, `/api/ptys`, `/api/fs/stat`, `/api/kv/ui.*`, `/api/remote`.
   - `PATCH /api/omp/config` edits one `{key, name, value}` assignment in `modelRoles` or `task.agentModelOverrides`; `null` removes it. The gateway serializes config mutations and merges against the latest saved map.
   - Workspace saves compare revisions and return `409` on conflict. Deleted workspace IDs remain tombstoned; a new workspace must use a new ID.
+  - `/api/kv/ui.*` GET returns an `ETag` (a hash of the stored JSON, or `"absent"`). A PUT with `If-Match` writes only if the record still has that version, atomically in one sqlite transaction, and returns `412` otherwise. Agent Studio's draft cleanup uses it so a draft saved while publishing is never overwritten.
   - File access is confined to the project root after `realpath` (no `..` or symlink escapes).
+  - **Folder browser:** `GET /api/fs/browse?path=&hidden=1` lists directories (with a `.git` marker) anywhere the gateway user can read, for the Add Project dialog. It is not project-scoped on purpose. It sits behind the same token as everything else, and a token holder can already open a shell (terminals), so it grants nothing new.
+  - **Projects:** `DELETE /api/projects/:id` stops the project's chats and terminals, then removes the row (`404` for unknown ids). Files on disk are untouched. `GET /api/projects/:id/usage` counts running chats and terminals for the confirmation.
+  - **omp setup status:** at startup the gateway runs `omp --version` and, in the background, `omp models --json`. `ompStatus` is `missing` (no omp), `no-models` (no provider: omp exits with "No models available" in RPC mode), `ok`, or `unknown` (the check itself failed; chats are allowed). It is reported in `/api/health` and `welcome`. While the status is `missing`/`no-models`, `open_chat` fails fast with code `omp_setup` instead of spawning omp. A chat that exits with "No models available" flips the status back to `no-models`. `POST /api/omp/recheck` re-runs the checks after the user installs omp or adds a provider.
 - **`sessions.ts`**: the single in-process omp API use (`SessionManager.list`), because RPC has no session-listing command. It is lazily imported and isolated.
 - **`pty.ts`**: terminals via Bun's native PTY (`Bun.spawn({ terminal })`). Shells are keyed by pane id and outlive their UI: detach on unmount, reattach with scrollback replay (at the size it was produced), kill only on close.
 - **`omp-cli.ts`**: runs `omp config|skill|agents` for settings omp has no RPC command for.
@@ -79,6 +83,12 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
 4. On exit it closes the sidecar's stdin. The gateway then stops its omp children and exits; it is killed after 6 s if it doesn't.
 
 omp is **not** bundled. The gateway finds it on `PATH`, at `OMP_PATH`, or in common install locations (`~/.bun/bin`, `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`).
+
+## Releases and the installer
+
+- `scripts/build-release.ts` builds the web UI once and cross-compiles the gateway (`bun build --compile --target=bun-<os>-<arch>`) for linux/darwin × x64/arm64. Each target becomes `gyre-web-<os>-<arch>.tar.gz` with `gyre/{gyre-gateway, web/, omp-extension/src/}`, the layout `main.ts` resolves next to its own binary. It also writes `gyre-manifest.json` (`{version, ompVersion}`, the omp version pinned in `packages/gateway/package.json`), `gyre-icon.png` and `SHA256SUMS`.
+- `.github/workflows/release.yml` runs on `v*` tags. It builds the web tarballs and, on ubuntu-22.04, the `.deb` and AppImage (version stamped from the tag), renamed to stable names `gyre-desktop-linux-x64.{deb,AppImage}`. It then publishes everything plus `install.sh` with fresh checksums. Stable names let the installer use `releases/latest/download/<asset>`.
+- `install.sh` (repo root) is the guided installer. It reads answers from `/dev/tty`, so it works under `curl | bash`, and falls back to flags and recommended defaults without a terminal. It verifies every download against `SHA256SUMS`, installs the web version to `~/.local/share/gyre` with a `~/.local/bin/gyre` launcher (`gyre-gateway --open`), and the desktop app as a `.deb` (apt) or AppImage with a desktop entry. It offers to install omp (the manifest's version, via Bun), Plannotator (`omp plugin install @plannotator/pi-extension`), and a first provider (`omp login`, or an API key piped to `omp auth import -` on stdin). `GYRE_RELEASE_BASE=file://…` points it at a local `dist/release` for testing.
 
 ## Tracking omp upstream
 

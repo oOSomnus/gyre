@@ -69,6 +69,17 @@ const gateway = await startGateway({
 
 console.log(`GYRE_READY ${JSON.stringify({ url: gateway.url, port: gateway.port, token })}`);
 console.error(`Gyre gateway listening on ${gateway.url}`);
+const openUrl = `${gateway.url}/#token=${encodeURIComponent(token)}`;
+console.error(`Open Gyre: ${openUrl}`);
+// `gyre --open` (the installed launcher's default) opens the UI in the default browser.
+if (process.argv.includes("--open") || process.env.GYRE_OPEN === "1") {
+	const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+	try {
+		Bun.spawn([opener, openUrl], { stdout: "ignore", stderr: "ignore" }).unref();
+	} catch {
+		console.error(`Could not run ${opener}; open the URL above in a browser.`);
+	}
+}
 if (!extension) console.error("Gyre omp extension not found: plan mode is unavailable");
 
 let stopping = false;

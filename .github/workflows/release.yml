@@ -1,0 +1,94 @@
+name: release
+
+# Publishes the assets install.sh downloads. Push a tag to release:
+#   git tag v0.2.0 && git push origin v0.2.0
+# Asset names are stable, so install.sh can always use
+# https://github.com/<repo>/releases/latest/download/<asset>.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.2.0); created at the current commit if missing"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.5
+      - run: bun install
+      - run: bun run typecheck
+      - name: Build web tarballs (linux/darwin, x64/arm64)
+        run: GYRE_VERSION="$TAG" bun scripts/build-release.ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: dist/release/*
+
+  desktop:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf build-essential libssl-dev file
+      - run: bun install
+      - run: bun install --cwd apps/desktop
+      - name: Stamp the version from the tag
+        run: |
+          version="${TAG#v}"
+          jq --arg v "$version" '.version = $v' apps/desktop/src-tauri/tauri.conf.json > tauri.conf.json.tmp
+          mv tauri.conf.json.tmp apps/desktop/src-tauri/tauri.conf.json
+      - name: Build .deb and AppImage
+        run: bun scripts/build-desktop.ts --bundles deb,appimage
+      - name: Collect bundles under stable names
+        run: |
+          mkdir -p out
+          cp apps/desktop/src-tauri/target/release/bundle/deb/*.deb out/gyre-desktop-linux-x64.deb
+          cp apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage out/gyre-desktop-linux-x64.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop
+          path: out/*
+
+  publish:
+    needs: [web, desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Checksums and installer
+        run: |
+          cp install.sh assets/install.sh
+          cd assets
+          rm -f SHA256SUMS
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Gyre ${TAG}" \
+            --generate-notes

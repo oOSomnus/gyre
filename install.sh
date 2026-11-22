@@ -182,6 +182,7 @@ verify() { # file name-in-SHA256SUMS
 	[ "$(sha256 "$1")" = "$expected" ] || die "checksum mismatch for $2 (download corrupted?)"
 }
 
+BUN_HOME="${BUN_INSTALL:-$HOME/.bun}"
 OMP=""
 find_omp() {
 	OMP=""
@@ -189,9 +190,25 @@ find_omp() {
 		OMP="$(command -v omp)"
 		return 0
 	fi
-	for candidate in "$HOME/.bun/bin/omp" "$HOME/.local/bin/omp" /usr/local/bin/omp /opt/homebrew/bin/omp; do
+	for candidate in "$BUN_HOME/bin/omp" "$HOME/.local/bin/omp" /usr/local/bin/omp /opt/homebrew/bin/omp; do
 		if [ -x "$candidate" ]; then
 			OMP="$candidate"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# omp is a Bun script (#!/usr/bin/env bun), so bun must be on PATH whenever omp
+# runs. Bun's installer only edits shell rc files, so add its folder here.
+BUN_DIR_ADDED=""
+ensure_bun_on_path() {
+	have bun && return 0
+	local dir
+	for dir in "$BUN_HOME/bin" ${OMP:+"$(dirname "$OMP")"}; do
+		if [ -x "$dir/bun" ]; then
+			export PATH="$dir:$PATH"
+			BUN_DIR_ADDED="$dir"
 			return 0
 		fi
 	done
@@ -385,12 +402,32 @@ manual_omp() {
 	cmd "bun install -g $OMP_PKG@$OMP_VERSION"
 	note "More options: https://omp.sh"
 }
+
+# check_omp: 0 if $OMP runs (sets OMP_HAVE to its version). Otherwise warns,
+# shows the error and clears OMP, so later steps skip it instead of failing.
+OMP_HAVE=""
+check_omp() {
+	local out
+	ensure_bun_on_path || true
+	if out="$("$OMP" --version 2>&1)"; then
+		OMP_HAVE="$(printf '%s\n' "$out" | head -n 1 | sed 's#^omp/##')"
+		return 0
+	fi
+	warn "omp at $OMP does not run:"
+	printf '%s\n' "$out" | sed 's/^/      /'
+	OMP=""
+	return 1
+}
+
 if find_omp; then
-	have_version="$("$OMP" --version 2>/dev/null | sed 's#^omp/##' || true)"
-	ok "omp $have_version found at $OMP"
-	if [ -n "$OMP_VERSION" ] && [ -n "$have_version" ] && [ "$have_version" != "$OMP_VERSION" ]; then
-		note "This Gyre release is tested with omp $OMP_VERSION. To match it:"
-		cmd "bun install -g $OMP_PKG@$OMP_VERSION"
+	if check_omp; then
+		ok "omp $OMP_HAVE found at $OMP"
+		if [ -n "$OMP_VERSION" ] && [ "$OMP_HAVE" != "$OMP_VERSION" ]; then
+			note "This Gyre release is tested with omp $OMP_VERSION. To match it:"
+			cmd "bun install -g $OMP_PKG@$OMP_VERSION"
+		fi
+	else
+		manual_omp
 	fi
 elif [ "$OMP_CHOICE" = skip ]; then
 	warn "omp is not installed (skipped with --no-omp). Gyre needs it to run chats."
@@ -401,17 +438,22 @@ else
 	if [ "$OMP_CHOICE" != install ]; then ask_yn "Install omp $OMP_VERSION now (via Bun)?" y || install_it=0; fi
 	if [ "$install_it" = 1 ]; then
 		BUN="$(command -v bun || true)"
-		[ -n "$BUN" ] || { [ -x "$HOME/.bun/bin/bun" ] && BUN="$HOME/.bun/bin/bun"; } || true
+		if [ -z "$BUN" ] && [ -x "$BUN_HOME/bin/bun" ]; then BUN="$BUN_HOME/bin/bun"; fi
 		if [ -z "$BUN" ]; then
 			say "  omp is installed with Bun (https://bun.sh), which is not installed either."
 			if ask_yn "Install Bun now (runs Bun's official installer)?" y; then
 				curl -fsSL https://bun.sh/install | bash
-				BUN="$HOME/.bun/bin/bun"
+				BUN="$BUN_HOME/bin/bun"
 			fi
 		fi
 		if [ -n "$BUN" ] && [ -x "$BUN" ]; then
+			ensure_bun_on_path || true
 			"$BUN" install -g "$OMP_PKG@$OMP_VERSION"
-			if find_omp; then ok "omp installed at $OMP"; else warn "omp installed, but not found on PATH; open a new terminal (Bun adds ~/.bun/bin to PATH)."; fi
+			if ! find_omp; then
+				warn "omp was installed but not found. Open a new terminal and run: omp --version"
+			elif check_omp; then
+				ok "omp $OMP_HAVE installed at $OMP"
+			fi
 		else
 			warn "Skipped: Bun is required to install omp."
 			manual_omp
@@ -527,4 +569,8 @@ case "$INSTALLED_DESKTOP" in
 	deb) say "  ${B}Desktop:${R} open \"Gyre\" from your app menu." ;;
 	appimage) say "  ${B}Desktop:${R} open \"Gyre\" from your app menu, or run $BIN_DIR/Gyre.AppImage" ;;
 esac
+if [ -n "$BUN_DIR_ADDED" ]; then
+	note "$BUN_DIR_ADDED (bun, omp) was not on your PATH. If a new terminal can't find omp, add it:"
+	cmd "echo 'export PATH=\"$BUN_DIR_ADDED:\$PATH\"' >> ~/.bashrc   # or ~/.zshrc"
+fi
 note "Data lives in ~/.gyre. Uninstall: curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash -s -- --uninstall"

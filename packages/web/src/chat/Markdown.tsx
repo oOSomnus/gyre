@@ -4,6 +4,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import { downloadText } from "../lib/download";
 import { api } from "../lib/gateway";
 import { openFile, openImage } from "../store/actions";
 import { useApp } from "../store/app";
@@ -122,15 +123,6 @@ export function CopyButton({ text, label }: { text: string; label?: string }) {
 			{copied ? <Check size={14} /> : <Copy size={14} />}
 		</button>
 	);
-}
-
-function downloadText(text: string, filename: string) {
-	const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
-	const a = document.createElement("a");
-	a.href = url;
-	a.download = filename;
-	a.click();
-	URL.revokeObjectURL(url);
 }
 
 export const CodeBlock = memo(function CodeBlock({ code, lang }: { code: string; lang?: string }) {

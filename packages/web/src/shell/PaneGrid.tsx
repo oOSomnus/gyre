@@ -2,7 +2,9 @@ import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import type { FloatRect, LayoutNode, PaneSpec, Workspace } from "@gyre/protocol";
 import {
 	ArrowRightLeft,
+	ClipboardCopy,
 	Columns2,
+	Download,
 	EyeOff,
 	FolderGit2,
 	Maximize2,
@@ -17,6 +19,7 @@ import {
 import { Fragment, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
 import { ChatPane } from "../chat/ChatPane";
+import { exportSessionLog } from "../lib/exportSessionLog";
 import { api } from "../lib/gateway";
 import { paneStatus } from "../lib/status";
 import { EventsPane } from "../panes/EventsPane";
@@ -103,6 +106,16 @@ export function PaneMenu({ pane, floating }: { pane: PaneSpec; floating: boolean
 								<Dropdown.Item className={menuItem} onSelect={() => void api(`/api/chats/${encodeURIComponent(pane.id)}/restart`, { method: "POST" })}>
 									<RotateCcw size={13} /> Restart omp (same session)
 								</Dropdown.Item>
+							)}
+							{pane.kind === "chat" && (
+								<>
+									<Dropdown.Item className={menuItem} onSelect={() => void exportSessionLog(pane.id, "download")}>
+										<Download size={13} /> Export session log
+									</Dropdown.Item>
+									<Dropdown.Item className={menuItem} onSelect={() => void exportSessionLog(pane.id, "copy")}>
+										<ClipboardCopy size={13} /> Copy session log
+									</Dropdown.Item>
+								</>
 							)}
 						</>
 					)}

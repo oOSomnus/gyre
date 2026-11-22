@@ -3,6 +3,7 @@ import { Command } from "cmdk";
 import { useMemo } from "react";
 import type { PaneKind } from "@gyre/protocol";
 import { localCommands, runLocalCommand } from "../chat/localCommands";
+import { exportSessionLog } from "../lib/exportSessionLog";
 import { api, gateway } from "../lib/gateway";
 import type { SlashCommand } from "../lib/omp";
 import { closePaneAndResources, sendToChat, terminals } from "../store/actions";
@@ -76,6 +77,8 @@ export function CommandPalette() {
 				add("compact", "Compact context", () => void gateway.rpc(focused.id, { type: "compact" }, 600_000));
 				add("abort", "Stop the agent", () => void gateway.rpc(focused.id, { type: "abort" }));
 				add("restart", "Restart omp (same session)", () => void api(`/api/chats/${encodeURIComponent(focused.id)}/restart`, { method: "POST" }));
+				add("export-log", "Export session log (Markdown)", () => void exportSessionLog(focused.id, "download"));
+				add("copy-log", "Copy session log to clipboard", () => void exportSessionLog(focused.id, "copy"));
 			}
 			if (focused.kind === "terminal") {
 				add("send", "Send selection to AI", () => {
@@ -115,6 +118,20 @@ export function CommandPalette() {
 				{ id: "chat:model", group: "Chat", label: "Switch model…", hint: "Ctrl M", run: () => app.openModelPicker(chatId) },
 				{ id: "chat:fork", group: "Chat", label: "Fork session", run: () => void gateway.rpc(chatId, { type: "fork" }) },
 				{ id: "chat:abort", group: "Chat", label: "Stop the agent", run: () => void gateway.rpc(chatId, { type: "abort" }) },
+				{
+					id: "chat:export-log",
+					group: "Chat",
+					label: "Export session log",
+					keywords: "debug transcript download markdown",
+					run: () => void exportSessionLog(chatId, "download"),
+				},
+				{
+					id: "chat:copy-log",
+					group: "Chat",
+					label: "Copy session log to clipboard",
+					keywords: "debug transcript clipboard markdown",
+					run: () => void exportSessionLog(chatId, "copy"),
+				},
 				{ id: "chat:plan", group: "Chat", label: "Open plan review", run: () => openChatPane("plan", chatId) },
 				{ id: "chat:objectives", group: "Chat", label: "Open objectives", run: () => openChatPane("objectives", chatId) },
 				{ id: "chat:graph", group: "Chat", label: "Open event graph", run: () => openChatPane("graph", chatId) },

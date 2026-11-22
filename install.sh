@@ -495,67 +495,17 @@ fi
 
 # ------------------------------------------------------------------ 5. provider
 
-step "Your first model provider"
-provider_help() {
-	note "Gyre's chats need omp to have at least one model provider. Any of:"
-	note " • Sign in with a subscription (Claude, ChatGPT/Codex, Copilot, …):"
-	cmd "omp login"
-	note " • Store an API key with omp (works for the desktop app too), e.g. Anthropic:"
-	cmd "read -rsp 'API key: ' KEY && printf '{\"version\":1,\"credentials\":[{\"provider\":\"anthropic\",\"credential\":{\"type\":\"api_key\",\"key\":\"%s\"}}]}' \"\$KEY\" | omp auth import -"
-	note " • Or export ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / OPENROUTER_API_KEY before starting Gyre,"
-	note "   or add a local/custom endpoint in ~/.omp/agent/models.yml (see the README)."
-	note "Gyre also shows these steps until a provider is configured."
-}
-
-store_api_key() {
-	local provider key escaped
-	choose "Which provider is the key for?" 1 "Anthropic" "OpenAI" "Google Gemini" "OpenRouter" "Other (type the omp provider id)"
-	case "$CHOICE" in
-		1) provider=anthropic ;;
-		2) provider=openai ;;
-		3) provider=google ;;
-		4) provider=openrouter ;;
-		5)
-			printf '    provider id: ' >/dev/tty
-			IFS= read -r provider </dev/tty || provider=""
-			;;
-	esac
-	[ -n "$provider" ] || return 1
-	printf '    API key for %s (input hidden): ' "$provider" >/dev/tty
-	IFS= read -rs key </dev/tty || key=""
-	printf '\n' >/dev/tty
-	[ -n "$key" ] || return 1
-	escaped="$(printf '%s' "$key" | sed 's/\\/\\\\/g; s/"/\\"/g')"
-	# The key goes to omp on stdin: never on the command line or in shell history.
-	printf '{"version":1,"credentials":[{"provider":"%s","credential":{"type":"api_key","key":"%s"}}]}' "$provider" "$escaped" | "$OMP" auth import - >/dev/null
-	key="" escaped=""
-}
-
+# Gyre does not set up providers: omp owns that, so only check and point there.
+step "Model provider"
 if [ -z "$OMP" ]; then
-	note "Install omp first; then configure a provider."
-	provider_help
+	note "Needs omp; skipped."
 elif has_models; then
-	ok "omp already has a model provider"
-elif [ "$INTERACTIVE" = 0 ] || [ "$ASSUME_YES" = 1 ]; then
-	warn "omp has no model provider yet."
-	provider_help
+	ok "omp has a model provider"
 else
-	say "  omp has no model provider yet, so Gyre cannot start chats. Set one up now?"
-	attempts=0
-	while ! has_models && [ "$attempts" -lt 3 ]; do
-		attempts=$((attempts + 1))
-		choose "How do you want to connect a model?" 1 \
-			"Sign in with a subscription account (runs \`omp login\`)" \
-			"Paste an API key (stored by omp)" \
-			"Later: show me the commands"
-		case "$CHOICE" in
-			1) "$OMP" login </dev/tty || warn "omp login did not finish." ;;
-			2) store_api_key || warn "No key stored." ;;
-			3) break ;;
-		esac
-		if has_models; then ok "Provider configured: omp lists models now"; elif [ "$CHOICE" != 3 ]; then warn "omp still lists no models."; fi
-	done
-	has_models || provider_help
+	warn "omp has no model provider yet, so Gyre cannot start chats."
+	note "Set one up in omp first, e.g. sign in with:"
+	cmd "omp login"
+	note "API keys and other options: https://github.com/can1357/oh-my-pi#readme"
 fi
 
 # ------------------------------------------------------------------ summary

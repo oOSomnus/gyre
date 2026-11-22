@@ -10,18 +10,6 @@ import { needsSetup, useOmpStatus } from "../lib/ompStatus";
 import { useApp } from "../store/app";
 import { useChats } from "../store/chats";
 
-/** Reads the key without echoing it or putting it in shell history or argv. */
-const API_KEY_IMPORT = `read -rsp "API key: " KEY && printf '{"version":1,"credentials":[{"provider":"anthropic","credential":{"type":"api_key","key":"%s"}}]}' "$KEY" | omp auth import - ; unset KEY`;
-
-const MODELS_YML = `# ~/.omp/agent/models.yml: any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, …)
-providers:
-  local:
-    baseUrl: http://127.0.0.1:11434/v1
-    apiKey: none
-    api: openai-completions
-    models:
-      - id: qwen2.5-coder:14b`;
-
 export function CopyCommand({ command, multiline = false }: { command: string; multiline?: boolean }) {
 	const [copied, setCopied] = useState(false);
 	return (
@@ -141,25 +129,17 @@ export function OmpSetupGuide({ projectId }: { projectId?: string }) {
 				) : (
 					<>
 						<p className="text-[12.5px]" style={{ color: "var(--text-dim)" }}>
-							omp has no model provider, so it cannot start. Set one up with any of the options below, run in a terminal on the machine running Gyre, then press
-							Re-check. Credentials are stored by omp and shared with the omp CLI.
+							omp needs a model provider before it can start. Set one up in omp, in a terminal on the machine running Gyre, then press Re-check. For
+							example, sign in with:
 						</p>
-						<Step n={1} title="Sign in with a subscription (Claude, ChatGPT/Codex, Copilot, …)">
-							<CopyCommand command="omp login" />
-							<div>Pick a provider and follow the sign-in link.</div>
-							{openTerminal}
-						</Step>
-						<Step n={2} title="Or store an API key (here: Anthropic; change the provider id as needed)">
-							<CopyCommand command={API_KEY_IMPORT} multiline />
-							<div>
-								Environment variables work too (<span className="font-mono">ANTHROPIC_API_KEY</span>, <span className="font-mono">OPENAI_API_KEY</span>,{" "}
-								<span className="font-mono">GEMINI_API_KEY</span>, <span className="font-mono">OPENROUTER_API_KEY</span>, …), but only if they are set where Gyre
-								starts; restart Gyre after setting them.
-							</div>
-						</Step>
-						<Step n={3} title="Or add a local / custom endpoint">
-							<CopyCommand command={MODELS_YML} multiline />
-						</Step>
+						<CopyCommand command="omp login" />
+						<div className="text-[12.5px]" style={{ color: "var(--text-dim)" }}>
+							API keys and other options:{" "}
+							<a href="https://github.com/can1357/oh-my-pi#readme" target="_blank" rel="noreferrer" style={{ color: "var(--highlight)" }}>
+								omp's README
+							</a>
+						</div>
+						{openTerminal}
 					</>
 				)}
 				<RecheckButton />

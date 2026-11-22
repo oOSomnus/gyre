@@ -1,5 +1,5 @@
 /** Read-only, project-scoped file access for the file viewer pane. */
-import { readdir, realpath, stat } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import type { FsEntry } from "@gyre/protocol";
 import { closeSync, fstatSync, readSync } from "node:fs";
@@ -50,9 +50,14 @@ export async function listDir(root: string, relPath: string, showHidden = false)
 		if (entry.isSymbolicLink()) {
 			try {
 				const target = await resolveInside(realRoot, relative(realRoot, abs));
-				const info = await stat(target);
-				kind = info.isDirectory() ? "dir" : "file";
-				size = info.size;
+				const fd = openContained(realRoot, target);
+				try {
+					const info = fstatSync(fd);
+					kind = info.isDirectory() ? "dir" : "file";
+					size = info.size;
+				} finally {
+					closeSync(fd);
+				}
 			} catch {
 				continue;
 			}

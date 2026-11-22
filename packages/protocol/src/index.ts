@@ -67,7 +67,7 @@ export type ClientMessage =
 	| { t: "pty_input"; ptyId: string; data: string }
 	| { t: "pty_resize"; ptyId: string; cols: number; rows: number }
 	/** Stop receiving output; the shell keeps running (pane hidden or remounted). */
-	| { t: "pty_detach"; ptyId: string }
+	| { t: "pty_detach"; ptyId: string; attachmentId: string }
 	/** Kill the shell. */
 	| { t: "pty_close"; ptyId: string }
 	| { t: "pty_close_key"; key: string; projectId: string };

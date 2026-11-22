@@ -37,6 +37,7 @@ export function TerminalPane({ pane, focused }: { pane: PaneSpec; focused: boole
 		setExited(null);
 
 		let ptyId: string | null = null;
+		let attachmentId: string | null = null;
 		let disposed = false;
 		let explicitlyClosed = false;
 		let attaching = false;
@@ -52,12 +53,14 @@ export function TerminalPane({ pane, focused }: { pane: PaneSpec; focused: boole
 			if (ptyId) term.reset();
 			void gateway
 				.openPty(pane.projectId!, term.cols, term.rows, pane.id)
-				.then(({ ptyId: id, reused, cols, rows }) => {
+				.then(({ ptyId: id, attachmentId: attachment, reused, cols, rows }) => {
 					if (disposed) {
-						gateway.send({ t: explicitlyClosed ? "pty_close" : "pty_detach", ptyId: id });
+						if (explicitlyClosed) gateway.send({ t: "pty_close", ptyId: id });
+						else gateway.send({ t: "pty_detach", ptyId: id, attachmentId: attachment });
 						return;
 					}
 					ptyId = id;
+					attachmentId = attachment;
 					if (reused && cols && rows) {
 						// Replay scrollback at the size it was produced at, then fit to this pane.
 						term.resize(cols, rows);
@@ -97,7 +100,7 @@ export function TerminalPane({ pane, focused }: { pane: PaneSpec; focused: boole
 			input.dispose();
 			select.dispose();
 			off();
-			if (ptyId) gateway.send({ t: "pty_detach", ptyId });
+			if (ptyId && attachmentId) gateway.send({ t: "pty_detach", ptyId, attachmentId });
 			terminals.delete(pane.id);
 			term.dispose();
 			termRef.current = null;

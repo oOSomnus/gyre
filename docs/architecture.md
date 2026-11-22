@@ -38,6 +38,8 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
 - **`server.ts`**: HTTP API and WebSocket.
   - Security: binds to 127.0.0.1 by default, requires a per-launch token, and rejects `Host` headers that are not loopback or listed in `GYRE_ALLOWED_HOSTS` (DNS-rebinding guard). The token is injected into the page only for loopback clients or clients holding the HttpOnly login cookie (`POST /api/login`).
   - Endpoints added in v0.2: `/api/omp/config` (allowlisted `omp config` keys), `/api/omp/skills`, `/api/agents`, `/api/mcp`, `/api/chats/:id/{restart,kill,plan-prefs}`, `/api/projects/:id/restart-chats`, `/api/ptys`, `/api/fs/stat`, `/api/kv/ui.*`, `/api/remote`.
+  - `PATCH /api/omp/config` edits one `{key, name, value}` assignment in `modelRoles` or `task.agentModelOverrides`; `null` removes it. The gateway serializes config mutations and merges against the latest saved map.
+  - Workspace saves compare revisions and return `409` on conflict. Deleted workspace IDs remain tombstoned; a new workspace must use a new ID.
   - File access is confined to the project root after `realpath` (no `..` or symlink escapes).
 - **`sessions.ts`**: the single in-process omp API use (`SessionManager.list`), because RPC has no session-listing command. It is lazily imported and isolated.
 - **`pty.ts`**: terminals via Bun's native PTY (`Bun.spawn({ terminal })`). Shells are keyed by pane id and outlive their UI: detach on unmount, reattach with scrollback replay (at the size it was produced), kill only on close.
@@ -52,7 +54,7 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
   - `rpc{chatId, command}`, which forwards **any** omp command
   - `ui_response{chatId, response}`
   - `subscribe`, `close_chat`
-  - `pty_open{key?}`, `pty_input`, `pty_resize`, `pty_detach`, `pty_close`
+  - `pty_open{reqId, key?}`, `pty_input`, `pty_resize`, `pty_detach{ptyId, attachmentId}`, `pty_close`, `pty_close_key{projectId, key}`. Open results include an attachment ID, so a delayed detach cannot release a newer attachment on the same socket.
 - **Gateway → client:**
   - `welcome`
   - `result{reqId, ok, data|error, code}`

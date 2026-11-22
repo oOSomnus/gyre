@@ -174,7 +174,7 @@ class GatewayClient {
 	}
 
 	openPty(projectId: string, cols: number, rows: number, key?: string) {
-		return this.request<{ ptyId: string; reused?: boolean; cols?: number; rows?: number }>(reqId => ({ t: "pty_open", reqId, projectId, cols, rows, key }));
+		return this.request<{ ptyId: string; attachmentId: string; reused?: boolean; cols?: number; rows?: number }>(reqId => ({ t: "pty_open", reqId, projectId, cols, rows, key }));
 	}
 }
 

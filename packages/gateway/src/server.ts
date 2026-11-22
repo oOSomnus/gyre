@@ -1,5 +1,4 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { type ClientMessage, GATEWAY_VERSION, type PlanPrefs, type Project, type ServerMessage, type Workspace } from "@gyre/protocol";
 import type { ServerWebSocket } from "bun";
@@ -40,7 +39,7 @@ export interface GatewayConfig {
 interface SocketData {
 	authed: boolean;
 	subscriber: Subscriber;
-	ptyListeners: Map<string, PtyListener>;
+	ptyListeners: Map<string, PtyListener & { attachmentId: string }>;
 }
 
 export interface Gateway {
@@ -63,6 +62,13 @@ export async function detectOmpVersion(ompPath = "omp"): Promise<string | null> 
 export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 	if (!config.token.trim()) throw new Error("gateway token must not be empty");
 	let stopping = false;
+	let stopPromise: Promise<void> | undefined;
+	let configWrites: Promise<unknown> = Promise.resolve();
+	const writeConfig = <T>(operation: () => Promise<T>): Promise<T> => {
+		const next = configWrites.catch(() => {}).then(operation);
+		configWrites = next;
+		return next;
+	};
 	const inFlight = new Set<Promise<unknown>>();
 	const track = <T>(work: Promise<T>): Promise<T> => {
 		inFlight.add(work);
@@ -196,8 +202,12 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				for (const rel of (body.paths ?? []).slice(0, 200)) {
 					try {
 						const abs = await resolveInside(project.path, rel.replace(/^\.\//, ""));
-						const info = await stat(abs);
-						result[rel] = info.isDirectory() ? "dir" : "file";
+						const fd = openContained(await realpath(project.path), abs);
+						try {
+							result[rel] = fstatSync(fd).isDirectory() ? "dir" : "file";
+						} finally {
+							closeSync(fd);
+						}
 					} catch {}
 				}
 				return json(result);
@@ -264,12 +274,31 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				if (method === "PUT") {
 					const body = (await req.json()) as { key?: string; value?: unknown; projectId?: string };
 					if (body.projectId) return fail("Project-scoped settings writes are not supported by omp; edit global settings instead.", 400);
-					const value = await ompCli.configSet(body.key ?? "", body.value, optionalProject(body.projectId)?.path);
+					const value = await writeConfig(() => ompCli.configSet(body.key ?? "", body.value));
+					return json({ key: body.key, value });
+				}
+				if (method === "PATCH") {
+					const body = (await req.json()) as { key?: string; name?: string; value?: unknown; projectId?: string };
+					if (
+						body.projectId || !["modelRoles", "task.agentModelOverrides"].includes(body.key ?? "") ||
+						typeof body.name !== "string" || !body.name || (body.value !== null && typeof body.value !== "string")
+					)
+						return fail("invalid assignment", 400);
+					const value = await writeConfig(async () => {
+						const current = await ompCli.configGet(body.key!);
+						if (current !== null && current !== undefined && (typeof current !== "object" || Array.isArray(current)))
+							throw new OmpCliError("saved assignments are not a map", 409);
+						const assignments = { ...(current as Record<string, string> | null) };
+						if (body.value) Object.defineProperty(assignments, body.name!, { value: body.value, enumerable: true, configurable: true, writable: true });
+						else delete assignments[body.name!];
+						await ompCli.configSet(body.key!, assignments);
+						return assignments;
+					});
 					return json({ key: body.key, value });
 				}
 				if (method === "DELETE") {
 					if (cwd) return fail("Project-scoped settings resets are not supported by omp; edit global settings instead.", 400);
-					await ompCli.configReset(key);
+					await writeConfig(() => ompCli.configReset(key));
 					return json({ ok: true });
 				}
 			}
@@ -379,7 +408,12 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 
 	async function serveStatic(url: URL, trusted: boolean): Promise<Response> {
 		if (!config.webDist) return new Response("Gyre gateway: web UI not built", { status: 404 });
-		const root = await realpath(config.webDist);
+		let root: string;
+		try {
+			root = await realpath(config.webDist);
+		} catch {
+			return fail("web UI root unavailable", 404);
+		}
 		const requested = resolve(root, `.${decodeURIComponent(url.pathname)}`);
 		if (!isContained(root, requested)) return fail("forbidden path", 403);
 		if (requested !== root) {
@@ -507,7 +541,9 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 					const project = projectOr404(message.projectId);
 					let ptyId = "";
 					const pending: string[] = [];
-					const listener: PtyListener = {
+					const attachmentId = message.reqId;
+					const listener: PtyListener & { attachmentId: string } = {
+						attachmentId,
 						data: data => (ptyId ? send({ t: "pty_data", ptyId, data }) : pending.push(data)),
 						exit: code => {
 							ws.data.ptyListeners.delete(ptyId);
@@ -526,7 +562,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 					const previous = ws.data.ptyListeners.get(ptyId);
 					if (previous && previous !== listener) ptys.detach(ptyId, previous);
 					ws.data.ptyListeners.set(ptyId, listener);
-					send({ t: "result", reqId: message.reqId, ok: true, data: { ptyId, reused: opened.reused, cols: opened.cols, rows: opened.rows } });
+					send({ t: "result", reqId: message.reqId, ok: true, data: { ptyId, attachmentId, reused: opened.reused, cols: opened.cols, rows: opened.rows } });
 					for (const data of pending.splice(0)) send({ t: "pty_data", ptyId, data });
 				} catch (error) {
 					send({ t: "result", reqId: message.reqId, ok: false, error: errorText(error) });
@@ -541,8 +577,10 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				return;
 			case "pty_detach": {
 				const listener = ws.data.ptyListeners.get(message.ptyId);
-				if (listener) ptys.detach(message.ptyId, listener);
-				ws.data.ptyListeners.delete(message.ptyId);
+				if (listener?.attachmentId === message.attachmentId) {
+					ptys.detach(message.ptyId, listener);
+					ws.data.ptyListeners.delete(message.ptyId);
+				}
 				return;
 			}
 			case "pty_close_key":
@@ -625,15 +663,18 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 		url: `http://${config.host.includes(":") ? `[${config.host}]` : config.host}:${port}`,
 		chats,
 		store,
-		async stop() {
-			if (stopping) return;
+		stop() {
+			if (stopPromise) return stopPromise;
 			stopping = true;
 			chats.stopping = true;
 			server.stop(true);
 			ompCli.stop();
-			await Promise.all([ptys.closeAll(), chats.closeAll()]);
-			await Promise.allSettled([...inFlight]);
-			store.close();
+			stopPromise = (async () => {
+				await Promise.allSettled([ptys.closeAll(), chats.closeAll()]);
+				await Promise.allSettled([...inFlight]);
+				store.close();
+			})();
+			return stopPromise;
 		},
 	};
 }

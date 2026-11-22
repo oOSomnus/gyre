@@ -70,6 +70,8 @@ export class Store {
 	saveWorkspace(workspace: Workspace): Workspace {
 		return this.db.transaction(() => {
 			const row = this.db.query<{ body: string }, [string]>("SELECT body FROM workspaces WHERE id = ?").get(workspace.id);
+			if (!row && this.getKv(`workspace.deleted.${workspace.id}`))
+				throw new WorkspaceConflictError("This workspace was deleted. Create a workspace with a new ID.");
 			const current = row ? (JSON.parse(row.body) as Workspace) : undefined;
 			if ((workspace.revision ?? 0) !== (current?.revision ?? 0))
 				throw new WorkspaceConflictError("Workspace changed in another client. Reloaded the saved layout; your last layout edit was not saved.");
@@ -85,7 +87,10 @@ export class Store {
 	}
 
 	removeWorkspace(id: string): void {
-		this.db.query("DELETE FROM workspaces WHERE id = ?").run(id);
+		this.db.transaction(() => {
+			this.setKv(`workspace.deleted.${id}`, true);
+			this.db.query("DELETE FROM workspaces WHERE id = ?").run(id);
+		})();
 	}
 
 	getKv<T>(key: string): T | undefined {

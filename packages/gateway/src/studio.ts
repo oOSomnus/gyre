@@ -105,10 +105,13 @@ export function saveAgent(params: {
 	if (!description) throw new StudioError("description is required");
 	const dir = agentDirFor(params.scope, params.agentDir, params.projectPath);
 	mkdirSync(dir, { recursive: true });
-	const existing = readAgentDir(dir, params.scope).filter(a => a.name === (params.previousName ?? name));
+	const definitions = readAgentDir(dir, params.scope);
+	const existing = definitions.filter(a => a.name === (params.previousName ?? name));
 	if (existing.length > 1) throw new StudioError("ambiguous agent name; remove duplicate definitions first", 409);
 	const previousPath = existing[0]?.path;
 	const path = (!params.previousName || params.previousName === name) && previousPath ? previousPath : join(dir, `${name}.md`);
+	if (definitions.some(a => a.path !== previousPath && (a.name === name || a.path === path)) || (path !== previousPath && existsSync(path)))
+		throw new StudioError("an agent with that name or backing path already exists", 409);
 	const frontmatter = { ...params.frontmatter, name, description };
 	const tmp = `${path}.tmp-${process.pid}`;
 	writeFileSync(tmp, renderAgentMarkdown(frontmatter, params.instructions));
@@ -206,7 +209,10 @@ export function saveMcp(params: {
 	const path = mcpPath(params.scope, params.agentDir, params.projectPath);
 	const file = readMcp(path);
 	const servers = { ...(file.mcpServers ?? {}) };
-	if (params.previousName && params.previousName !== name) delete servers[params.previousName];
+	if (params.previousName && params.previousName !== name) {
+		if (Object.hasOwn(servers, name)) throw new StudioError("an MCP server with that name already exists", 409);
+		delete servers[params.previousName];
+	}
 	const old = file.mcpServers?.[params.previousName ?? name] ?? {};
 	const merged = { ...old, ...config };
 	for (const key of ["command", "args", "url", "auth"]) if (!(key in config)) delete merged[key];
@@ -218,7 +224,7 @@ export function saveMcp(params: {
 	servers[name] = merged;
 	const disabledServers = file.disabledServers?.map(n => (n === params.previousName ? name : n));
 	writeMcp(path, { ...file, disabledServers, mcpServers: servers });
-	return { name, scope: params.scope, config: merged, enabled: merged.enabled !== false && !disabledServers?.includes(name) };
+	return { name, scope: params.scope, config: merged, enabled: merged.enabled !== false && !(params.scope === "user" && disabledServers?.includes(name)) };
 }
 
 export function setMcpEnabled(params: { scope: Scope; agentDir: string; projectPath?: string; name: string; enabled: boolean }): void {

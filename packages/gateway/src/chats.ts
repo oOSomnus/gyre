@@ -205,11 +205,12 @@ export class ChatManager {
 	async restart(chatId: string): Promise<Chat | undefined> {
 		const chat = this.chats.get(chatId);
 		if (!chat) return undefined;
-		const subscribers = [...chat.subscribers];
-		const state = await chat.process.call<{ sessionFile?: string }>({ type: "get_state" }).catch(() => undefined);
+				const state = await chat.process.call<{ sessionFile?: string }>({ type: "get_state" }).catch(() => undefined);
 		if (state) chat.info.sessionPath = state.sessionFile;
 		const { projectId, cwd, sessionPath } = chat.info;
 		await this.close(chatId);
+		const subscribers = [...chat.subscribers];
+		chat.subscribers.clear();
 		const next = await this.open({ projectId, cwd, chatId, sessionPath });
 		for (const subscriber of subscribers) if (subscriber.connected !== false) this.subscribe(next, subscriber);
 		if (next.subscribers.size === 0) this.#scheduleReap(next);
@@ -226,7 +227,7 @@ export class ChatManager {
 
 	async closeAll(): Promise<void> {
 		this.stopping = true;
-		await Promise.all([...this.chats.keys()].map(id => this.close(id)));
+		await Promise.allSettled([...this.chats.keys()].map(id => this.close(id)));
 	}
 
 	/** Called after a UI answers a dialog so it is not replayed again. */

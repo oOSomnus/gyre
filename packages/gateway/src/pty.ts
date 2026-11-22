@@ -135,7 +135,7 @@ export class PtyManager {
 	async closeAll(): Promise<void> {
 		const handles = [...this.ptys.values()];
 		for (const handle of handles) this.close(handle.id);
-		await Promise.all(handles.map(handle => handle.process.exited));
+		await Promise.allSettled(handles.map(handle => handle.process.exited));
 	}
 
 	list(): PtyInfo[] {

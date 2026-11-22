@@ -1,5 +1,5 @@
 /** Open beneath a pinned directory, then inspect and read only that descriptor. */
-import { dlopen, FFIType, ptr } from "bun:ffi";
+import { dlopen, FFIType, ptr, toArrayBuffer } from "bun:ffi";
 import { closeSync, constants, openSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 
@@ -7,6 +7,9 @@ const libc = dlopen(process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib"
 	openat: { args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.i32], returns: FFIType.i32 },
 	syscall: { args: [FFIType.i64, FFIType.i32, FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i64 },
 });
+const errno = process.platform === "linux" ? dlopen("libc.so.6", {
+	__errno_location: { args: [], returns: FFIType.ptr },
+}) : undefined;
 const cstr = (s: string) => Buffer.from(`${s}\0`);
 
 export function isContained(root: string, target: string): boolean {
@@ -25,8 +28,10 @@ export function openContained(root: string, target: string): number {
 			// race is rejected by the kernel rather than reopened after validation.
 			const how = new BigUint64Array([BigInt(constants.O_RDONLY | constants.O_NONBLOCK | 0x80000), 0n, 0x0an]);
 			const fd = Number(libc.symbols.syscall(437, dir, ptr(name), ptr(how), 24));
-			if (fd < 0) throw new Error("file changed or cannot be opened inside project");
-			return fd;
+			if (fd >= 0) return fd;
+			const error = new Int32Array(toArrayBuffer(errno!.symbols.__errno_location()!, 0, 4))[0];
+			// Only ENOSYS means this kernel lacks openat2. All security errors stay authoritative.
+			if (error !== 38) throw new Error("file changed or cannot be opened inside project");
 		}
 		// Canonical paths contain no symlinks. Pin each directory and reject
 		// any component replaced by a symlink before its descriptor is opened.

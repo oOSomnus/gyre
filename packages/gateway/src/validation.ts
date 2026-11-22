@@ -4,6 +4,8 @@ const record = (v: unknown): v is Record<string, unknown> => v !== null && typeo
 const text = (v: unknown): v is string => typeof v === "string";
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
+const terminalSize = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v > 0 && v <= 65535;
+
 export function validClientMessage(v: unknown): v is ClientMessage {
 	if (!record(v) || !text(v.t)) return false;
 	const strings = (...keys: string[]) => keys.every(k => text(v[k]));
@@ -20,14 +22,15 @@ export function validClientMessage(v: unknown): v is ClientMessage {
 		case "ui_response":
 			return strings("chatId") && record(v.response) && text(v.response.id);
 		case "pty_open":
-			return strings("reqId", "projectId") && finite(v.cols) && finite(v.rows) && v.cols > 0 && v.rows > 0 && (v.key === undefined || text(v.key));
+			return strings("reqId", "projectId") && terminalSize(v.cols) && terminalSize(v.rows) && (v.key === undefined || text(v.key));
 		case "pty_input":
 			return strings("ptyId", "data");
 		case "pty_resize":
-			return strings("ptyId") && finite(v.cols) && finite(v.rows) && v.cols > 0 && v.rows > 0;
+			return strings("ptyId") && terminalSize(v.cols) && terminalSize(v.rows);
 		case "pty_close_key":
 			return strings("key", "projectId");
 		case "pty_detach":
+			return strings("ptyId", "attachmentId");
 		case "pty_close":
 			return strings("ptyId");
 		default:
@@ -61,10 +64,15 @@ export function validWorkspace(v: unknown): v is Workspace {
 		if (!["projectId", "sessionPath", "filePath", "chatId", "subagentId", "ref", "section", "title"].every(k => p[k] === undefined || text(p[k]))) return false;
 	}
 	const paneId = (id: unknown) => text(id) && Object.hasOwn(panes, id);
+	const seen = new Set<string>();
 	const layout = (node: unknown, depth: number): boolean => {
 		if (node === null) return true;
 		if (!record(node) || depth > 64) return false;
-		if (node.type === "pane") return paneId(node.paneId);
+		if (node.type === "pane") {
+			if (!paneId(node.paneId) || seen.has(String(node.paneId))) return false;
+			seen.add(String(node.paneId));
+			return true;
+		}
 		return (
 			node.type === "split" &&
 			(node.direction === "row" || node.direction === "column") &&

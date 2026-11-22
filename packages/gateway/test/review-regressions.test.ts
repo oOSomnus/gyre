@@ -10,6 +10,7 @@ import { OmpCli } from "../src/omp-cli";
 import { PtyManager } from "../src/pty";
 import { startGateway, type Gateway } from "../src/server";
 import { deleteAgent, deleteMcp, listMcp, saveAgent, saveMcp } from "../src/studio";
+import { validClientMessage, validWorkspace } from "../src/validation";
 
 const dir = mkdtempSync(join(tmpdir(), "gyre-review-"));
 const project = join(dir, "project");
@@ -282,5 +283,162 @@ test("fake omp preserves dialog answers split inside a UTF-8 code point", async 
 		child.stdin.end();
 		await child.exited;
 		await reading;
+	}
+});
+
+test("agent renames reject logical-name and backing-path collisions without changing either file", () => {
+	const agentDir = join(dir, "rename-agents");
+	const agents = join(agentDir, "agents");
+	mkdirSync(agents, { recursive: true });
+	writeFileSync(join(agents, "source.md"), "---\nname: source\ndescription: source\n---\nsource instructions");
+	writeFileSync(join(agents, "custom.md"), "---\nname: occupied\ndescription: occupied\n---\nkeep");
+	writeFileSync(join(agents, "destination.md"), "---\nname: different\ndescription: different\n---\nkeep path");
+	for (const name of ["occupied", "destination"]) {
+		expect(() => saveAgent({ scope: "user", agentDir, previousName: "source", name, frontmatter: { description: "new" }, instructions: "overwrite" }))
+			.toThrow("already exists");
+	}
+	expect(readFileSync(join(agents, "source.md"), "utf8")).toContain("source instructions");
+	expect(readFileSync(join(agents, "custom.md"), "utf8")).toContain("keep");
+	expect(readFileSync(join(agents, "destination.md"), "utf8")).toContain("keep path");
+});
+
+test("MCP renames cannot replace another server and project enabled state is consistent", () => {
+	const agentDir = join(dir, "rename-mcp");
+	mkdirSync(agentDir);
+	for (const name of ["old", "new"]) saveMcp({ scope: "user", agentDir, name, config: { command: name } });
+	expect(() => saveMcp({ scope: "user", agentDir, name: "new", previousName: "old", config: { command: "overwrite" } })).toThrow("already exists");
+	expect(listMcp(agentDir).map(s => [s.name, s.config.command])).toEqual([["old", "old"], ["new", "new"]]);
+	mkdirSync(join(agentDir, ".omp"));
+	writeFileSync(join(agentDir, ".omp/mcp.json"), JSON.stringify({ disabledServers: ["server"], mcpServers: {} }));
+	const saved = saveMcp({ scope: "project", agentDir, projectPath: agentDir, name: "server", config: { command: "cmd" } });
+	expect(saved.enabled).toBe(true);
+	expect(listMcp(agentDir, agentDir).find(s => s.scope === "project")?.enabled).toBe(saved.enabled);
+});
+
+test("terminal dimensions and duplicate workspace leaves are rejected at the boundary", () => {
+	for (const size of [0, -1, 1.5, 65536, Infinity]) {
+		for (const dimension of ["cols", "rows"]) {
+			const dimensions = { cols: 80, rows: 24, [dimension]: size };
+			expect(validClientMessage({ t: "pty_open", reqId: "x", projectId: "p", ...dimensions })).toBe(false);
+			expect(validClientMessage({ t: "pty_resize", ptyId: "x", ...dimensions })).toBe(false);
+		}
+	}
+	expect(validClientMessage({ t: "pty_resize", ptyId: "x", cols: 1, rows: 65535 })).toBe(true);
+	const leaf = { type: "pane", paneId: "p" };
+	const workspace = { name: "duplicate", updatedAt: 1, panes: { p: { id: "p", kind: "chat" } }, layout: { type: "split", direction: "row", sizes: [50, 50], children: [leaf, leaf] } };
+	expect(validWorkspace(workspace)).toBe(false);
+	expect(validWorkspace({ ...workspace, layout: leaf })).toBe(true);
+});
+
+test("deleted workspace identities cannot be recreated by a delayed initial save", async () => {
+	const ws = { name: "old", panes: {}, layout: null, updatedAt: 1 };
+	expect((await request("/api/workspaces/deleted-generation", "PUT", ws)).status).toBe(200);
+	await request("/api/workspaces/deleted-generation", "DELETE");
+	expect((await request("/api/workspaces/deleted-generation", "PUT", ws)).status).toBe(409);
+	expect((await request("/api/workspaces/deleted-generation", "PUT", { ...ws, revision: 1 })).status).toBe(409);
+	expect((await request("/api/workspaces/new-generation", "PUT", ws)).status).toBe(200);
+});
+
+test("a missing configured web root returns 404", async () => {
+	const server = await startGateway({ host: "127.0.0.1", port: 0, token: "test", dataDir: join(dir, "missing-ui-data"), ompPath: fake, webDist: join(dir, "missing-ui") });
+	try {
+		expect((await fetch(server.url)).status).toBe(404);
+	} finally {
+		await server.stop();
+	}
+});
+
+test("every stop caller waits for teardown, even when a cleanup branch fails", async () => {
+	const server = await startGateway({ host: "127.0.0.1", port: 0, token: "test", dataDir: join(dir, "stop-data"), ompPath: fake });
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	const close = spyOn(server.chats, "closeAll").mockImplementation(async () => { await gate; throw new Error("waitpid failed"); });
+	const storeClose = spyOn(server.store, "close");
+	const first = server.stop();
+	const second = server.stop();
+	expect(first).toBe(second);
+	expect(storeClose).not.toHaveBeenCalled();
+	release();
+	await Promise.all([first, second]);
+	expect(storeClose).toHaveBeenCalledTimes(1);
+	close.mockRestore();
+	storeClose.mockRestore();
+});
+
+test("concurrent browser assignment patches merge against the latest saved map", async () => {
+	const cli = new OmpCli(fake);
+	let assignments: Record<string, string> = { existing: "p/original" };
+	const get = spyOn(cli, "configGet").mockImplementation(async () => ({ ...assignments }));
+	const set = spyOn(cli, "configSet").mockImplementation(async (_key, value) => {
+		await Bun.sleep(20);
+		assignments = value as Record<string, string>;
+		return value;
+	});
+	const server = await startGateway({ host: "127.0.0.1", port: 0, token: "padded==", dataDir: join(dir, "assignments"), ompPath: fake, ompCli: cli });
+	try {
+		const patch = (name: string, value: string | null) => fetch(`${server.url}/api/omp/config`, { method: "PATCH", headers, body: JSON.stringify({ key: "task.agentModelOverrides", name, value }) });
+		expect((await Promise.all([patch("plan", "p/planner"), patch("task", "p/worker")])).every(r => r.ok)).toBe(true);
+		expect(assignments).toEqual({ existing: "p/original", plan: "p/planner", task: "p/worker" });
+		await patch("plan", null);
+		expect(assignments).toEqual({ existing: "p/original", task: "p/worker" });
+	} finally {
+		await server.stop();
+		get.mockRestore();
+		set.mockRestore();
+	}
+});
+
+test("restart transfers subscribers arriving during the state refresh", async () => {
+	const manager = new ChatManager({ ompPath: fake, idleReapMs: 0 });
+	const late = { send() {}, connected: true };
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	try {
+		const chat = await manager.open({ chatId: "late-subscriber", projectId: "p", cwd: project });
+		const call = spyOn(chat.process, "call").mockImplementation(async <T>() => { await gate; return { sessionFile: "/tmp/active.jsonl" } as T; });
+		const restarting = manager.restart(chat.info.chatId);
+		manager.subscribe(chat, late);
+		release();
+		const next = await restarting;
+		call.mockRestore();
+		expect(next?.subscribers.has(late)).toBe(true);
+		expect(chat.subscribers.size).toBe(0);
+	} finally {
+		release();
+		await manager.closeAll();
+	}
+});
+
+test("a superseded PTY attachment cannot detach its replacement on the same socket", async () => {
+	const registered = await (await request("/api/projects", "POST", { path: project })).json();
+	const socket = new WebSocket(`ws://127.0.0.1:${gateway.port}/ws`);
+	const messages: ServerMessage[] = [];
+	socket.onmessage = e => messages.push(JSON.parse(String(e.data)));
+	await new Promise(resolve => { socket.onopen = resolve; });
+	try {
+		socket.send(JSON.stringify({ t: "hello", token: "padded==" }));
+		await until(() => messages.some(m => m.t === "welcome"));
+		const open = async (reqId: string) => {
+			socket.send(JSON.stringify({ t: "pty_open", reqId, projectId: registered.id, key: "remount", cols: 80, rows: 24 }));
+			await until(() => messages.some(m => m.t === "result" && m.reqId === reqId));
+			const response = messages.find(m => m.t === "result" && m.reqId === reqId) as Extract<ServerMessage, { t: "result" }>;
+			if (!response.ok) throw new Error(response.error);
+			return response.data as { ptyId: string; attachmentId: string };
+		};
+		const first = await open("first");
+		const next = await open("next");
+		expect(next.ptyId).toBe(first.ptyId);
+		socket.send(JSON.stringify({ t: "pty_detach", ...first }));
+		socket.send(JSON.stringify({ t: "pty_input", ptyId: next.ptyId, data: "printf 'still attached\\n'\r" }));
+		await until(() => messages.some(m => m.t === "pty_data" && m.data.includes("still attached")));
+		const inventory = await (await request("/api/ptys")).json();
+		expect(inventory.find((p: { ptyId: string }) => p.ptyId === next.ptyId)?.attached).toBe(1);
+		socket.send(JSON.stringify({ t: "pty_detach", ...next }));
+		await Bun.sleep(30);
+		const detached = await (await request("/api/ptys")).json();
+		expect(detached.find((p: { ptyId: string }) => p.ptyId === next.ptyId)?.attached).toBe(0);
+		socket.send(JSON.stringify({ t: "pty_close", ptyId: next.ptyId }));
+	} finally {
+		socket.close();
 	}
 });

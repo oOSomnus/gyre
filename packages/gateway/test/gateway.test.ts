@@ -371,6 +371,22 @@ describe("Gateway: settings, plan prefs, remote access and terminals", () => {
 		expect((await fetch(`${gateway.url}/api/kv/settings`, { headers: authed })).status).toBe(404);
 	});
 
+	test("kv conditional writes: If-Match succeeds on the read version and refuses a changed record", async () => {
+		const url = `${gateway.url}/api/kv/ui.condTest`;
+		const missing = await fetch(url, { headers: authed });
+		expect(missing.headers.get("etag")).toBe('"absent"');
+		const created = await fetch(url, { method: "PUT", headers: { ...authed, "if-match": '"absent"' }, body: JSON.stringify({ a: 1 }) });
+		expect(created.status).toBe(200);
+		const read = await fetch(url, { headers: authed });
+		const etag = read.headers.get("etag") ?? "";
+		expect(etag).toBe(created.headers.get("etag") ?? "");
+		// Someone else writes in between.
+		await fetch(url, { method: "PUT", headers: authed, body: JSON.stringify({ a: 2 }) });
+		const stale = await fetch(url, { method: "PUT", headers: { ...authed, "if-match": etag }, body: JSON.stringify({}) });
+		expect(stale.status).toBe(412);
+		expect(await (await fetch(url, { headers: authed })).json()).toEqual({ a: 2 });
+	});
+
 	test("remote access: allowed hosts, no token in the page, login cookie", async () => {
 		// Remote host name: allowed, but the page carries no token.
 		const page = await (await fetch(`${gateway.url}/`, { headers: { host: "laptop.tailnet.ts.net" } })).text();

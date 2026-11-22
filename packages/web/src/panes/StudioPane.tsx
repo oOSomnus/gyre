@@ -7,7 +7,7 @@
 import type { PaneSpec } from "@gyre/protocol";
 import { Bot, Copy, FilePlus2, Save, Send, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../lib/gateway";
+import { api, apiWithEtag, GatewayError } from "../lib/gateway";
 import { useRoles } from "../lib/roles";
 import { useRoutingStore } from "../lib/config-map";
 import { FALLBACK_TOOLS, fetchTools, groupTools, type ToolInfo } from "../lib/tools";
@@ -155,24 +155,35 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 		setMessage("Draft saved (not yet visible to omp).");
 	};
 
-	/** Remove the published draft, unless a newer one was saved while publishing. */
-	const cleanDraft = async (key: string, expectedSavedAt: number | undefined) => {
-		const latest = await api<Record<string, Draft> | null>("/api/kv/ui.agentDrafts");
+	/**
+	 * Remove the published draft, unless a newer one was saved while publishing. The write is
+	 * conditional on the version read (`If-Match`), so a draft saved in between is never lost;
+	 * `removed: false` means the stored draft was newer and was kept.
+	 */
+	const cleanDraft = async (key: string, expectedSavedAt: number | undefined): Promise<{ removed: boolean; drafts: Record<string, Draft> }> => {
+		const { body: latest, etag } = await apiWithEtag<Record<string, Draft> | null>("/api/kv/ui.agentDrafts");
 		const next = { ...latest };
-		if (next[key] && next[key].savedAt !== expectedSavedAt) return next;
+		if (!next[key]) return { removed: true, drafts: next };
+		if (next[key].savedAt !== expectedSavedAt) return { removed: false, drafts: next };
 		delete next[key];
-		await api("/api/kv/ui.agentDrafts", { method: "PUT", body: JSON.stringify(next) });
-		return next;
+		try {
+			await api("/api/kv/ui.agentDrafts", { method: "PUT", body: JSON.stringify(next), headers: etag ? { "if-match": etag } : {} });
+		} catch (error) {
+			if (!(error instanceof GatewayError) || error.status !== 412) throw error;
+			return { removed: false, drafts: { ...(await api<Record<string, Draft> | null>("/api/kv/ui.agentDrafts")) } };
+		}
+		return { removed: true, drafts: next };
 	};
+	const KEPT_NEWER = "Published; kept the newer draft saved meanwhile.";
 	const retryCleanup = async () => {
 		if (!cleanupKey) return;
 		const epoch = editorEpoch.current;
 		try {
-			const next = await cleanDraft(cleanupKey, cleanupVersion.current);
+			const { removed, drafts: next } = await cleanDraft(cleanupKey, cleanupVersion.current);
 			if (epoch !== editorEpoch.current) return;
 			setDrafts(next);
 			setCleanupKey(null);
-			setMessage("Published; draft cleanup completed.");
+			setMessage(removed ? "Published; draft cleanup completed." : KEPT_NEWER);
 		} catch (error) {
 			if (epoch === editorEpoch.current) setMessage(`Published; draft cleanup failed: ${(error as Error).message}`);
 		}
@@ -217,9 +228,11 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 				setSelected(keyOf(draft.scope, draft.name));
 				setDraft(d => ({ ...d, previousName: draft.name }));
 			}
+			let removed: boolean;
 			try {
-				const next = await cleanDraft(savedDraftKey, publishedVersion);
-				if (ownsEditor()) setDrafts(next);
+				const result = await cleanDraft(savedDraftKey, publishedVersion);
+				removed = result.removed;
+				if (ownsEditor()) setDrafts(result.drafts);
 			} catch (error) {
 				if (ownsEditor()) {
 					cleanupVersion.current = publishedVersion;
@@ -230,7 +243,7 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 			}
 			if (!ownsEditor()) return;
 			await reload();
-			if (ownsEditor()) setMessage(`Published ${draft.name}. omp uses it on the next sub-agent spawn.`);
+			if (ownsEditor()) setMessage(removed ? `Published ${draft.name}. omp uses it on the next sub-agent spawn.` : KEPT_NEWER);
 		} catch (e) {
 			if (ownsEditor()) setMessage(String((e as Error).message));
 		} finally {

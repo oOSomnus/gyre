@@ -45,14 +45,23 @@ export class GatewayError extends Error {
 	}
 }
 
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+/** Like `api`, but also returns the response's ETag (for conditional writes with `If-Match`). */
+export async function apiWithEtag<T>(path: string, init: RequestInit = {}): Promise<{ body: T; etag: string | null }> {
 	const response = await fetch(`${base}${path}`, {
 		...init,
 		headers: { "content-type": "application/json", "x-gyre-token": token, ...(init.headers ?? {}) },
 	});
-	const body = (await response.json().catch(() => ({}))) as { error?: string };
+	const body = (await response.json().catch(error => {
+		// An aborted body read is a failure, not an empty response.
+		if (init.signal?.aborted) throw error;
+		return {};
+	})) as { error?: string };
 	if (!response.ok) throw new GatewayError(body.error ?? `HTTP ${response.status}`, undefined, response.status);
-	return body as T;
+	return { body: body as T, etag: response.headers.get("etag") };
+}
+
+export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+	return (await apiWithEtag<T>(path, init)).body;
 }
 
 type Listener = (message: ServerMessage) => void;

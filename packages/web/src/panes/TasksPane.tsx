@@ -7,6 +7,8 @@ import { api, gateway } from "../lib/gateway";
 import { useApp } from "../store/app";
 import { useChats } from "../store/chats";
 
+const POLL_TIMEOUT_MS = 10_000;
+
 function uptime(since?: number): string {
 	if (!since) return "";
 	const s = Math.floor((Date.now() - since) / 1000);
@@ -39,6 +41,8 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 
 	useEffect(() => {
 		let live = true;
+		/** Aborts the in-flight poll when the pane unmounts. */
+		let inflight: AbortController | null = null;
 		const load = async () => {
 			// One poll at a time: an action that lands mid-poll queues a fresh read instead.
 			if (polling.current) {
@@ -47,8 +51,12 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 			}
 			polling.current = true;
 			const request = ++pollGeneration.current;
+			const controller = new AbortController();
+			inflight = controller;
+			// Both requests share one deadline and one cancellation, so a hung gateway cannot wedge polling.
+			const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(POLL_TIMEOUT_MS)]);
 			try {
-				const [c, p] = await Promise.all([api<ChatInfo[]>("/api/chats"), api<PtyInfo[]>("/api/ptys")]);
+				const [c, p] = await Promise.all([api<ChatInfo[]>("/api/chats", { signal }), api<PtyInfo[]>("/api/ptys", { signal })]);
 				if (live && request === pollGeneration.current) {
 					setLoaded(true);
 					setChats(c);
@@ -56,8 +64,11 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 					setError(null);
 				}
 			} catch (e) {
-				if (live && request === pollGeneration.current) setError(String((e as Error).message));
+				if (live && request === pollGeneration.current) {
+					setError(signal.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? "Task list request timed out." : String((e as Error).message));
+				}
 			} finally {
+				if (inflight === controller) inflight = null;
 				polling.current = false;
 				if (live && rerun.current) {
 					rerun.current = false;
@@ -74,6 +85,7 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 		return () => {
 			live = false;
 			clearInterval(timer);
+			inflight?.abort();
 		};
 	}, []);
 

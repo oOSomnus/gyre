@@ -389,11 +389,19 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			// ---- small UI-owned key/value records (drafts, preferences) ----
 			const kvMatch = path.match(/^\/api\/kv\/(ui\.[A-Za-z0-9._-]{1,64})$/);
 			if (kvMatch?.[1]) {
-				if (method === "GET") return json(store.getKv(kvMatch[1]) ?? null);
+				const key = kvMatch[1];
+				if (method === "GET") return json(store.getKv(key) ?? null, 200, { etag: store.kvEtag(key) });
 				if (method === "PUT") {
 					const body = await req.json();
-					store.setKv(kvMatch[1], body);
-					return json(body);
+					// Optimistic concurrency: `If-Match: <etag from GET>` writes only if nobody changed the record since.
+					const ifMatch = req.headers.get("if-match");
+					if (ifMatch) {
+						const etag = store.setKvIfMatch(key, body, ifMatch);
+						if (!etag) return json({ error: "the record changed since it was read" }, 412, { etag: store.kvEtag(key) });
+						return json(body, 200, { etag });
+					}
+					store.setKv(key, body);
+					return json(body, 200, { etag: store.kvEtag(key) });
 				}
 			}
 

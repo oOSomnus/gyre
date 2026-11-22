@@ -98,6 +98,21 @@ export class Store {
 		return row ? (JSON.parse(row.value) as T) : undefined;
 	}
 
+	/** A version tag for a KV record: a hash of its stored text, or "absent". */
+	kvEtag(key: string): string {
+		const row = this.db.query<{ value: string }, [string]>("SELECT value FROM kv WHERE key = ?").get(key);
+		return row ? `"${new Bun.CryptoHasher("sha256").update(row.value).digest("hex").slice(0, 32)}"` : '"absent"';
+	}
+
+	/** Write only if the record still has `etag`; returns the new etag, or null when it changed. Atomic. */
+	setKvIfMatch(key: string, value: unknown, etag: string): string | null {
+		return this.db.transaction(() => {
+			if (this.kvEtag(key) !== etag) return null;
+			this.setKv(key, value);
+			return this.kvEtag(key);
+		})();
+	}
+
 	setKv(key: string, value: unknown): void {
 		this.db.query("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, JSON.stringify(value));
 	}

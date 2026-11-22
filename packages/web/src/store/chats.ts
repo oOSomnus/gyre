@@ -468,8 +468,22 @@ export async function loadCommands(chatId: string): Promise<void> {
 	useChats.getState().patch(chatId, { commands });
 }
 
-/** Called once at startup: route gateway messages into the store. */
-export function wireChatStore(): void {
+/** Drop every piece of client state for a chat (after an explicit close). */
+export function forgetChat(chatId: string): void {
+	clearTimeout(refreshTimers.get(chatId));
+	refreshTimers.delete(chatId);
+	turnRevisions.delete(chatId);
+	historyEpochs.delete(chatId);
+	sessionTransitions.delete(chatId);
+	useChats.getState().remove(chatId);
+}
+
+/**
+ * Called once at startup: route gateway messages into the store. `accepts`
+ * (the chat lifecycle) drops messages for chats this client is not attached to,
+ * so a closed chat's exit broadcast cannot bring it back.
+ */
+export function wireChatStore({ accepts }: { accepts(chatId: string): boolean }): void {
 	// A newly submitted plan (or a new revision) opens the review pane next to its chat.
 	useChats.subscribe((state, prev) => {
 		for (const [chatId, chat] of Object.entries(state.chats)) {
@@ -482,6 +496,7 @@ export function wireChatStore(): void {
 	gateway.on(message => {
 		const store = useChats.getState();
 		if (message.t === "chat" || message.t === "chat_replay") {
+			if (!accepts(message.chat.chatId)) return;
 			const old = store.chats[message.chat.chatId];
 			const replaced = old?.info.generation !== message.chat.generation;
 			const previous = store.chats[message.chat.chatId]?.info.status;
@@ -495,6 +510,7 @@ export function wireChatStore(): void {
 				refreshState(message.chat.chatId, 0);
 			}
 		} else if (message.t === "frame") {
+			if (!accepts(message.chatId)) return;
 			const buffered = sessionTransitions.get(message.chatId);
 			if (buffered) {
 				buffered.push(message.frame);

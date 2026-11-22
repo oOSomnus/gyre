@@ -6,6 +6,7 @@ import { needsSetup, useOmpStatus } from "../lib/ompStatus";
 import { OmpSetupGuide } from "../shell/OmpSetup";
 import { stripAnsi } from "../lib/omp";
 import { useApp } from "../store/app";
+import { attachPane } from "../store/chat-lifecycle";
 import { useChats } from "../store/chats";
 import { AssistantMessage, CommandOutputCard, EventRow, GenericMessage, NoticeCard, PlanBanner, UserCard } from "./Cards";
 import { ChatStrip } from "./ChatStrip";
@@ -13,28 +14,6 @@ import { Composer } from "./Composer";
 import { DialogCard } from "./DialogCard";
 import { isPlanSubmitAbort } from "./planAbort";
 import { Gyroscope } from "../shell/Gyroscope";
-
-const opening = new Set<string>();
-
-export function ensureChat(pane: PaneSpec, force = false): void {
-	if (!pane.projectId) return;
-	const existing = useChats.getState().chats[pane.id];
-	if (!force && (existing?.info.status === "ready" || existing?.info.status === "starting" || opening.has(pane.id))) return;
-	opening.add(pane.id);
-	void gateway
-		.openChat(pane.projectId, { chatId: pane.id, sessionPath: pane.sessionPath })
-		.then(info => useChats.getState().setInfo(info))
-		.catch(error =>
-			useChats.getState().setInfo({
-				chatId: pane.id,
-				projectId: pane.projectId ?? "",
-				cwd: "",
-				status: "exited",
-				error: String((error as Error).message),
-			}),
-		)
-		.finally(() => opening.delete(pane.id));
-}
 
 export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }) {
 	const chat = useChats(s => s.chats[pane.id]);
@@ -45,7 +24,7 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 	const [stick, setStick] = useState(true);
 
 	useEffect(() => {
-		ensureChat(pane);
+		attachPane(pane);
 	}, [pane]);
 
 	// Remember the bound session so the pane reopens it after restart.
@@ -149,7 +128,7 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 							<div className="gy-card-body space-y-2">
 								<div className="text-[13px] font-medium">omp is not running</div>
 								{chat.info.error && <pre className="gy-pre">{stripAnsi(chat.info.error)}</pre>}
-								<button type="button" className="gy-btn" onClick={() => ensureChat(pane, true)} data-jump="restart">
+								<button type="button" className="gy-btn" onClick={() => attachPane(pane, true)} data-jump="restart">
 									<RotateCw size={13} /> Restart
 								</button>
 							</div>

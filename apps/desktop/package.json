@@ -1,0 +1,11 @@
+{
+  "name": "@gyre/desktop",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare-sidecar": "bun ../../scripts/build-desktop.ts --sidecar-only",
+    "dev": "tauri dev",
+    "build": "bun ../../scripts/build-desktop.ts"
+  },
+  "devDependencies": { "@tauri-apps/cli": "^2" }
+}

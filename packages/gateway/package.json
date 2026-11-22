@@ -1,0 +1,20 @@
+{
+  "name": "@gyre/gateway",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts",
+    "build": "bun build --compile src/main.ts --outfile dist/gyre-gateway --external omp-legacy-pi-modules",
+    "typecheck": "tsc -p .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@gyre/protocol": "workspace:*",
+    "@oh-my-pi/pi-coding-agent": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  }
+}

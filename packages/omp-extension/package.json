@@ -1,0 +1,19 @@
+{
+  "name": "@gyre/omp-extension",
+  "private": true,
+  "type": "module",
+  "description": "Gyre's omp extension: plan mode over RPC with Plannotator review.",
+  "omp": {
+    "extensions": ["src/index.ts"]
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@gyre/protocol": "workspace:*",
+    "@oh-my-pi/pi-coding-agent": "19.1.0",
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  }
+}

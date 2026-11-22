@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Daily: catch omp upstream releases that break the RPC contract.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # "pinned" tests the version in packages/gateway/package.json;
+        # "latest" tests the newest omp release so upstream drift shows up early.
+        omp: [pinned, latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.5
+      - name: Install omp
+        run: |
+          if [ "${{ matrix.omp }}" = "latest" ]; then
+            VERSION=$(npm view @oh-my-pi/pi-coding-agent version)
+          else
+            VERSION=$(jq -r '.dependencies["@oh-my-pi/pi-coding-agent"]' packages/gateway/package.json)
+          fi
+          bun install -g "@oh-my-pi/pi-coding-agent@$VERSION"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+      - name: Give omp a placeholder model
+        # The runner has no provider credentials, and omp refuses to start in RPC
+        # mode without a usable model. The contract tests make no model calls, so
+        # a local placeholder that never answers is enough and keeps runs deterministic.
+        run: |
+          mkdir -p "$HOME/.omp/agent"
+          cat > "$HOME/.omp/agent/models.yml" <<'EOF'
+          providers:
+            ci-local:
+              baseUrl: http://127.0.0.1:9/v1
+              apiKey: ci-no-calls
+              api: openai-completions
+              models:
+                - id: ci-model
+                  name: CI placeholder (never called)
+          EOF
+      - name: Bump pin (latest only)
+        if: matrix.omp == 'latest'
+        run: bun scripts/bump-omp.ts "$(omp --version | sed 's#^omp/##')"
+      - run: bun install
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run --cwd packages/web build

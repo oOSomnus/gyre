@@ -1,0 +1,16 @@
+{
+  "name": "gyre",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev:gateway": "bun run --cwd packages/gateway dev",
+    "dev:web": "bun run --cwd packages/web dev",
+    "build": "bun run --cwd packages/web build && bun run --cwd packages/gateway build",
+    "test": "bun --cwd packages/web test && bun --cwd packages/omp-extension test && bun --cwd packages/gateway test",
+    "icon": "bun packages/e2e/render-icon.ts",
+    "typecheck": "bun run --cwd packages/gateway typecheck && bun run --cwd packages/omp-extension typecheck && bun run --cwd packages/web typecheck",
+    "bump-omp": "bun scripts/bump-omp.ts"
+  },
+  "packageManager": "bun@1.4.5"
+}

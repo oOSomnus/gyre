@@ -120,6 +120,40 @@ try {
 		page.evaluate(frame => {
 			(window as any).__gyre.useChats.getState().apply("chat", frame);
 		}, frame);
+	/**
+	 * Arm a one-shot observer for the next fetch matching `urlPart` and `method`.
+	 * `processed()` then resolves only after the app has read that response's body
+	 * (the app's `api()` reads with `response.json()`), its continuations have run,
+	 * and two frames have rendered: proof the client handled it, not just that the
+	 * route was fulfilled.
+	 */
+	const armProcessed = (urlPart: string, method: string) =>
+		page.evaluate(
+			([urlPart, method]) => {
+				const w = window as any;
+				const original = window.fetch;
+				w.__processed = new Promise<void>(resolve => {
+					window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+						const response = await original(input, init);
+						const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+						const verb = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+						if (!url.includes(urlPart) || verb !== method) return response;
+						window.fetch = original;
+						const json = response.json.bind(response);
+						response.json = async () => {
+							try {
+								return await json();
+							} finally {
+								setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+							}
+						};
+						return response;
+					};
+				});
+			},
+			[urlPart, method] as const,
+		);
+	const processed = () => page.evaluate(() => (window as any).__processed as Promise<void>);
 	const until = async (check: () => boolean) => {
 		const end = Date.now() + 5000;
 		while (!check()) {
@@ -352,20 +386,20 @@ try {
 		let release!: () => void;
 		const gate = new Promise<void>(resolve => { release = resolve; });
 		let waiting = false;
-		let completed = false;
 		let hold = true;
 		await page.route("**/api/mcp?**", async route => {
 			const projectId = new URL(route.request().url()).searchParams.get("projectId");
-			if (projectId === registered.id && hold) { waiting = true; await gate; completed = true; }
+			if (projectId === registered.id && hold) { waiting = true; await gate; }
 			await route.fulfill({ json: [{ name: projectId === registered.id ? "server-A" : "server-B", scope: "project", enabled: true, config: { command: "example" } }] });
 		});
+		await armProcessed(`projectId=${registered.id}`, "GET");
 		await page.evaluate(() => (window as any).__gyre.useApp.getState().addPane({ id: "mcp-review", kind: "settings", section: "mcp" }));
 		const pane = page.locator('[data-pane="mcp-review"]');
 		await until(() => waiting);
 		await pane.locator("select").first().selectOption(otherProject.id);
 		await pane.locator('[data-mcp="server-B"]').waitFor();
 		release();
-		await until(() => completed);
+		await processed();
 		hold = false;
 		assert(await pane.locator('[data-mcp="server-A"]').count() === 0, "late A rows replaced B");
 		await pane.locator("select").first().selectOption(registered.id);
@@ -428,7 +462,6 @@ try {
 		let release!: () => void;
 		const gate = new Promise<void>(resolve => { release = resolve; });
 		let waiting = false;
-		let completed = false;
 		await page.route("**/api/agents**", route => {
 			if (route.request().method() === "PUT") return route.fulfill({ json: {} });
 			const projectId = new URL(route.request().url()).searchParams.get("projectId");
@@ -436,18 +469,19 @@ try {
 			return route.fulfill({ json: [{ name, scope: "project", frontmatter: { description: name }, instructions: "prompt" }] });
 		});
 		await page.route("**/api/kv/ui.agentDrafts", async route => {
-			if (route.request().method() === "PUT") { waiting = true; await gate; await route.fulfill({ json: {} }); completed = true; return; }
+			if (route.request().method() === "PUT") { waiting = true; await gate; await route.fulfill({ json: {} }); return; }
 			return route.continue();
 		});
 		await page.evaluate(projectId => (window as any).__gyre.useApp.getState().addPane({ id: "late-publish", kind: "studio", projectId }), registered.id);
 		const pane = page.locator('[data-pane="late-publish"]');
 		await pane.getByRole("button", { name: "agent-A", exact: false }).click();
+		await armProcessed("/api/kv/ui.agentDrafts", "PUT");
 		await pane.getByTestId("publish-agent").click();
 		await until(() => waiting);
 		await pane.locator("select").first().selectOption(otherProject.id);
 		await pane.getByRole("button", { name: "agent-B", exact: false }).click();
 		release();
-		await until(() => completed);
+		await processed();
 		await pane.locator(".gy-section").filter({ hasText: "Edit agent-B" }).first().waitFor();
 		assert(await pane.getByTestId("agent-name").inputValue() === "agent-B", "A publish changed B editor identity");
 		assert(await pane.getByRole("button", { name: "agent-A", exact: false }).count() === 0, "A publish replaced B's list");

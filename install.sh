@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Gyre installer: a guided setup for the Gyre web (browser) version and/or the
-# desktop app, plus the omp coding agent, the optional Plannotator plan-review
-# plugin, and omp's first model provider.
+# Gyre installer: installs the Gyre web (browser) version or the desktop app,
+# the omp coding agent and the optional Plannotator plan-review plugin, and
+# checks that omp has a model provider.
 #
 #   curl -fsSL https://raw.githubusercontent.com/oOSomnus/gyre/main/install.sh | bash
 #
@@ -9,7 +9,7 @@
 #   curl -fsSL …/install.sh | bash -s -- --web --with-plannotator --yes
 #
 # Flags:
-#   --web | --desktop | --both    what to install (default: ask; web if not interactive)
+#   --web | --desktop             what to install (default: ask; web if not interactive)
 #   --install-omp | --no-omp      install omp if it is missing, or skip the omp step
 #   --with-plannotator | --no-plannotator
 #   --version vX.Y.Z              a specific release (default: latest)
@@ -117,7 +117,7 @@ Gyre installer
   curl -fsSL https://raw.githubusercontent.com/oOSomnus/gyre/main/install.sh | bash
   curl -fsSL …/install.sh | bash -s -- [flags]
 
-  --web | --desktop | --both              what to install (default: ask)
+  --web | --desktop                       what to install (default: ask)
   --install-omp | --no-omp                install omp if missing, or skip that step
   --with-plannotator | --no-plannotator   install the Plannotator plan-review plugin, or not
   --version vX.Y.Z                        a specific release (default: latest)
@@ -132,7 +132,6 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 		--web) WHAT=web ;;
 		--desktop) WHAT=desktop ;;
-		--both) WHAT=both ;;
 		--install-omp) OMP_CHOICE=install ;;
 		--no-omp) OMP_CHOICE=skip ;;
 		--with-plannotator) PLANNOTATOR_CHOICE=install ;;
@@ -275,10 +274,9 @@ step "What to install"
 if [ -z "$WHAT" ]; then
 	if [ "$DESKTOP_OK" = 1 ]; then
 		choose "Which version of Gyre?" 1 \
-			"Web: runs a local server, opens in your browser (also reachable from your phone)" \
-			"Desktop app: a native window (.deb or AppImage)" \
-			"Both"
-		case "$CHOICE" in 1) WHAT=web ;; 2) WHAT=desktop ;; 3) WHAT=both ;; esac
+			"Web: a local server that opens Gyre in your browser" \
+			"Desktop app: a native window (.deb or AppImage)"
+		case "$CHOICE" in 1) WHAT=web ;; 2) WHAT=desktop ;; esac
 	else
 		WHAT=web
 		note "The desktop app is built for Linux x64 only; installing the web version."
@@ -301,8 +299,17 @@ ok "Gyre $GYRE_VERSION (tested with omp $OMP_VERSION)"
 # ------------------------------------------------------------------ 2. install Gyre
 
 step "Installing Gyre"
-INSTALLED_WEB=0
-INSTALLED_DESKTOP=""
+# write_launcher BODY: the `gyre` command, which starts the installed version.
+write_launcher() {
+	mkdir -p "$BIN_DIR"
+	printf '#!/bin/sh\n# Gyre launcher (installed by install.sh).\n%s\n' "$1" >"$BIN_DIR/gyre"
+	chmod +x "$BIN_DIR/gyre"
+	ok "Launcher → $BIN_DIR/gyre"
+	if ! on_path "$BIN_DIR"; then
+		warn "$BIN_DIR is not on your PATH. Add it, e.g.:"
+		cmd "echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc   # or ~/.zshrc"
+	fi
+}
 
 install_web() {
 	local asset="gyre-web-$OS-$ARCH.tar.gz"
@@ -316,25 +323,15 @@ install_web() {
 	mv "$TMP/unpack/gyre" "$INSTALL_DIR.new"
 	rm -rf "$INSTALL_DIR"
 	mv "$INSTALL_DIR.new" "$INSTALL_DIR"
-	cat >"$BIN_DIR/gyre" <<EOF
-#!/bin/sh
-# Gyre launcher (installed by install.sh). \`gyre --no-open\` skips opening the browser.
-open=--open
-if [ "\${1:-}" = "--no-open" ]; then open=; shift; fi
-exec "$INSTALL_DIR/gyre-gateway" \$open "\$@"
-EOF
-	chmod +x "$BIN_DIR/gyre"
 	ok "Web version → $INSTALL_DIR"
-	ok "Launcher    → $BIN_DIR/gyre"
-	if ! on_path "$BIN_DIR"; then
-		warn "$BIN_DIR is not on your PATH. Add it, e.g.:"
-		cmd "echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc   # or ~/.zshrc"
-	fi
-	INSTALLED_WEB=1
+	write_launcher "# \`gyre --no-open\` prints the URL instead of opening the browser.
+open=--open
+if [ \"\${1:-}\" = \"--no-open\" ]; then open=; shift; fi
+exec \"$INSTALL_DIR/gyre-gateway\" \$open \"\$@\""
 }
 
 install_desktop() {
-	local how=2
+	local how=2 app
 	if have apt-get && have dpkg; then
 		choose "How should the desktop app be installed?" 1 \
 			"System package (.deb, uses sudo apt; adds Gyre to your app menu)" \
@@ -350,8 +347,8 @@ install_desktop() {
 		verify "$TMP/$asset" "$asset"
 		note "Installing with apt (you may be asked for your password)"
 		sudo apt-get install -y "$TMP/$asset" </dev/tty
-		INSTALLED_DESKTOP=deb
-		ok "Desktop app installed (.deb): launch \"Gyre\" from your app menu"
+		app=/usr/bin/gyre-desktop
+		ok "Desktop app installed (.deb)"
 	else
 		local asset="gyre-desktop-linux-x64.AppImage"
 		note "Downloading $asset"
@@ -371,8 +368,8 @@ Terminal=false
 Categories=Development;
 EOF
 		have update-desktop-database && update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
-		INSTALLED_DESKTOP=appimage
-		ok "Desktop app → $BIN_DIR/Gyre.AppImage (app menu entry added)"
+		app="$BIN_DIR/Gyre.AppImage"
+		ok "Desktop app → $app (app menu entry added)"
 		if ! ldconfig -p 2>/dev/null | grep -q 'libfuse.so.2'; then
 			warn "AppImages need FUSE 2. If Gyre does not start, install it (Ubuntu/Debian):"
 			cmd "sudo apt install libfuse2   # Ubuntu 24.04+: libfuse2t64"
@@ -382,15 +379,14 @@ EOF
 			cmd "sudo apt install libwebkit2gtk-4.1-0"
 		fi
 	fi
+	write_launcher "# Starts the desktop app in the background; its output goes to ~/.gyre/desktop.log.
+mkdir -p \"\$HOME/.gyre\"
+nohup \"$app\" \"\$@\" >\"\$HOME/.gyre/desktop.log\" 2>&1 &"
 }
 
 case "$WHAT" in
 	web) install_web ;;
 	desktop) install_desktop ;;
-	both)
-		install_web
-		install_desktop
-		;;
 esac
 
 # ------------------------------------------------------------------ 3. omp
@@ -479,8 +475,8 @@ elif [ "$PLANNOTATOR_CHOICE" = skip ]; then
 	note "Skipped (--no-plannotator)."
 	manual_plannotator
 else
-	say "  Plannotator adds a visual review page for plans: annotate, comment and approve"
-	say "  them inside Gyre. Without it, Gyre uses its own simpler review card."
+	say "  Plannotator adds a review page for plans where you annotate, comment and approve."
+	say "  Without it, Gyre uses its own simpler review card."
 	install_it=1
 	if [ "$PLANNOTATOR_CHOICE" != install ]; then ask_yn "Install Plannotator (recommended)?" y || install_it=0; fi
 	if [ "$install_it" = 1 ]; then
@@ -511,13 +507,12 @@ fi
 # ------------------------------------------------------------------ summary
 
 printf '\n%s  ◎ Done%s\n' "$B$GRN" "$R"
-if [ "$INSTALLED_WEB" = 1 ]; then
-	say "  ${B}Web:${R} run ${B}gyre${R} — it starts the local server and opens Gyre in your browser."
-	note "  (${B}gyre --no-open${R}${D} prints the URL instead; Ctrl-C stops the server.)"
-fi
-case "$INSTALLED_DESKTOP" in
-	deb) say "  ${B}Desktop:${R} open \"Gyre\" from your app menu." ;;
-	appimage) say "  ${B}Desktop:${R} open \"Gyre\" from your app menu, or run $BIN_DIR/Gyre.AppImage" ;;
+case "$WHAT" in
+	web)
+		say "  Run ${B}gyre${R} to start the local server and open Gyre in your browser."
+		note "${B}gyre --no-open${R}${D} prints the URL instead. Ctrl-C stops the server."
+		;;
+	desktop) say "  Run ${B}gyre${R}, or open Gyre from your app menu." ;;
 esac
 if [ -n "$BUN_DIR_ADDED" ]; then
 	note "$BUN_DIR_ADDED (bun, omp) was not on your PATH. If a new terminal can't find omp, add it:"

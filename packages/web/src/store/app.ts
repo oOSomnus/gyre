@@ -59,7 +59,9 @@ interface AppStore {
 
 	load(): Promise<void>;
 	addProject(path: string, name?: string): Promise<Project>;
+	/** Remove a project: the gateway stops its chats and terminals; its panes close everywhere. */
 	removeProject(id: string): Promise<void>;
+	renameProject(id: string, name: string): Promise<void>;
 
 	activeWorkspace(): Workspace | null;
 	createWorkspace(name: string): void;
@@ -379,6 +381,18 @@ export const useApp = create<AppStore>((set, get) => {
 		async removeProject(id) {
 			await api(`/api/projects/${id}`, { method: "DELETE" });
 			set(state => ({ projects: state.projects.filter(p => p.id !== id) }));
+			for (const ws of get().workspaces) {
+				for (const pane of Object.values(ws.panes)) {
+					if (pane.projectId !== id) continue;
+					closePaneResources(pane);
+					get().closePane(pane.id);
+				}
+			}
+		},
+
+		async renameProject(id, name) {
+			const project = await api<Project>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify({ name }) });
+			set(state => ({ projects: state.projects.map(p => (p.id === id ? project : p)) }));
 		},
 
 		activeWorkspace() {

@@ -56,7 +56,7 @@ await step("adds a project via the welcome dialog", async () => {
 	if (await pathInput.isVisible({ timeout: 3000 }).catch(() => false)) {
 		await shot(page, "01-welcome");
 		await pathInput.fill(project);
-		await page.getByRole("button", { name: "Add project" }).click();
+		await page.getByTestId("add-project-submit").click();
 	}
 	await page.locator("[data-composer]").first().waitFor({ timeout: 15_000 });
 });

@@ -6,6 +6,13 @@
  */
 import { RpcFrameEncoder } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-frame";
 
+// One-shot CLI subcommands the gateway runs (`omp models --json` for the setup check).
+if (process.argv[2] === "models") {
+	const none = process.env.FAKE_NO_MODELS === "1";
+	process.stdout.write(JSON.stringify({ models: none ? [] : [{ provider: "test", id: "fake", selector: "test/fake" }] }));
+	process.exit(0);
+}
+
 const encoder = new RpcFrameEncoder();
 const write = (frame: object) => process.stdout.write(encoder.encode(frame));
 const respond = (id: unknown, command: string, data?: unknown) => write({ type: "response", id, command, success: true, data });

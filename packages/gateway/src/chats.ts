@@ -21,6 +21,8 @@ export interface ChatManagerOptions {
 	extensions?: string[];
 	/** Extra environment for a chat's omp process. */
 	envFor?: (chatId: string) => Record<string, string | undefined>;
+	/** Called when a chat's omp process exits, with its stderr tail. */
+	onExit?: (code: number | null, stderrTail: string) => void;
 }
 
 /** Frames whose latest value a late subscriber should receive. */
@@ -134,6 +136,7 @@ export class ChatManager {
 				chat.broadcast({ t: "frame", chatId, frame });
 			},
 			onExit: (code, stderrTail) => {
+				this.options.onExit?.(code, stderrTail);
 				chat.busy = false;
 				chat.pendingUi.clear();
 				chat.setInfo({

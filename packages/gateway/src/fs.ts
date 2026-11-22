@@ -1,8 +1,9 @@
 /** Read-only, project-scoped file access for the file viewer pane. */
-import { readdir, realpath } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
-import type { FsEntry } from "@gyre/protocol";
-import { closeSync, fstatSync, readSync } from "node:fs";
+import { readdir, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { BrowseEntry, BrowseListing, FsEntry } from "@gyre/protocol";
+import { closeSync, existsSync, fstatSync, readSync } from "node:fs";
 import { isContained, openContained } from "./contained-file";
 
 const MAX_READ_BYTES = 2 * 1024 * 1024;
@@ -99,4 +100,49 @@ export async function readText(root: string, relPath: string): Promise<{ path: s
 	} finally {
 		closeSync(fd);
 	}
+}
+
+const MAX_BROWSE_ENTRIES = 2000;
+
+/** Expand a leading `~` to the home directory. */
+export function expandHome(path: string, home = homedir()): string {
+	return path.replace(/^~(?=\/|$)/, home);
+}
+
+/**
+ * Directories under an absolute path, for the "add project" folder browser. Unlike the
+ * project-scoped calls above this may look anywhere the gateway user can read: anyone
+ * holding the gateway token can already open a shell, so it grants nothing new.
+ */
+export async function browseDirs(path: string | null, showHidden = false): Promise<BrowseListing> {
+	const home = homedir();
+	const requested = expandHome(path?.trim() || home, home);
+	if (!isAbsolute(requested)) throw new FsAccessError("path must be absolute (or start with ~)", 400);
+	let dir: string;
+	try {
+		dir = await realpath(resolve(requested));
+		if (!(await stat(dir)).isDirectory()) throw new FsAccessError(`not a directory: ${requested}`, 400);
+	} catch (error) {
+		if (error instanceof FsAccessError) throw error;
+		throw new FsAccessError(`not found: ${requested}`, 404);
+	}
+	let dirents: import("node:fs").Dirent[];
+	try {
+		dirents = await readdir(dir, { withFileTypes: true });
+	} catch {
+		throw new FsAccessError(`cannot read ${dir}`, 403);
+	}
+	const entries: BrowseEntry[] = [];
+	for (const entry of dirents) {
+		if (!showHidden && (entry.name.startsWith(".") || HIDDEN_DIRS.has(entry.name))) continue;
+		const abs = join(dir, entry.name);
+		let isDir = entry.isDirectory();
+		if (entry.isSymbolicLink()) isDir = await stat(abs).then(info => info.isDirectory()).catch(() => false);
+		if (!isDir) continue;
+		entries.push({ name: entry.name, path: abs, isGitRepo: existsSync(join(abs, ".git")) });
+		if (entries.length >= MAX_BROWSE_ENTRIES) break;
+	}
+	entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+	const parent = dirname(dir);
+	return { path: dir, parent: parent === dir ? null : parent, home, entries };
 }

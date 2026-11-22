@@ -6,6 +6,7 @@ import { useApp } from "../store/app";
 import { useChats } from "../store/chats";
 import { numberedPanes, closePaneAndResources } from "../store/actions";
 import { NewPaneMenu } from "./TopBar";
+import { OmpSetupGuide } from "./OmpSetup";
 import { PaneContent, PaneMenu } from "./PaneGrid";
 import { PANE_META, paneTitle } from "./panes";
 
@@ -36,7 +37,8 @@ export function MobileShell() {
 						</div>
 					</section>
 				) : (
-					<div className="flex h-full items-center justify-center" style={{ color: "var(--chrome-text)" }}>
+					<div className="flex h-full flex-col items-center justify-center gap-4 overflow-auto p-3" style={{ color: "var(--chrome-text)" }}>
+						<OmpSetupGuide />
 						No panes yet
 					</div>
 				)}

@@ -3,20 +3,23 @@
  * through omp's own CLI/config files by the gateway (changes apply live where
  * omp hot-reloads, otherwise a chat restart is offered).
  */
-import type { PaneSpec } from "@gyre/protocol";
-import { CheckCircle2, Copy, KeyRound, Loader2, LogOut, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import type { PaneSpec, ProjectUsage } from "@gyre/protocol";
+import { CheckCircle2, Copy, FolderGit2, KeyRound, Loader2, LogOut, MessagesSquare, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { api, gateway, token } from "../lib/gateway";
 import type { ModelPickerRow } from "../lib/omp";
 import { useRoles, useRolesStore } from "../lib/roles";
 import { useRoutingStore } from "../lib/config-map";
 import { SHORTCUT_HELP } from "../shell/shortcuts";
+import { needsSetup, useOmpStatus } from "../lib/ompStatus";
+import { OmpSetupGuide } from "../shell/OmpSetup";
 import { useApp } from "../store/app";
 import { useChats } from "../store/chats";
 import { THEME_ORDER, THEMES, ThemeSwatch } from "../lib/themes";
 
 const SECTIONS = [
 	["general", "General"],
+	["projects", "Projects"],
 	["providers", "Providers"],
 	["roles", "Models & roles"],
 	["routing", "Agent routing"],
@@ -57,6 +60,10 @@ function Hint({ children }: { children: ReactNode }) {
 
 export function SettingsPane({ pane }: { pane?: PaneSpec }) {
 	const [section, setSection] = useState<Section>((pane?.section as Section) ?? "general");
+	// Opening settings at a section (e.g. "Manage projects…") retargets an existing pane too.
+	useEffect(() => {
+		if (pane?.section) setSection(pane.section as Section);
+	}, [pane?.section]);
 	return (
 		<div className="flex h-full min-h-0" style={{ background: "var(--panel)" }}>
 			<nav className="w-44 shrink-0 overflow-auto border-r py-1" style={{ borderColor: "var(--border-strong)", background: "var(--panel-2)" }}>
@@ -75,6 +82,7 @@ export function SettingsPane({ pane }: { pane?: PaneSpec }) {
 			</nav>
 			<div className="min-w-0 flex-1 overflow-auto">
 				{section === "general" && <General />}
+				{section === "projects" && <ProjectsSection />}
 				{section === "providers" && <Providers />}
 				{section === "roles" && <Roles />}
 				{section === "routing" && <Routing />}
@@ -92,7 +100,7 @@ export function SettingsPane({ pane }: { pane?: PaneSpec }) {
 // ---------------------------------------------------------------- general
 
 function General() {
-	const { theme, setTheme, projects, removeProject, setAddProjectOpen } = useApp();
+	const { theme, setTheme } = useApp();
 	return (
 		<>
 			<Head>Theme</Head>
@@ -126,26 +134,133 @@ function General() {
 					);
 				})}
 			</div>
+		</>
+	);
+}
+
+// ---------------------------------------------------------------- projects
+
+function ProjectsSection() {
+	const { projects, removeProject, renameProject, setAddProjectOpen, addPane, workspaces } = useApp();
+	const chats = useChats(s => s.chats);
+	const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
+	const [confirming, setConfirming] = useState<{ id: string; usage: ProjectUsage | null } | null>(null);
+	const [message, setMessage] = useState<string | null>(null);
+	const panesOf = (id: string) => workspaces.reduce((n, ws) => n + Object.values(ws.panes).filter(p => p.projectId === id).length, 0);
+	const runningChats = (id: string) => Object.values(chats).filter(c => c.info.projectId === id && c.info.status !== "exited").length;
+
+	const askRemove = async (id: string) => {
+		setMessage(null);
+		setConfirming({ id, usage: null });
+		const usage = await api<ProjectUsage>(`/api/projects/${id}/usage`).catch(() => null);
+		setConfirming(current => (current?.id === id ? { id, usage } : current));
+	};
+	const remove = async (id: string) => {
+		try {
+			await removeProject(id);
+			setConfirming(null);
+		} catch (e) {
+			setMessage((e as Error).message);
+		}
+	};
+	const rename = async () => {
+		if (!editing) return;
+		const name = editing.name.trim();
+		try {
+			if (name) await renameProject(editing.id, name);
+			setEditing(null);
+		} catch (e) {
+			setMessage((e as Error).message);
+		}
+	};
+
+	return (
+		<>
 			<Head
 				right={
-					<button type="button" className="gy-btn" onClick={() => setAddProjectOpen(true)}>
+					<button type="button" className="gy-btn primary" onClick={() => setAddProjectOpen(true)} data-testid="settings-add-project">
 						<Plus size={11} /> Add project
 					</button>
 				}
 			>
 				Projects
 			</Head>
-			{projects.map(p => (
-				<div key={p.id} className="gy-row">
-					<span className="text-[13px] font-medium">{p.name}</span>
-					<span className="min-w-0 flex-1 truncate font-mono text-[11.5px]" style={{ color: "var(--muted)" }}>
-						{p.path}
-					</span>
-					<button type="button" className="gy-icon-btn" title="Remove from Gyre (files are untouched)" onClick={() => void removeProject(p.id)}>
-						<Trash2 size={13} />
-					</button>
-				</div>
-			))}
+			<Hint>A project is a folder on this machine. Removing one stops its chats and terminals and closes its panes; files on disk are untouched.</Hint>
+			{message && <div className="gy-row text-[12.5px]" style={{ color: "var(--err)" }}>{message}</div>}
+			{projects.length === 0 && <Hint>No projects yet.</Hint>}
+			{projects.map(p => {
+				const panes = panesOf(p.id);
+				const running = runningChats(p.id);
+				return (
+					<div key={p.id} className="border-b" style={{ borderColor: "color-mix(in srgb, var(--border-strong) 20%, transparent)" }} data-testid="project-row">
+						<div className="gy-row flex-wrap">
+							<FolderGit2 size={14} className="shrink-0" />
+							{editing?.id === p.id ? (
+								<form
+									className="flex min-w-0 flex-1 gap-1.5"
+									onSubmit={e => {
+										e.preventDefault();
+										void rename();
+									}}
+								>
+									<input
+										autoFocus
+										className="gy-input h-7 min-w-0 flex-1"
+										value={editing.name}
+										onChange={e => setEditing({ id: p.id, name: e.target.value })}
+										onKeyDown={e => e.key === "Escape" && setEditing(null)}
+									/>
+									<button type="submit" className="gy-btn primary">
+										Save
+									</button>
+									<button type="button" className="gy-btn" onClick={() => setEditing(null)}>
+										Cancel
+									</button>
+								</form>
+							) : (
+								<div className="min-w-0 flex-1">
+									<div className="truncate text-[13px] font-medium">{p.name}</div>
+									<div className="truncate font-mono text-[11.5px]" style={{ color: "var(--muted)" }} title={p.path}>
+										{p.path}
+									</div>
+								</div>
+							)}
+							{running > 0 && <span className="gy-chip ok">{running} chat{running === 1 ? "" : "s"} running</span>}
+							{panes > 0 && <span className="gy-chip">{panes} pane{panes === 1 ? "" : "s"}</span>}
+							<button type="button" className="gy-btn" onClick={() => addPane({ kind: "chat", projectId: p.id })}>
+								<MessagesSquare size={11} /> New chat
+							</button>
+							<button type="button" className="gy-icon-btn" title="Rename" onClick={() => setEditing({ id: p.id, name: p.name })}>
+								<Pencil size={13} />
+							</button>
+							<button type="button" className="gy-icon-btn" title="Remove from Gyre" onClick={() => void askRemove(p.id)} data-testid="remove-project">
+								<Trash2 size={13} />
+							</button>
+						</div>
+						{confirming?.id === p.id && (
+							<div className="gy-row flex-wrap text-[12.5px]" style={{ background: "var(--panel-2)" }}>
+								<span className="min-w-0 flex-1">
+									Remove <b>{p.name}</b> from Gyre?{" "}
+									{confirming.usage === null
+										? "Checking what is running…"
+										: confirming.usage.chats + confirming.usage.terminals > 0
+											? `This stops ${confirming.usage.chats} chat(s) and ${confirming.usage.terminals} terminal(s)${panes ? ` and closes ${panes} pane(s)` : ""}.`
+											: panes
+												? `This closes ${panes} pane(s).`
+												: "Nothing is running in it."}{" "}
+									Files are not touched.
+								</span>
+								<button type="button" className="gy-btn danger" onClick={() => void remove(p.id)} data-testid="confirm-remove-project">
+									Remove
+								</button>
+								<button type="button" className="gy-btn" onClick={() => setConfirming(null)}>
+									Cancel
+								</button>
+							</div>
+						)}
+					</div>
+				);
+			})}
 		</>
 	);
 }
@@ -161,6 +276,7 @@ interface Provider {
 
 function Providers() {
 	const chatId = useAnyReadyChat();
+	const ompStatus = useOmpStatus(s => s.status);
 	const loginNotice = useChats(s => {
 		const items = chatId ? s.chats[chatId]?.items : undefined;
 		const last = items ? [...items].reverse().find(i => i.kind === "notice" && i.url) : undefined;
@@ -212,11 +328,25 @@ function Providers() {
 		for (const account of data?.accounts ?? []) await gateway.rpc(chatId, { type: "logout", providerId: provider.id, credentialId: account.credentialId });
 		load();
 	};
+	if (needsSetup(ompStatus)) {
+		return (
+			<>
+				<Head>Model providers</Head>
+				<div className="p-3">
+					<OmpSetupGuide />
+				</div>
+			</>
+		);
+	}
 	return (
 		<>
 			<Head>Model providers</Head>
 			<Hint>Credentials are stored by omp itself and shared with the omp CLI.</Hint>
-			{!chatId && <Hint>Open a chat first: sign-in runs through an omp process.</Hint>}
+			{!chatId && (
+				<Hint>
+					Open a chat to sign in from here (sign-in runs through an omp process), or run <span className="font-mono">omp login</span> in a terminal.
+				</Hint>
+			)}
 			{chatId && providers === null && (
 				<div className="gy-row">
 					<Loader2 size={14} className="animate-spin" />

@@ -1,4 +1,5 @@
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
+import { OmpSetupGuide } from "./OmpSetup";
 import type { FloatRect, LayoutNode, PaneSpec, Workspace } from "@gyre/protocol";
 import {
 	ArrowRightLeft,
@@ -422,8 +423,10 @@ export function PaneGrid() {
 function EmptyWorkspace() {
 	const { projects, addPane, setAddProjectOpen } = useApp();
 	return (
-		<div className="flex h-full flex-col items-center justify-center gap-5" style={{ color: "var(--chrome-text)" }}>
+		<div className="h-full overflow-auto p-4" style={{ color: "var(--chrome-text)" }}>
+		<div className="flex min-h-full flex-col items-center justify-center gap-5">
 			<Gyroscope state="idle" size={72} />
+			<OmpSetupGuide />
 			<div className="text-[17px] font-medium">This workspace is empty</div>
 			<div className="flex flex-wrap justify-center gap-2">
 				{projects.map(project => (
@@ -435,6 +438,7 @@ function EmptyWorkspace() {
 					<FolderGit2 size={13} /> Add project
 				</button>
 			</div>
+		</div>
 		</div>
 	);
 }

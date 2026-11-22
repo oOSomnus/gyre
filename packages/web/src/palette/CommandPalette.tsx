@@ -158,7 +158,9 @@ export function CommandPalette() {
 			{ id: "settings:roles", group: "Settings", label: "Models & roles", run: () => app.addPane({ kind: "settings", section: "roles" }) },
 			{ id: "settings:mcp", group: "Settings", label: "MCP servers", run: () => app.addPane({ kind: "settings", section: "mcp" }) },
 			{ id: "settings:studio", group: "Settings", label: "Agent Studio", run: () => app.addPane({ kind: "studio" }) },
-			{ id: "project:add", group: "Projects", label: "Add project…", run: () => app.setAddProjectOpen(true) },
+			{ id: "settings:providers", group: "Settings", label: "Model providers", keywords: "login sign in api key omp setup", run: () => app.addPane({ kind: "settings", section: "providers" }) },
+			{ id: "project:add", group: "Projects", label: "Add project…", keywords: "folder open", run: () => app.setAddProjectOpen(true) },
+			{ id: "project:manage", group: "Projects", label: "Manage projects…", keywords: "remove delete rename list", run: () => app.addPane({ kind: "settings", section: "projects" }) },
 		);
 		return list;
 	}, [app, chatId, chat]);

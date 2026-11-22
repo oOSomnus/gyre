@@ -1,6 +1,16 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { type ClientMessage, GATEWAY_VERSION, type PlanPrefs, type Project, type ServerMessage, type Workspace } from "@gyre/protocol";
+import {
+	type ClientMessage,
+	GATEWAY_VERSION,
+	type HealthInfo,
+	type OmpStatus,
+	type PlanPrefs,
+	type Project,
+	type ProjectUsage,
+	type ServerMessage,
+	type Workspace,
+} from "@gyre/protocol";
 import type { ServerWebSocket } from "bun";
 import { ChatManager, type ChatManagerOptions, type Subscriber } from "./chats";
 import { Store, WorkspaceConflictError } from "./db";
@@ -8,7 +18,7 @@ import { validWorkspace, validClientMessage } from "./validation";
 import { isContained, openContained } from "./contained-file";
 import { closeSync, fstatSync } from "node:fs";
 import { realpath } from "node:fs/promises";
-import { FsAccessError, listDir, readText, resolveInside } from "./fs";
+import { browseDirs, expandHome, FsAccessError, listDir, readText, resolveInside } from "./fs";
 import { OmpCli, OmpCliError } from "./omp-cli";
 import { OmpCommandError } from "./omp-process";
 import { PtyManager, type PtyListener } from "./pty";
@@ -59,6 +69,35 @@ export async function detectOmpVersion(ompPath = "omp"): Promise<string | null> 
 	}
 }
 
+/** omp prints this and exits when no provider is configured. */
+export const NO_MODELS_PATTERN = /No models available/i;
+
+/** Whether omp can run chats: it must exist and list at least one usable model. */
+export async function detectOmpStatus(cli: Pick<OmpCli, "run">, ompVersion: string | null): Promise<OmpStatus> {
+	if (ompVersion === null) return "missing";
+	try {
+		const result = await cli.run(["models", "--json"], undefined, 30_000);
+		if (result.code !== 0) return NO_MODELS_PATTERN.test(result.stderr + result.stdout) ? "no-models" : "unknown";
+		const parsed = JSON.parse(result.stdout) as { models?: unknown };
+		if (!Array.isArray(parsed.models)) return "unknown";
+		return parsed.models.length > 0 ? "ok" : "no-models";
+	} catch {
+		return "unknown";
+	}
+}
+
+/** Error code on `open_chat` results when omp cannot start chats until it is set up. */
+export const OMP_SETUP_CODE = "omp_setup";
+
+const SETUP_MESSAGE: Partial<Record<OmpStatus, string>> = {
+	missing: "omp is not installed. Install it, then press Re-check.",
+	"no-models": "omp has no model provider configured. Add one (e.g. run `omp login`), then press Re-check.",
+};
+
+class OmpSetupError extends Error {
+	readonly code = OMP_SETUP_CODE;
+}
+
 export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 	if (!config.token.trim()) throw new Error("gateway token must not be empty");
 	let stopping = false;
@@ -92,10 +131,30 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			PLANNOTATOR_BROWSER: "none",
 			PLANNOTATOR_INBOX_TOOL: "0",
 		}),
+		// A chat that dies because omp has no provider means setup is needed again.
+		onExit: (code, stderrTail) => {
+			if (code !== 0 && NO_MODELS_PATTERN.test(stderrTail)) ompStatus = "no-models";
+		},
 	});
 	const ptys = new PtyManager();
 	const ompCli = config.ompCli ?? new OmpCli(config.ompPath);
-	const ompVersion = await detectOmpVersion(config.ompPath);
+	let ompVersion = await detectOmpVersion(config.ompPath);
+	let ompStatus: OmpStatus = ompVersion === null ? "missing" : "checking";
+	/** Re-run the omp checks (startup, and "Re-check" after the user installs omp or adds a provider). */
+	const checkOmp = async (): Promise<OmpStatus> => {
+		ompVersion = await detectOmpVersion(config.ompPath);
+		ompStatus = await detectOmpStatus(ompCli, ompVersion);
+		return ompStatus;
+	};
+	// Listing models takes seconds; do not hold up startup for it.
+	let ompCheck = checkOmp();
+	const health = (): HealthInfo => ({ ok: true, version: GATEWAY_VERSION, ompVersion, ompStatus });
+	/** Chats need a working omp; fail fast with guidance rather than spawning omp to watch it exit. */
+	const requireOmpReady = async () => {
+		const status = ompStatus === "checking" ? await ompCheck : ompStatus;
+		const message = SETUP_MESSAGE[status];
+		if (message) throw new OmpSetupError(message);
+	};
 	const allowedHosts = new Set(config.allowedHosts ?? []);
 
 	const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -121,13 +180,22 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 	};
 
 	const optionalProject = (id: string | null | undefined): Project | undefined => (id ? projectOr404(id) : undefined);
+	const projectUsage = (projectId: string): ProjectUsage => ({
+		chats: [...chats.chats.values()].filter(chat => chat.info.projectId === projectId && chat.info.status !== "exited").length,
+		terminals: ptys.list().filter(pty => pty.projectId === projectId).length,
+	});
 	const scopeOf = (value: unknown): Scope => (value === "project" ? "project" : "user");
 
 	async function handleApi(req: Request, url: URL): Promise<Response> {
 		const path = url.pathname;
 		const method = req.method;
 		try {
-			if (path === "/api/health") return json({ ok: true, version: GATEWAY_VERSION, ompVersion });
+			if (path === "/api/health") return json(health());
+			if (path === "/api/omp/recheck" && method === "POST") {
+				ompCheck = checkOmp();
+				await ompCheck;
+				return json(health());
+			}
 			if (path === "/api/remote" && method === "GET") {
 				return json({ host: config.host, port: server.port, allowedHosts: [...allowedHosts], loopbackOnly: isLoopbackHost(config.host) });
 			}
@@ -142,15 +210,24 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			if (path === "/api/projects" && method === "POST") {
 				const body = (await req.json()) as { path?: string; name?: string };
 				if (!body.path) return fail("path is required");
-				const abs = resolve(body.path.replace(/^~(?=\/|$)/, process.env.HOME ?? "~"));
+				const abs = resolve(expandHome(body.path.trim()));
 				if (!existsSync(abs) || !statSync(abs).isDirectory()) return fail(`not a directory: ${abs}`);
 				return json(store.addProject(body.name?.trim() || basename(abs), abs));
 			}
+			const usageMatch = path.match(/^\/api\/projects\/([^/]+)\/usage$/);
+			if (usageMatch?.[1] && method === "GET") return json(projectUsage(projectOr404(usageMatch[1]).id));
 			const projectMatch = path.match(/^\/api\/projects\/([^/]+)$/);
 			if (projectMatch?.[1]) {
 				if (method === "DELETE") {
-					store.removeProject(projectMatch[1]);
-					return json({ ok: true });
+					// Removing a project stops its chats and terminals; files on disk are untouched.
+					const project = projectOr404(projectMatch[1]);
+					const stopped = projectUsage(project.id);
+					for (const pty of ptys.list()) if (pty.projectId === project.id) ptys.close(pty.ptyId);
+					await Promise.allSettled(
+						[...chats.chats.values()].filter(chat => chat.info.projectId === project.id).map(chat => chats.close(chat.info.chatId)),
+					);
+					store.removeProject(project.id);
+					return json({ ok: true, stopped });
 				}
 				if (method === "PATCH") {
 					const body = (await req.json()) as { name?: string };
@@ -186,6 +263,9 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				return json(await listSessions(project?.path));
 			}
 
+			if (path === "/api/fs/browse" && method === "GET") {
+				return json(await browseDirs(url.searchParams.get("path"), url.searchParams.get("hidden") === "1"));
+			}
 			if (path === "/api/fs/list" && method === "GET") {
 				const project = projectOr404(url.searchParams.get("projectId"));
 				return json(await listDir(project.path, url.searchParams.get("path") ?? "", url.searchParams.get("hidden") === "1"));
@@ -464,7 +544,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 		if (!ws.data.authed) {
 			if (message.t === "hello" && message.token === config.token) {
 				ws.data.authed = true;
-				send({ t: "welcome", version: GATEWAY_VERSION, ompVersion });
+				send({ t: "welcome", version: GATEWAY_VERSION, ompVersion, ompStatus });
 			} else {
 				send({ t: "error", message: "unauthorized" });
 				ws.close(4401, "unauthorized");
@@ -478,6 +558,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			case "open_chat": {
 				try {
 					const project = projectOr404(message.projectId);
+					await requireOmpReady();
 					const chat = await chats.open({
 						projectId: project.id,
 						cwd: project.path,
@@ -487,7 +568,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 					});
 					send({ t: "result", reqId: message.reqId, ok: true, data: chat.info });
 				} catch (error) {
-					send({ t: "result", reqId: message.reqId, ok: false, error: errorText(error) });
+					send({ t: "result", reqId: message.reqId, ok: false, error: errorText(error), code: error instanceof OmpSetupError ? error.code : undefined });
 				}
 				return;
 			}

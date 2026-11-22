@@ -77,7 +77,7 @@ export type ClientMessage =
 // ---------------------------------------------------------------------------
 
 export type ServerMessage =
-	| { t: "welcome"; version: string; ompVersion: string | null }
+	| { t: "welcome"; version: string; ompVersion: string | null; ompStatus?: OmpStatus }
 	| { t: "error"; message: string }
 	| { t: "result"; reqId: string; ok: true; data: unknown }
 	| { t: "result"; reqId: string; ok: false; error: string; code?: string }
@@ -96,6 +96,40 @@ export interface Project {
 	name: string;
 	path: string;
 	createdAt: number;
+}
+
+/**
+ * Whether omp can run chats: "missing" (no omp binary), "no-models" (no provider
+ * configured, so omp refuses to start), "unknown" (the check itself failed; chats
+ * are still allowed), "checking" while the first check runs.
+ */
+export type OmpStatus = "checking" | "ok" | "missing" | "no-models" | "unknown";
+
+export interface HealthInfo {
+	ok: boolean;
+	version: string;
+	ompVersion: string | null;
+	ompStatus: OmpStatus;
+}
+
+/** Running work tied to a project (shown before removing it). */
+export interface ProjectUsage {
+	chats: number;
+	terminals: number;
+}
+
+/** One directory in the folder browser (`GET /api/fs/browse`). */
+export interface BrowseEntry {
+	name: string;
+	path: string;
+	isGitRepo: boolean;
+}
+
+export interface BrowseListing {
+	path: string;
+	parent: string | null;
+	home: string;
+	entries: BrowseEntry[];
 }
 
 export interface SessionSummary {

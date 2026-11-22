@@ -1,8 +1,9 @@
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import type { PaneKind, Workspace } from "@gyre/protocol";
-import { Bell, Bot, Command, FolderPlus, Home, Pencil, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Bell, Bot, Command, FolderCog, FolderPlus, Home, Pencil, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { gateway, useConnectionState } from "../lib/gateway";
+import { needsSetup, useOmpStatus } from "../lib/ompStatus";
 import { paneStatus } from "../lib/status";
 import { isThemeId, THEME_ORDER, THEMES, ThemeSwatch } from "../lib/themes";
 import { computeRects, useApp } from "../store/app";
@@ -56,9 +57,30 @@ export function NewPaneMenu({ children }: { children: React.ReactNode }) {
 					<Dropdown.Item className={itemCls} onSelect={() => setAddProjectOpen(true)}>
 						<FolderPlus size={14} /> Add project…
 					</Dropdown.Item>
+					<Dropdown.Item className={itemCls} onSelect={() => addPane({ kind: "settings", section: "projects" })}>
+						<FolderCog size={14} /> Manage projects…
+					</Dropdown.Item>
 				</Dropdown.Content>
 			</Dropdown.Portal>
 		</Dropdown.Root>
+	);
+}
+
+/** Shown while omp cannot start chats; opens the setup guidance. */
+function OmpSetupChip() {
+	const status = useOmpStatus(s => s.status);
+	const addPane = useApp(s => s.addPane);
+	if (!needsSetup(status)) return null;
+	return (
+		<button
+			type="button"
+			className="gy-chip warn shrink-0"
+			title="omp cannot start chats yet"
+			onClick={() => addPane({ kind: "settings", section: "providers" })}
+			data-testid="omp-setup-chip"
+		>
+			<AlertTriangle size={11} /> {status === "missing" ? "Install omp" : "Add a provider"}
+		</button>
 	);
 }
 
@@ -244,6 +266,7 @@ export function TopBar() {
 				<button type="button" className="gy-chrome-icon" title="New workspace" onClick={() => createWorkspace(`Space ${workspaces.length + 1}`)} data-jump="new-workspace">
 					<Plus size={14} />
 				</button>
+				<OmpSetupChip />
 				<span className="hidden font-mono text-[10px] lg:inline" style={{ color: "var(--chrome-muted)" }} title="omp version">
 					omp {gateway.ompVersion ?? "?"}
 				</span>

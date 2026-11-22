@@ -2,6 +2,8 @@ import type { PaneSpec } from "@gyre/protocol";
 import { ArrowDown, Loader2, RotateCw } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { gateway } from "../lib/gateway";
+import { needsSetup, useOmpStatus } from "../lib/ompStatus";
+import { OmpSetupGuide } from "../shell/OmpSetup";
 import { stripAnsi } from "../lib/omp";
 import { useApp } from "../store/app";
 import { useChats } from "../store/chats";
@@ -38,6 +40,7 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 	const chat = useChats(s => s.chats[pane.id]);
 	const updatePane = useApp(s => s.updatePane);
 	const projects = useApp(s => s.projects);
+	const ompStatus = useOmpStatus(s => s.status);
 	const scroller = useRef<HTMLDivElement>(null);
 	const [stick, setStick] = useState(true);
 
@@ -140,7 +143,8 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 					{chat.pendingUi.map(request => (
 						<DialogCard key={request.id} chatId={pane.id} request={request} active={focused && request === latestDialog} />
 					))}
-					{chat.info.status === "exited" && (
+					{chat.info.status === "exited" && needsSetup(ompStatus) && <OmpSetupGuide projectId={pane.projectId} />}
+					{chat.info.status === "exited" && !needsSetup(ompStatus) && (
 						<div className="gy-card notice error">
 							<div className="gy-card-body space-y-2">
 								<div className="text-[13px] font-medium">omp is not running</div>

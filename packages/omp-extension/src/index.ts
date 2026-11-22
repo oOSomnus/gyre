@@ -99,11 +99,12 @@ export function isLocalUrl(path: unknown): boolean {
 }
 
 /** Every path-like argument of a mutating tool call. */
-export function targetPaths(input: Record<string, unknown>): string[] {
+export function targetPaths(input: Record<string, unknown>, toolName?: string): string[] {
 	const out: string[] = [];
 	const visit = (value: unknown, key?: string) => {
 		if (typeof value === "string") {
 			if (key && /^(path|file|filePath|file_path|target|targetPath|dest|destination|from|to)$/.test(key)) out.push(value);
+			if (toolName !== undefined && !(["edit", "apply_patch", "multi_edit"].includes(toolName) && ["input", "patch", "diff"].includes(key ?? ""))) return;
 			for (const match of value.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)) if (match[1]) out.push(match[1].trim());
 			for (const match of value.matchAll(/^\*\*\* Move to: (.+)$/gm)) if (match[1]) out.push(match[1].trim());
 			// omp hashline edits address files as `[path#hash]` section headers.
@@ -258,10 +259,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		});
 	}
 
-	async function decide(
-		ctx: ExtensionContext,
-		decision: { approved: boolean; feedback?: string; reviewId?: string },
-	): Promise<void> {
+	async function decide(ctx: ExtensionContext, decision: { approved: boolean; feedback?: string; reviewId?: string }): Promise<void> {
 		if (rt.phase !== "reviewing" || rt.busy) return;
 		if (decision.reviewId !== undefined && decision.reviewId !== rt.reviewId) return;
 		rt.busy = true;
@@ -278,6 +276,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 			}
 			await approve(ctx, decision.feedback);
 		} catch (error) {
+			rt.phase = "reviewing";
 			rt.error = error instanceof Error ? error.message : String(error);
 			notify(ctx, `Plan approval failed: ${rt.error}`, "error");
 			publish(ctx);
@@ -289,7 +288,8 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 	async function approve(ctx: ExtensionContext, notes?: string): Promise<void> {
 		const planFilePath = rt.planFilePath;
 		if (!planFilePath) throw new Error("no plan was submitted");
-		const content = (await readPlan(ctx, planFilePath)) ?? rt.planContent;
+		const content = await readPlan(ctx, planFilePath);
+		if (content !== rt.planContent) throw new Error("The plan changed after submission. Submit it again for review before approval.");
 		if (!content?.trim()) throw new Error(`the plan file ${planFilePath} is empty or missing`);
 		const prefs = readPrefs();
 
@@ -300,11 +300,22 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 			if (!ok) notify(ctx, `Could not switch to the ${prefs.role} role's model; continuing on the current model.`);
 		}
 
+		rt.phase = "executing";
 		let context = prefs.context;
 		if (context === "fresh") {
 			const commandCtx = rt.commandCtx;
 			if (commandCtx) {
-				const result = await commandCtx.newSession().catch(() => ({ cancelled: true }));
+				const result = await commandCtx
+					.newSession({
+						setup: async manager => {
+							const artifacts = manager.getArtifactsDir();
+							if (!artifacts) throw new Error("The new session has no artifact directory for the approved plan.");
+							const name = planFilePath.slice("local://".length);
+							if (!name || name.includes("..") || name.includes("\\")) throw new Error("Invalid local plan path");
+							await Bun.write(`${artifacts}/local/${name}`, content);
+						},
+					})
+					.catch(() => ({ cancelled: true }));
 				if (result.cancelled) context = "compact";
 			} else {
 				context = "compact";
@@ -457,12 +468,15 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		if (name === "bash") {
 			const command = String(input.command ?? "");
 			if (isDestructiveCommand(command)) {
-				return { block: true, reason: "Plan mode: the working tree is read-only; this command could change state. Use read-only commands, or write the plan under local://." };
+				return {
+					block: true,
+					reason: "Plan mode: the working tree is read-only; this command could change state. Use read-only commands, or write the plan under local://.",
+				};
 			}
 			return;
 		}
 		if (MUTATING_TOOLS.has(name)) {
-			const paths = targetPaths(input);
+			const paths = targetPaths(input, name);
 			if (paths.length === 0 || paths.some(path => !isLocalUrl(path))) {
 				return { block: true, reason: "Plan mode: the working tree is read-only. Write your plan to a local://<slug>-plan.md file instead." };
 			}
@@ -490,10 +504,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		}
 		if (rt.reminders >= MAX_REMINDERS) return;
 		rt.reminders += 1;
-		pi.sendMessage(
-			{ customType: "gyre-plan-reminder", content: planDecisionReminder(), display: false },
-			{ triggerTurn: true, deliverAs: "followUp" },
-		);
+		pi.sendMessage({ customType: "gyre-plan-reminder", content: planDecisionReminder(), display: false }, { triggerTurn: true, deliverAs: "followUp" });
 	});
 
 	const resetOnTransition = (_event: unknown, ctx: ExtensionContext) => {
@@ -519,7 +530,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 
 	const offOpened = pi.events.on(PLANNOTATOR_OPENED, (data: unknown) => {
 		const event = data as { url?: unknown; reviewId?: unknown; requestId?: unknown };
-		if (typeof event.url !== "string") return;
+		if (rt.phase !== "reviewing" || typeof event.url !== "string") return;
 		if (event.requestId !== rt.requestId && (event.reviewId === undefined || event.reviewId !== rt.reviewId)) return;
 		if (typeof event.reviewId === "string") rt.reviewId = event.reviewId;
 		rt.reviewUrl = event.url;

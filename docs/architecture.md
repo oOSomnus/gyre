@@ -130,3 +130,7 @@ bun packages/e2e/run.ts   # optional UI check (see packages/e2e/run.ts header)
 ```
 
 CI (`.github/workflows/ci.yml`) runs the suite against both the pinned version and the latest omp release every day. Upstream drift shows up as a red "latest" job before users hit it.
+
+### Plan mode shell policy
+
+Gyre simulates omp’s native plan workflow over RPC without modifying omp. Planning and review prompts prohibit state-changing shell commands; the shell remains available, and its denylist is a best-effort guard rather than a sandbox. Dedicated file-tool writes are restricted to session-local plan artifacts. Approval checks the submitted content, applies the selected execution role and fresh/compact/keep context choice, and preserves the approved plan in a fresh session’s local artifacts.

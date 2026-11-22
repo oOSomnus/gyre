@@ -6,12 +6,13 @@
  */
 
 export function planModeContext(params: { planFilePath?: string; planExists: boolean; revision: number }): string {
-	const planFile = params.planExists && params.planFilePath
-		? `Existing plan: \`${params.planFilePath}\`; read, incrementally update with \`edit\`. Different task → retain it; create \`local://<slug>-plan.md\`.`
-		: "Choose short kebab-case task `<slug>`; create `local://<slug>-plan.md` (e.g. `local://auth-token-refresh-plan.md`). File NEVER renamed on approval; submit this same file to `submit_plan`.";
+	const planFile =
+		params.planExists && params.planFilePath
+			? `Existing plan: \`${params.planFilePath}\`; read, incrementally update with \`edit\`. Different task → retain it; create \`local://<slug>-plan.md\`.`
+			: "Choose short kebab-case task `<slug>`; create `local://<slug>-plan.md` (e.g. `local://auth-token-refresh-plan.md`). File NEVER renamed on approval; submit this same file to `submit_plan`.";
 	return `<critical>
 Plan mode active.
-- Working tree/system read-only: NEVER create, edit, delete, or rename working-tree files; NEVER run state-changing commands (\`git commit\`, \`npm install\`, migrations) or otherwise change the system. Writes outside \`local://\` are blocked.
+- Working tree/system read-only: NEVER create, edit, delete, or rename working-tree files; NEVER run state-changing commands (\`git commit\`, \`npm install\`, migrations) or otherwise change the system. Direct file-tool writes outside \`local://\` are blocked; shell restrictions rely on these instructions.
 - \`local://\`: session-local planning artifacts; MAY create/update only when needed for the plan; NEVER delete/rename.
 - Canonical plan: MUST write \`local://<slug>-plan.md\`.
 
@@ -76,12 +77,7 @@ export function planDecisionReminder(): string {
 	return "<system-reminder>Plan mode: your turn ended without a decision. Continue planning, then either call `ask` for a load-bearing preference or call `submit_plan` with the finished `local://<slug>-plan.md`. Do not ask for approval in prose.</system-reminder>";
 }
 
-export function planApprovedPrompt(params: {
-	planFilePath: string;
-	planContent: string;
-	contextPreserved: boolean;
-	notes?: string;
-}): string {
+export function planApprovedPrompt(params: { planFilePath: string; planContent: string; contextPreserved: boolean; notes?: string }): string {
 	const notes = params.notes?.trim() ? `\n<approval-notes>\n${params.notes.trim()}\n</approval-notes>\n` : "";
 	return `Plan approved.
 ${params.contextPreserved ? "- History usable; the plan below authoritative if it conflicts with earlier exploration.\n" : ""}

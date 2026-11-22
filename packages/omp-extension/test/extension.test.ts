@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import gyrePlanMode, { isDestructiveCommand, isLocalUrl, PLAN_WIDGET_KEY, SUBMIT_TOOL, targetPaths } from "../src/index";
@@ -13,7 +13,7 @@ interface Model {
 
 function makeHarness(opts: { plannotator?: boolean } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "gy-ext-"));
-	const sessionFile = join(dir, "session.jsonl");
+	let sessionFile = join(dir, "session.jsonl");
 	const localDir = join(dir, "session", "local");
 	require("node:fs").mkdirSync(localDir, { recursive: true });
 	const prefsFile = join(dir, "prefs.json");
@@ -53,8 +53,10 @@ function makeHarness(opts: { plannotator?: boolean } = {}) {
 		compact: async () => {
 			calls.push("compact");
 		},
-		newSession: async () => {
+		newSession: async (options?: { setup?: (manager: { getArtifactsDir(): string }) => Promise<void> }) => {
 			calls.push("newSession");
+			sessionFile = join(dir, "fresh.jsonl");
+			await options?.setup?.({ getArtifactsDir: () => join(dir, "fresh") });
 			return { cancelled: false };
 		},
 	};
@@ -271,6 +273,32 @@ describe("plan mode", () => {
 		expect(h.lastState().phase).toBe("idle");
 	});
 
+	test("approval rejects a plan changed after review and allows a newly submitted revision", async () => {
+		h.setPrefs({ role: "default", context: "keep" });
+		await h.commands.get("plan")?.("", h.ctx);
+		h.writePlan("x-plan.md", "reviewed");
+		await h.submit("local://x-plan.md");
+		h.writePlan("x-plan.md", "unreviewed");
+		await h.commands.get("gyre-plan")?.('{"action":"approve"}', h.ctx);
+		expect(h.lastState().phase).toBe("reviewing");
+		expect(h.lastState().error).toContain("changed after submission");
+		expect(h.userMessages).toEqual([]);
+		expect(h.activeTools).toContain(SUBMIT_TOOL);
+		await h.submit("local://x-plan.md");
+		await h.commands.get("gyre-plan")?.('{"action":"approve"}', h.ctx);
+		expect(h.userMessages.at(-1)).toContain("unreviewed");
+	});
+
+	test("local plan content may contain example patch headers without granting nonlocal edits", async () => {
+		await h.commands.get("plan")?.("", h.ctx);
+		const allowed = await h.emit("tool_call", { toolName: "write", input: { path: "local://x-plan.md", content: "*** Update File: src/app.ts" } });
+		expect(allowed?.block).not.toBe(true);
+		const blocked = await h.emit("tool_call", { toolName: "apply_patch", input: { patch: "*** Update File: src/app.ts" } });
+		expect(blocked?.block).toBe(true);
+		const shell = await h.emit("tool_call", { toolName: "bash", input: { command: "python3 -c 'print(42)'" } });
+		expect(shell?.block).not.toBe(true);
+	});
+
 	test("approve with fresh context starts a new session; keep does neither", async () => {
 		h.setPrefs({ role: "default", context: "fresh" });
 		await h.commands.get("plan")?.("", h.ctx);
@@ -278,6 +306,7 @@ describe("plan mode", () => {
 		await h.submit("local://x-plan.md");
 		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve" }), h.ctx);
 		expect(h.calls).toEqual(["newSession"]);
+		expect(readFileSync(join(h.dir, "fresh/local/x-plan.md"), "utf8")).toBe("p");
 		expect(h.model.id).toBe("worker");
 		expect(h.userMessages.at(-1)).not.toContain("History usable");
 

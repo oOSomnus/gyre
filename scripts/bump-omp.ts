@@ -38,6 +38,12 @@ if (!target || !/^\d+\.\d+\.\d+/.test(target)) {
 	process.exit(2);
 }
 
+const binary = await installedOmp();
+if (binary !== target) {
+	console.error(`The omp binary is ${binary ?? "missing"}, but validation requires ${target}. Install the matching binary before bumping the pin.`);
+	process.exit(1);
+}
+
 const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
 const previous = pkg.dependencies[PACKAGE];
 pkg.dependencies[PACKAGE] = target;
@@ -73,13 +79,9 @@ for (const [name, run] of steps) {
 	}
 }
 
-const binary = await installedOmp();
-if (binary !== target) {
-	console.warn(
-		`\n! The omp binary on PATH is ${binary ?? "missing"}, but Gyre now pins ${target}.\n` +
-			"  Upgrade omp (e.g. `omp update` or reinstall) so the contract tests ran against the pinned version.",
-	);
-}
-
-console.log(failed ? "\n✗ Bump failed. Revert with git checkout packages/gateway/package.json bun.lock" : `\n✓ Gyre works with omp ${target}`);
+console.log(
+	failed
+		? "\n✗ Bump failed. Revert with git checkout packages/gateway/package.json packages/omp-extension/package.json bun.lock"
+		: `\n✓ Gyre works with omp ${target}`,
+);
 process.exit(failed ? 1 : 0);

@@ -169,21 +169,29 @@ function Providers() {
 	const [providers, setProviders] = useState<Provider[] | null>(null);
 	const [busy, setBusy] = useState<string | null>(null);
 	const [message, setMessage] = useState<string | null>(null);
+	const loadGeneration = useRef(0);
 	const load = () => {
+		const request = ++loadGeneration.current;
 		if (!chatId) return;
 		void gateway
 			.rpc<Provider[] | { providers?: Provider[] }>(chatId, { type: "get_login_providers" })
 			.then(d => {
+				if (request !== loadGeneration.current) return;
 				setProviders(Array.isArray(d) ? d : (d?.providers ?? []));
 				setMessage(null);
 			})
 			.catch(e => {
+				if (request !== loadGeneration.current) return;
 				setProviders([]);
 				setMessage((e as Error).message);
 			});
 	};
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reload when a chat becomes available
-	useEffect(load, [chatId]);
+	useEffect(() => {
+		setProviders(null);
+		load();
+		return () => { loadGeneration.current++; };
+	}, [chatId]);
 	const login = async (provider: Provider) => {
 		if (!chatId) return;
 		setBusy(provider.id);
@@ -549,6 +557,11 @@ const EMPTY_MCP = {
 function Mcp() {
 	const projects = useApp(s => s.projects);
 	const [projectId, setProjectId] = useState<string | undefined>(projects[0]?.id);
+	return <McpProjectSettings key={projectId ?? "user"} projectId={projectId} setProjectId={setProjectId} />;
+}
+
+function McpProjectSettings({ projectId, setProjectId }: { projectId?: string; setProjectId(value: string | undefined): void }) {
+	const projects = useApp(s => s.projects);
 	const chatId = useAnyReadyChat(projectId);
 	const [servers, setServers] = useState<McpEntry[]>([]);
 	const [form, setForm] = useState<typeof EMPTY_MCP | null>(null);
@@ -560,12 +573,17 @@ function Mcp() {
 		return last?.kind === "command_output" ? last : null;
 	});
 	const [awaiting, setAwaiting] = useState<number | null>(null);
-	const load = () =>
+	const loadGeneration = useRef(0);
+	const load = () => {
+		const request = ++loadGeneration.current;
 		void api<McpEntry[]>(`/api/mcp${projectId ? `?projectId=${projectId}` : ""}`)
-			.then(setServers)
-			.catch(e => setMessage(String((e as Error).message)));
-	// biome-ignore lint/correctness/useExhaustiveDependencies: reload on project change
-	useEffect(load, [projectId]);
+			.then(rows => { if (request === loadGeneration.current) setServers(rows); })
+			.catch(e => { if (request === loadGeneration.current) setMessage(String((e as Error).message)); });
+	};
+	useEffect(() => {
+		load();
+		return () => { loadGeneration.current++; };
+	}, [projectId]);
 
 	const save = async () => {
 		if (!form) return;
@@ -650,7 +668,7 @@ function Mcp() {
 								void api<{ restarted: number; failed: string[] }>(`/api/projects/${projectId}/restart-chats`, { method: "POST" }).then(r => {
 									setDirty(r.failed.length > 0);
 									setMessage(`Restarted ${r.restarted} chat(s).${r.failed.length ? ` Failed: ${r.failed.join(", ")}. Retry restarting these chats.` : ""}`);
-								})
+								}).catch(e => setMessage((e as Error).message))
 							}
 						>
 							<RotateCcw size={11} /> Restart chats in project
@@ -807,6 +825,7 @@ function Mcp() {
 							void api(`/api/mcp?scope=${s.scope}&name=${encodeURIComponent(s.name)}${projectId ? `&projectId=${projectId}` : ""}`, { method: "DELETE" }).then(
 								() => {
 									setDirty(true);
+									setMessage("Removed. Restart chats to apply.");
 									load();
 								},
 							)
@@ -985,9 +1004,9 @@ function Remote() {
 			</div>
 			<Head>Set up</Head>
 			<div className="p-3 text-[12.5px]" style={{ color: "var(--text-dim)" }}>
-				<p className="mb-2">Start the gateway listening on your network and name the hosts you will use:</p>
+				<p className="mb-2">Replace the token placeholder with a long secret, then start the gateway listening on your network and name the hosts you will use:</p>
 				<pre className="gy-pre">
-					{"GYRE_HOST=0.0.0.0 \\\nGYRE_ALLOWED_HOSTS=my-laptop.tailnet.ts.net,192.168.1.20 \\\nGYRE_TOKEN=<a long secret> gyre-gateway"}
+					{"GYRE_HOST=0.0.0.0 \\\nGYRE_ALLOWED_HOSTS=my-laptop.tailnet.ts.net,192.168.1.20 \\\nGYRE_TOKEN='replace-with-a-long-secret' gyre-gateway"}
 				</pre>
 				<ul className="mt-2 list-disc pl-5">
 					<li>

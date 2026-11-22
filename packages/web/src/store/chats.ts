@@ -300,6 +300,7 @@ export function applyFrame(chat: ChatState, frame: OmpFrame): ChatState {
 				key =>
 					key !== subagentKey(payload) &&
 					payload.parentToolCallId !== undefined &&
+					payload.index !== undefined &&
 					next.subagents[key]?.parentToolCallId === payload.parentToolCallId &&
 					next.subagents[key]?.index === payload.index,
 			);
@@ -430,16 +431,18 @@ export async function startFreshSession(chatId: string, parentSession?: string):
 		refreshState(chatId, 0);
 	}
 }
+const historyEpochs = new Map<string, number>();
 const historyLoads = new Map<string, Promise<void>>();
 export function loadHistory(chatId: string): Promise<void> {
 	const generation = useChats.getState().chats[chatId]?.info.generation;
-	const key = `${chatId}:${generation}`;
+	const epoch = historyEpochs.get(chatId) ?? 0;
+	const key = `${chatId}:${generation}:${epoch}`;
 	if (historyLoads.has(key)) return historyLoads.get(key)!;
-	const pending = readHistory(chatId, generation).finally(() => historyLoads.delete(key));
+	const pending = readHistory(chatId, generation, epoch).finally(() => historyLoads.delete(key));
 	historyLoads.set(key, pending);
 	return pending;
 }
-async function readHistory(chatId: string, generation?: string): Promise<void> {
+async function readHistory(chatId: string, generation: string | undefined, epoch: number): Promise<void> {
 	const data = await gateway.rpc<{ messages?: AgentMessage[] } | AgentMessage[]>(chatId, { type: "get_messages" }, 60_000);
 	const messages = Array.isArray(data) ? data : (data?.messages ?? []);
 	const toolResults: Record<string, AgentMessage> = {};
@@ -450,7 +453,7 @@ async function readHistory(chatId: string, generation?: string): Promise<void> {
 	}
 	const chat = useChats.getState().chats[chatId];
 	if (!chat) return;
-	if (chat.info.generation !== generation) return;
+	if (chat.info.generation !== generation || (historyEpochs.get(chatId) ?? 0) !== epoch) return;
 	// Keep live items that arrived while history was loading.
 	useChats.getState().patch(chatId, {
 		items: [...items, ...chat.items.filter(item => item.kind !== "message")],
@@ -504,6 +507,7 @@ export function wireChatStore(): void {
 }
 
 export function resetTranscript(chatId: string): void {
+	historyEpochs.set(chatId, (historyEpochs.get(chatId) ?? 0) + 1);
 	useChats.getState().patch(chatId, {
 		items: [],
 		toolExec: {},

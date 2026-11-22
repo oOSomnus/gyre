@@ -27,13 +27,7 @@ async function freshSession(chatId: string, label: string, linkParent: boolean):
 		return;
 	}
 	const parentSession = linkParent ? chat?.info.sessionPath : undefined;
-	let created: boolean;
-	try {
-		created = await startFreshSession(chatId, parentSession);
-	} catch (error) {
-		notice(chatId, "error", (error as Error).message);
-		throw error;
-	}
+	const created = await startFreshSession(chatId, parentSession);
 	if (!created) notice(chatId, "warning", `${label} was cancelled by an extension.`);
 	else if (linkParent) notice(chatId, "info", parentSession ? "Context cleared. The previous conversation is still in Sessions." : "Context cleared.");
 }

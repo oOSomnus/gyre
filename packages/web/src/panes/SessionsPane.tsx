@@ -91,7 +91,7 @@ export function SessionsPane({ pane }: { pane: PaneSpec }) {
 				)}
 				{sessions && filtered.length === 0 && !error && (
 					<div className="p-3 text-[12.5px]" style={{ color: "var(--muted)" }}>
-						No sessions yet for this project.
+						{sessions.length === 0 ? "No sessions yet for this project." : "No sessions match your filter."}
 					</div>
 				)}
 				<div className="flex flex-col gap-1">

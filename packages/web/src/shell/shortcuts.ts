@@ -161,7 +161,8 @@ export function installShortcuts(): () => void {
 		}
 		const key = event.key.toLowerCase();
 		const isKey = (letter: string) => key === letter || event.code === `Key${letter.toUpperCase()}`;
-		const mod = event.ctrlKey || event.metaKey;
+		if (event.getModifierState("AltGraph") || (event.ctrlKey && event.altKey)) return;
+		const mod = (event.ctrlKey || event.metaKey) && !event.altKey;
 
 		if ((mod && !event.shiftKey && isKey("k")) || (event.altKey && !mod && !event.shiftKey && isKey("x"))) {
 			stop();

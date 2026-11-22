@@ -1,7 +1,7 @@
 /** Task Manager: omp chat processes, terminals and running sub-agents, with open/restart/kill. */
 import type { ChatInfo, PaneSpec, PtyInfo } from "@gyre/protocol";
 import { Activity, Bot, MessagesSquare, SquareTerminal } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { progressOf, subStatus } from "../chat/SubagentCard";
 import { api, gateway } from "../lib/gateway";
 import { useApp } from "../store/app";
@@ -18,11 +18,17 @@ function uptime(since?: number): string {
 export function TasksPane(_props: { pane: PaneSpec }) {
 	const [chats, setChats] = useState<ChatInfo[]>([]);
 	const [ptys, setPtys] = useState<PtyInfo[]>([]);
+	const [loaded, setLoaded] = useState(false);
+	const pollGeneration = useRef(0);
+	const reload = useRef<() => void>(() => {});
 	const [error, setError] = useState<string | null>(null);
 	const [actionError, setActionError] = useState<string | null>(null);
 	const action = (work: Promise<unknown>) => {
 		setActionError(null);
-		void work.catch(e => setActionError((e as Error).message));
+		void work.then(() => {
+			pollGeneration.current++;
+			reload.current();
+		}).catch(e => setActionError((e as Error).message));
 	};
 	const projects = useApp(s => s.projects);
 	const workspaces = useApp(s => s.workspaces);
@@ -32,17 +38,20 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 	useEffect(() => {
 		let live = true;
 		const load = async () => {
+			const request = ++pollGeneration.current;
 			try {
 				const [c, p] = await Promise.all([api<ChatInfo[]>("/api/chats"), api<PtyInfo[]>("/api/ptys")]);
-				if (live) {
+				if (live && request === pollGeneration.current) {
+					setLoaded(true);
 					setChats(c);
 					setPtys(p);
 					setError(null);
 				}
 			} catch (e) {
-				if (live) setError(String((e as Error).message));
+				if (live && request === pollGeneration.current) setError(String((e as Error).message));
 			}
 		};
+		reload.current = () => void load();
 		void load();
 		const timer = setInterval(load, 2000);
 		return () => {
@@ -71,9 +80,9 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 				</div>
 			)}
 			<div className="gy-section">
-				<MessagesSquare size={13} /> omp chats <span className="ml-auto font-normal tracking-normal normal-case">{chats.length} running</span>
+				<MessagesSquare size={13} /> omp chats <span className="ml-auto font-normal tracking-normal normal-case">{loaded ? `${chats.length} running` : "Loading…"}</span>
 			</div>
-			{chats.length === 0 && (
+			{loaded && chats.length === 0 && (
 				<div className="gy-row text-[12.5px]" style={{ color: "var(--muted)" }}>
 					No omp processes.
 				</div>
@@ -105,9 +114,9 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 			))}
 
 			<div className="gy-section">
-				<SquareTerminal size={13} /> Terminals <span className="ml-auto font-normal tracking-normal normal-case">{ptys.length} running</span>
+				<SquareTerminal size={13} /> Terminals <span className="ml-auto font-normal tracking-normal normal-case">{loaded ? `${ptys.length} running` : "Loading…"}</span>
 			</div>
-			{ptys.length === 0 && (
+			{loaded && ptys.length === 0 && (
 				<div className="gy-row text-[12.5px]" style={{ color: "var(--muted)" }}>
 					No terminals.
 				</div>

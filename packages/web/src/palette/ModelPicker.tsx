@@ -18,7 +18,8 @@ export function ModelPicker() {
 	useEffect(() => {
 		if (chatId) void roles.load().catch(() => {});
 	}, [chatId, roles.load]);
-	const [rows, setRows] = useState<ModelPickerRow[] | null>(null);
+	const [result, setResult] = useState<{ chatId: string; query: string; rows: ModelPickerRow[] } | null>(null);
+	const rows = result?.chatId === chatId && result?.query === query ? result.rows : null;
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
@@ -29,7 +30,7 @@ export function ModelPicker() {
 			void gateway
 				.rpc<{ rows: ModelPickerRow[] }>(chatId, { type: "get_model_picker", query, limit: 80 })
 				.then(data => {
-					if (current) setRows(data?.rows ?? []);
+					if (current) setResult({ chatId, query, rows: data?.rows ?? [] });
 				})
 				.catch(e => {
 					if (current) setError((e as Error).message);
@@ -43,7 +44,7 @@ export function ModelPicker() {
 
 	useEffect(() => {
 		if (!chatId) {
-			setRows(null);
+			setResult(null);
 			setQuery("");
 		}
 	}, [chatId]);

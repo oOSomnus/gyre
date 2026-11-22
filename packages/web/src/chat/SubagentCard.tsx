@@ -71,7 +71,7 @@ export function SubagentCard({ chatId, sub }: { chatId: string; sub: SubagentInf
 						<button
 							type="button"
 							title="Cancel"
-							onClick={() => void gateway.rpc(chatId, { type: "cancel_subagent", subagentId: sub.subagentId }).catch(() => undefined)}
+							onClick={() => void gateway.rpc(chatId, { type: "cancel_subagent", subagentId: sub.subagentId }).catch(e => useChats.getState().apply(chatId, { type: "notice", level: "error", message: (e as Error).message }))}
 						>
 							<Square size={11} />
 						</button>

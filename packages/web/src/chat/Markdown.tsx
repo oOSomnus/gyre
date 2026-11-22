@@ -25,7 +25,7 @@ function splitLocation(text: string): { path: string; line?: number } {
 	return { path: m?.[1] ?? text, line: m?.[2] ? Number(m[2]) : undefined };
 }
 
-const cache = new Map<string, "file" | "dir" | null>();
+const cache = new Map<string, { value: "file" | "dir" | null; expires: number }>();
 const waiting = new Map<string, Array<(v: "file" | "dir" | null) => void>>();
 const queue = new Map<string, Set<string>>();
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -42,7 +42,9 @@ function flush() {
 					for (const path of chunk) {
 						const key = `${projectId}|${path}`;
 						const value = result[path] ?? null;
-						cache.set(key, value);
+						cache.delete(key);
+						cache.set(key, { value, expires: Date.now() + 5000 });
+						if (cache.size > 2000) cache.delete(cache.keys().next().value!);
 						for (const resolve of waiting.get(key) ?? []) resolve(value);
 						waiting.delete(key);
 					}
@@ -60,7 +62,9 @@ function flush() {
 
 function statPath(projectId: string, path: string): Promise<"file" | "dir" | null> {
 	const key = `${projectId}|${path}`;
-	if (cache.has(key)) return Promise.resolve(cache.get(key) ?? null);
+	const cached = cache.get(key);
+	if (cached && cached.expires > Date.now()) return Promise.resolve(cached.value);
+	cache.delete(key);
 	return new Promise(resolve => {
 		waiting.set(key, [...(waiting.get(key) ?? []), resolve]);
 		if (!queue.has(projectId)) queue.set(projectId, new Set());
@@ -181,11 +185,15 @@ function MermaidBlock({ code }: { code: string }) {
 	const [error, setError] = useState<string | null>(null);
 	useEffect(() => {
 		let cancelled = false;
+		setError(null);
 		void import("mermaid").then(async ({ default: mermaid }) => {
 			mermaid.initialize({ startOnLoad: false, theme: THEMES[theme].scheme === "light" ? "default" : "dark", securityLevel: "strict" });
 			try {
 				const { svg } = await mermaid.render(`gy-mermaid-${++mermaidSeq}`, code);
-				if (!cancelled && ref.current) ref.current.innerHTML = svg;
+				if (!cancelled && ref.current) {
+					ref.current.innerHTML = svg;
+					setError(null);
+				}
 			} catch (e) {
 				if (!cancelled) setError(String(e));
 			}
@@ -200,7 +208,8 @@ function MermaidBlock({ code }: { code: string }) {
 				<span className="gy-label">diagram</span>
 				<CopyButton text={code} />
 			</div>
-			{error ? <pre className="gy-pre">{code}</pre> : <div ref={ref} className="flex justify-center p-3" />}
+			{error && <pre className="gy-pre">{code}</pre>}
+			<div ref={ref} style={error ? { display: "none" } : undefined} className="flex justify-center p-3" />
 		</div>
 	);
 }
@@ -244,6 +253,16 @@ const markdownComponents: Components = {
 	),
 	img: function MarkdownImage({ src, alt }) {
 		const chatId = useContext(MarkdownChat);
+		if (typeof src === "string") {
+			let local: boolean;
+			try {
+				local = new URL(src, window.location.href).origin === window.location.origin;
+			} catch {
+				return <span>{alt || "Image unavailable"}</span>;
+			}
+			const dataImage = /^data:image\/(png|jpeg|gif|webp|avif|bmp);base64,/i.test(src);
+			if (!local && !dataImage) return <a href={src} target="_blank" rel="noreferrer">Open image: {alt || src}</a>;
+		}
 		return typeof src === "string" ? (
 			<button type="button" onClick={() => openImage(chatId, src, alt)} data-jump="image" data-jump-kind="image" data-jump-text={src}>
 				<img src={src} alt={alt ?? ""} />
@@ -299,7 +318,7 @@ function TableBlock({ children }: { children: React.ReactNode }) {
 	};
 	return (
 		<div className="group relative inline-block max-w-full overflow-auto" data-jump-kind="table">
-			<div className="absolute right-1 top-1 hidden gap-1 group-hover:flex">
+			<div className="absolute right-1 top-1 flex gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
 				<button type="button" className="gy-btn" style={{ height: 22 }} onClick={() => copyAs("md")} data-jump="copy-md">
 					MD
 				</button>

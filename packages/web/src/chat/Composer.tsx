@@ -57,12 +57,13 @@ export function Composer({ chatId, focused }: { chatId: string; focused: boolean
 
 	// Extensions can push text into the editor (`set_editor_text`).
 	useEffect(() => {
-		if (chat?.editorInject) {
+		if (chat?.editorInject && useChats.getState().chats[chatId]?.editorInject === chat.editorInject) {
 			const { text: injected, append } = chat.editorInject;
 			setText(prev => (append && prev.trim() ? `${prev.trimEnd()}\n\n${injected}` : injected));
 			ref.current?.focus();
+			if (useChats.getState().chats[chatId]?.editorInject === chat.editorInject) useChats.getState().patch(chatId, { editorInject: undefined });
 		}
-	}, [chat?.editorInject]);
+	}, [chatId, chat?.editorInject]);
 
 	useEffect(() => {
 		if (focused) ref.current?.focus();

@@ -68,6 +68,19 @@ const EMPTY: Draft = { name: "", description: "", scope: "user", model: "", thin
 export function StudioPane({ pane }: { pane: PaneSpec }) {
 	const projects = useApp(s => s.projects);
 	const [projectId, setProjectId] = useState<string | undefined>(pane.projectId ?? projects[0]?.id);
+	return <StudioProject key={projectId ?? "user"} projectId={projectId} setProjectId={setProjectId} />;
+}
+
+function StudioProject({ projectId, setProjectId }: { projectId?: string; setProjectId(value: string | undefined): void }) {
+	const projects = useApp(s => s.projects);
+	const editorEpoch = useRef(0);
+	const publishing = useRef(false);
+	const [pendingPublish, setPendingPublish] = useState(false);
+	const [cleanupKey, setCleanupKey] = useState<string | null>(null);
+	useEffect(() => () => {
+		editorEpoch.current++;
+	}, []);
+	const [loaded, setLoaded] = useState(false);
 	const [agents, setAgents] = useState<AgentFile[]>([]);
 	const [selected, setSelected] = useState<string | null>(null);
 	const [draft, setDraft] = useState<Draft>(EMPTY);
@@ -89,7 +102,10 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 		]);
 		if (request !== reloadGeneration.current) return;
 		setAgents(list);
-		setDrafts(saved ?? {});
+		const restored = { ...saved };
+		if (restored.new?.scope === "user" && !restored["new:user"]) restored["new:user"] = restored.new;
+		setDrafts(restored);
+		setLoaded(true);
 		// Shared routing store was loaded above.
 	};
 
@@ -116,21 +132,54 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 
 	const keyOf = (scope: string, name: string) => (scope === "project" ? `project:${projectId}:${name}` : `${scope}:${name}`);
 	const select = (agent: AgentFile | null) => {
-		const key = agent ? keyOf(agent.scope, agent.name) : "new";
+		editorEpoch.current++;
+		setCleanupKey(null);
+		const key = agent ? keyOf(agent.scope, agent.name) : drafts[`new:project:${projectId}`] ? `new:project:${projectId}` : "new:user";
 		setSelected(key);
 		setDraft(drafts[key] ?? (agent ? draftFrom(agent) : { ...EMPTY }));
 		setMessage(null);
 	};
 
+	const draftKey = () => {
+		if (selected && !selected.startsWith("new:")) return selected;
+		return draft.scope === "project" ? `new:project:${projectId}` : "new:user";
+	};
+
 	const saveDraft = async () => {
-		const key = selected ?? "new";
+		const key = draftKey();
 		const next = { ...drafts, [key]: { ...draft, savedAt: Date.now() } };
 		await api("/api/kv/ui.agentDrafts", { method: "PUT", body: JSON.stringify(next) });
 		setDrafts(next);
 		setMessage("Draft saved (not yet visible to omp).");
 	};
 
+	const cleanDraft = async (key: string) => {
+		const latest = await api<Record<string, Draft> | null>("/api/kv/ui.agentDrafts");
+		const next = { ...latest };
+		delete next[key];
+		await api("/api/kv/ui.agentDrafts", { method: "PUT", body: JSON.stringify(next) });
+		return next;
+	};
+	const retryCleanup = async () => {
+		if (!cleanupKey) return;
+		const epoch = editorEpoch.current;
+		try {
+			const next = await cleanDraft(cleanupKey);
+			if (epoch !== editorEpoch.current) return;
+			setDrafts(next);
+			setCleanupKey(null);
+			setMessage("Published; draft cleanup completed.");
+		} catch (error) {
+			if (epoch === editorEpoch.current) setMessage(`Published; draft cleanup failed: ${(error as Error).message}`);
+		}
+	};
 	const publish = async () => {
+		if (publishing.current || cleanupKey) return;
+		publishing.current = true;
+		setPendingPublish(true);
+		const epoch = editorEpoch.current;
+		const ownsEditor = () => epoch === editorEpoch.current;
+		const savedDraftKey = draftKey();
 		setMessage(null);
 		const frontmatter: Record<string, unknown> = {
 			description: draft.description,
@@ -158,15 +207,29 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 					instructions: draft.instructions,
 				}),
 			});
-			const next = { ...drafts };
-			delete next[selected ?? "new"];
-			await api("/api/kv/ui.agentDrafts", { method: "PUT", body: JSON.stringify(next) });
+			// The agent file is committed even if draft cleanup subsequently fails.
+			if (ownsEditor()) {
+				setSelected(keyOf(draft.scope, draft.name));
+				setDraft(d => ({ ...d, previousName: draft.name }));
+			}
+			try {
+				const next = await cleanDraft(savedDraftKey);
+				if (ownsEditor()) setDrafts(next);
+			} catch (error) {
+				if (ownsEditor()) {
+					setCleanupKey(savedDraftKey);
+					setMessage(`Published; draft cleanup failed: ${(error as Error).message}`);
+				}
+				return;
+			}
+			if (!ownsEditor()) return;
 			await reload();
-			setSelected(keyOf(draft.scope, draft.name));
-			setDraft(d => ({ ...d, previousName: d.name }));
-			setMessage(`Published ${draft.name}. omp uses it on the next sub-agent spawn.`);
+			if (ownsEditor()) setMessage(`Published ${draft.name}. omp uses it on the next sub-agent spawn.`);
 		} catch (e) {
-			setMessage(String((e as Error).message));
+			if (ownsEditor()) setMessage(String((e as Error).message));
+		} finally {
+			publishing.current = false;
+			setPendingPublish(false);
 		}
 	};
 
@@ -213,7 +276,7 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 							</option>
 						))}
 					</select>
-					<button type="button" className="gy-btn" onClick={() => select(null)} title="New agent" data-jump="new-agent">
+					<button type="button" className="gy-btn" onClick={() => select(null)} disabled={!loaded} title="New agent" data-jump="new-agent">
 						<FilePlus2 size={12} />
 					</button>
 				</div>
@@ -255,6 +318,13 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 
 			{/* editor */}
 			<div className="min-w-0 flex-1 overflow-auto">
+				{message && (
+					<div className="gy-row text-[12px]">
+						{message}
+						{!loaded && <button type="button" className="gy-btn" onClick={() => void reload().catch(e => setMessage((e as Error).message))}>Retry loading agents</button>}
+						{cleanupKey && <button type="button" className="gy-btn" onClick={() => void retryCleanup()}>Retry draft cleanup</button>}
+					</div>
+				)}
 				{selected === null ? (
 					<div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
 						<Bot size={28} />
@@ -262,7 +332,7 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 						<div className="max-w-sm text-[12.5px]" style={{ color: "var(--text-dim)" }}>
 							Build sub-agents the main agent can delegate to: a description, the model or role it runs on, the tools it may use, and its instructions.
 						</div>
-						<button type="button" className="gy-btn primary" onClick={() => select(null)}>
+						<button type="button" className="gy-btn primary" disabled={!loaded} onClick={() => select(null)}>
 							<FilePlus2 size={12} /> New agent
 						</button>
 					</div>
@@ -276,7 +346,9 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 										type="button"
 										className="gy-btn"
 										onClick={() => {
-											setSelected("new");
+											editorEpoch.current++;
+											setCleanupKey(null);
+											setSelected("new:user");
 											setDraft(d => ({ ...d, previousName: undefined, scope: "user", name: `${d.name}-custom` }));
 										}}
 									>
@@ -296,16 +368,15 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 											type="button"
 											className="gy-btn primary"
 											onClick={() => void publish()}
-											disabled={!draft.name || !draft.description}
+											disabled={!draft.name || !draft.description || pendingPublish || cleanupKey !== null}
 											data-testid="publish-agent"
 										>
-											<Send size={11} /> Publish
+											<Send size={11} /> {pendingPublish ? "Publishing…" : "Publish"}
 										</button>
 									</>
 								)}
 							</span>
 						</div>
-						{message && <div className="gy-row text-[12px]">{message}</div>}
 						<fieldset disabled={readOnly} className="contents">
 							<div className="gy-row">
 								<label className="w-28 shrink-0 text-[12.5px]">Name</label>

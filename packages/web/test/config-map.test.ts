@@ -99,3 +99,10 @@ test("OSC hyperlinks preserve visible tool output across both terminator forms",
 	expect(stripAnsi("\x1b]8;;https://example.test\x1b\\visible\x1b]8;;\x1b\\")).toBe("visible");
 	expect(stripAnsi("\x1b]8;;https://example.test\x07visible\x1b]8;;\x07")).toBe("visible");
 });
+
+test("unterminated repeated OSC introducers have linear stripping cost", () => {
+	const input = "\x1b]".repeat(100_000);
+	const start = performance.now();
+	expect(stripAnsi(input)).toBe(input);
+	expect(performance.now() - start).toBeLessThan(250);
+});

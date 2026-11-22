@@ -11,6 +11,7 @@ export function SubagentsPane({ pane }: { pane: PaneSpec }) {
 	const chatPanes = Object.values(chats).filter(p => p.kind === "chat");
 	const [chatId, setChatId] = useState<string | undefined>(pane.chatId ?? chatPanes[0]?.id);
 	const chat = useChats(s => (chatId ? s.chats[chatId] : undefined));
+	const [actionError, setActionError] = useState<string | null>(null);
 	const [snapshot, setSnapshot] = useState<SubagentInfo[]>([]);
 
 	useEffect(() => {
@@ -51,6 +52,7 @@ export function SubagentsPane({ pane }: { pane: PaneSpec }) {
 				</select>
 			</div>
 			<div className="min-h-0 flex-1 space-y-2 overflow-auto p-2">
+				{actionError && <div role="alert" style={{ color: "var(--err)" }}>{actionError}</div>}
 				{list.length === 0 && (
 					<div className="p-3 text-[12.5px]" style={{ color: "var(--muted)" }}>
 						No sub-agents running. They appear here when the agent delegates with the task tool.
@@ -70,7 +72,10 @@ export function SubagentsPane({ pane }: { pane: PaneSpec }) {
 									type="button"
 									className="gy-icon-btn"
 									title="Cancel"
-									onClick={() => void gateway.rpc(chatId, { type: "cancel_subagent", subagentId: agent.subagentId ?? agent.id })}
+									onClick={() => {
+									setActionError(null);
+									void gateway.rpc(chatId, { type: "cancel_subagent", subagentId: agent.subagentId ?? agent.id }).catch(e => setActionError((e as Error).message));
+								}}
 								>
 									<Square size={12} />
 								</button>

@@ -270,6 +270,9 @@ async function flushWorkspace(id: string): Promise<void> {
 						const fresh = await api<Workspace[]>("/api/workspaces");
 						if (!deleted.has(id))
 							useApp.setState(state => {
+								const local = state.workspaces.find(ws => ws.id === id);
+								const saved = fresh.find(ws => ws.id === id);
+								for (const pane of Object.values(local?.panes ?? {})) if (!saved?.panes[pane.id]) closePaneResources(pane);
 								const workspaces = state.workspaces.flatMap(ws => (ws.id === id ? fresh.filter(ws => ws.id === id).map(normalize) : [ws]));
 								return {
 									workspaces,
@@ -451,7 +454,8 @@ export const useApp = create<AppStore>((set, get) => {
 		},
 
 		closePane(paneId) {
-			mutateActive(ws => {
+			const owner = get().workspaces.find(ws => ws.panes[paneId]);
+			mutate(owner?.id, ws => {
 				const detached = detach(ws, paneId);
 				const panes = { ...detached.panes };
 				delete panes[paneId];

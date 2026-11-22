@@ -3,7 +3,7 @@
  * mouse or keyboard (Alt+1..9 picks options of the newest dialog).
  */
 import type { OmpUiResponse } from "@gyre/protocol";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { gateway } from "../lib/gateway";
 import type { AskQuestion, UiRequest } from "../lib/omp";
 
@@ -53,11 +53,13 @@ export function DialogCard({ chatId, request, active }: { chatId: string; reques
 	const cancel = () => respond({ cancelled: true });
 
 	const cancelRef = useRef(cancel);
-	cancelRef.current = cancel;
+	useLayoutEffect(() => {
+		cancelRef.current = cancel;
+	});
 	useEffect(() => {
 		if (!active || !["select", "confirm"].includes(request.method)) return;
 		const handler = (event: KeyboardEvent) => {
-			if (event.key === "Escape") {
+			if (event.key === "Escape" && !document.querySelector('[role="dialog"][data-state="open"]')) {
 				event.preventDefault();
 				event.stopImmediatePropagation();
 				cancelRef.current();
@@ -117,7 +119,9 @@ export function DialogCard({ chatId, request, active }: { chatId: string; reques
 
 function useAltDigits(active: boolean, count: number, pick: (index: number) => void) {
 	const pickRef = useRef(pick);
-	pickRef.current = pick;
+	useLayoutEffect(() => {
+		pickRef.current = pick;
+	});
 	useEffect(() => {
 		if (!active) return;
 		const handler = (event: KeyboardEvent) => {
@@ -398,6 +402,10 @@ function collectFormData(form: HTMLFormElement): Record<string, unknown> {
 
 function FormBody({ request, onSubmit, onCancel }: { request: UiRequest; onSubmit: (d: Record<string, unknown>) => void; onCancel: () => void }) {
 	const host = useRef<HTMLDivElement>(null);
+	const onSubmitRef = useRef(onSubmit);
+	useLayoutEffect(() => {
+		onSubmitRef.current = onSubmit;
+	});
 	const form = useMemo(() => sanitizeForm(request.html ?? ""), [request.html]);
 	useEffect(() => {
 		const container = host.current;
@@ -427,11 +435,11 @@ function FormBody({ request, onSubmit, onCancel }: { request: UiRequest; onSubmi
 		const submit = (event: SubmitEvent) => {
 			event.preventDefault();
 			if (!HTMLFormElement.prototype.reportValidity.call(form)) return;
-			onSubmit(collectFormData(form));
+			onSubmitRef.current(collectFormData(form));
 		};
 		form.addEventListener("submit", submit);
 		return () => form.removeEventListener("submit", submit);
-	}, [form, onSubmit]);
+	}, [form]);
 	return (
 		<div className="space-y-3">
 			<div ref={host} />

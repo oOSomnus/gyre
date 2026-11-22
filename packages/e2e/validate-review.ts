@@ -56,6 +56,11 @@ try {
 	const answers: Extract<ClientMessage, { t: "ui_response" }>[] = [];
 	let holdPrompts = false;
 	let cancelSession = false;
+	let holdHistory = false;
+	let heldHistory: { reqId: string } | undefined;
+	let holdModels = false;
+	let heldModels: { reqId: string } | undefined;
+	const closedPtyKeys: string[] = [];
 	const send = (message: ServerMessage) => socket.send(JSON.stringify(message));
 	const info = () => ({ chatId: "chat", projectId: registered.id, cwd: project, status: "ready" as const, generation: "one", sessionPath: currentSession });
 	const result = (message: { reqId: string }, data: unknown) => send({ t: "result", reqId: message.reqId, ok: true, data });
@@ -70,9 +75,10 @@ try {
 				result(message, info());
 			}
 			if (message.t === "ui_response") answers.push(message);
+			if (message.t === "pty_close_key") closedPtyKeys.push(message.key);
 			if (message.t === "pty_open") {
 				ptyOpens++;
-				result(message, { ptyId: "terminal", reused: ptyOpens > 1 });
+				result(message, { ptyId: "terminal", attachmentId: message.reqId, reused: ptyOpens > 1 });
 			}
 			if (message.t !== "rpc") return;
 			switch (message.command.type) {
@@ -80,7 +86,12 @@ try {
 					result(message, { sessionFile: currentSession, isSettled: true, isStreaming: false });
 					break;
 				case "get_messages":
+					if (holdHistory) { heldHistory = message; break; }
 					result(message, { messages: [] });
+					break;
+				case "get_model_picker":
+					if (holdModels) { heldModels = message; break; }
+					result(message, { rows: [{ provider: "test", id: "model-a", name: "Model A" }] });
 					break;
 				case "get_available_commands":
 					result(message, { commands: [{ name: "gyre-plan" }, { name: "plan" }] });
@@ -229,6 +240,261 @@ try {
 		});
 		const keys = await page.evaluate(() => Object.keys((window as any).__gyre.useChats.getState().chats.chat.subagents));
 		assert(keys.join(",") === "scout-native", `duplicate or composite subagent identities: ${keys}`);
+	});
+	await step("sibling subagents without indexes retain their independent identities", async () => {
+		for (const id of ["one", "two"]) await apply({ type: "subagent_lifecycle", payload: { id, parentToolCallId: "same-parent", status: "running" } });
+		const keys = await page.evaluate(() => Object.keys((window as any).__gyre.useChats.getState().chats.chat.subagents));
+		assert(keys.includes("one") && keys.includes("two"), "unindexed sibling subagent was removed");
+	});
+	await step("streaming chat frames preserve focus inside extension forms", async () => {
+		await apply({ type: "extension_ui_request", id: "focus-form", method: "form", html: '<form><input name="answer"></form>' });
+		const input = chat.locator('[data-dialog-id="focus-form"] input[name="answer"]');
+		await input.fill("keep typing");
+		await input.focus();
+		await apply({ type: "notice", level: "info", message: "background update" });
+		assert(await input.evaluate(el => el === document.activeElement), "chat update blurred the form");
+	});
+	await step("Escape closes a palette without cancelling a pending chat confirmation", async () => {
+		await apply({ type: "extension_ui_request", id: "modal-confirm", method: "confirm", title: "Still pending" });
+		await page.evaluate(() => { const app = (window as any).__gyre.useApp.getState(); app.focusPane("chat"); app.openPalette("", "global"); });
+		await page.getByRole("dialog").waitFor();
+		await page.keyboard.press("Escape");
+		await page.getByRole("dialog").waitFor({ state: "hidden" });
+		assert(!answers.some(m => m.response.id === "modal-confirm"), "palette Escape cancelled confirmation");
+	});
+	await step("remote Markdown images require an explicit navigation", async () => {
+		const requests: string[] = [];
+		page.on("request", req => { if (req.url().includes("remote-image.invalid")) requests.push(req.url()); });
+		await apply({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "![Private image](https://remote-image.invalid/pixel?data=private)" }] } });
+		await chat.getByRole("link", { name: "Open image: Private image" }).waitFor();
+		assert(await chat.locator('img[src*="remote-image.invalid"]').count() === 0, "remote image auto-rendered");
+		assert(requests.length === 0, "remote image triggered a request");
+	});
+	await step("a Mermaid block recovers after an incomplete streamed diagram", async () => {
+		await apply({ type: "message_update", messageId: "streamed-mermaid", message: { role: "assistant", content: [{ type: "text", text: "```mermaid\ngraph TD; A-->\n```" }] } });
+		const block = chat.locator(".gy-code").filter({ hasText: "diagram" }).last();
+		await block.locator("pre").waitFor();
+		await apply({ type: "message_end", messageId: "streamed-mermaid", message: { role: "assistant", content: [{ type: "text", text: "```mermaid\ngraph TD; A-->B\n```" }] } });
+		await block.locator("svg").waitFor();
+		assert(await block.locator("pre").count() === 0, "stale Mermaid error remained");
+	});
+	await step("table copy actions remain focusable without hover", async () => {
+		await apply({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "| Column |\n|---|\n| Value |" }] } });
+		const button = chat.locator('button[data-jump="copy-md"]').last();
+		await button.focus();
+		assert(await button.evaluate(el => el === document.activeElement && getComputedStyle(el.parentElement!).opacity === "1"), "table copy unavailable from keyboard focus");
+	});
+	await step("AltGraph text entry does not open the model picker", async () => {
+		const consumed = await page.evaluate(() => !window.dispatchEvent(new KeyboardEvent("keydown", { key: "µ", code: "KeyM", ctrlKey: true, altKey: true, bubbles: true, cancelable: true })));
+		assert(!consumed, "AltGraph key was prevented");
+		assert(await page.getByRole("dialog").count() === 0, "AltGraph opened a modal");
+	});
+	await step("model results disappear as soon as their query changes", async () => {
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().openModelPicker("chat"));
+		await page.getByRole("option", { name: /Model A/ }).waitFor();
+		holdModels = true;
+		await page.getByPlaceholder("Search models · provider/ to filter · @ for roles").fill("different");
+		assert(await page.getByRole("option", { name: /Model A/ }).count() === 0, "old-query row remains selectable");
+		await until(() => Boolean(heldModels));
+		result(heldModels!, { rows: [] });
+		holdModels = false;
+		await page.keyboard.press("Escape");
+	});
+	await step("delayed history cannot restore messages after a successful new session", async () => {
+		holdHistory = true;
+		heldHistory = undefined;
+		send({ t: "chat_replay", chat: info() });
+		await until(() => Boolean(heldHistory));
+		await composer.fill("/new");
+		await composer.press("Enter");
+		await page.waitForFunction(() => (window as any).__gyre.useChats.getState().chats.chat.items.every((i: any) => i.kind !== "message"));
+		result(heldHistory!, { messages: [{ role: "assistant", content: [{ type: "text", text: "obsolete history" }] }] });
+		holdHistory = false;
+		await page.waitForTimeout(80);
+		assert(await chat.getByText("obsolete history", { exact: true }).count() === 0, "old history restored after session change");
+	});
+	await step("editor injection is consumed once across mobile remounts", async () => {
+		await apply({ type: "extension_ui_request", method: "set_editor_text", text: "one-time injection" });
+		await page.waitForFunction(() => !(window as any).__gyre.useChats.getState().chats.chat.editorInject);
+		assert(await composer.inputValue() === "one-time injection", "new injection not applied");
+		await page.setViewportSize({ width: 390, height: 844 });
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().addPane({ id: "injection-settings", kind: "settings" }));
+		await page.locator('[data-pane="injection-settings"]').waitFor();
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().focusPane("chat"));
+		await composer.waitFor();
+		assert(await composer.inputValue() === "", "consumed injection reappeared");
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().closePane("injection-settings"));
+		await page.setViewportSize({ width: 1440, height: 1000 });
+	});
+	await step("failed preference saves recover and decisions include the displayed revision", async () => {
+		let failLoad = true;
+		let puts = 0;
+		await page.route("**/api/chats/chat/plan-prefs", route => {
+			if (route.request().method() === "GET" && failLoad) return route.fulfill({ status: 503, json: { error: "prefs offline" } });
+			if (route.request().method() === "PUT" && ++puts === 1) return route.fulfill({ status: 503, json: { error: "save offline" } });
+			return route.fulfill({ json: { role: "default", context: "keep" } });
+		});
+		await apply({ type: "extension_ui_request", method: "setWidget", widgetKey: "gyre.plan", widgetLines: [JSON.stringify({ phase: "reviewing", revision: 7, planContent: "# Reviewed plan", updatedAt: 1 })] });
+		await page.getByRole("button", { name: "Retry preferences" }).waitFor();
+		failLoad = false;
+		await page.getByRole("button", { name: "Retry preferences" }).click();
+		await page.getByTestId("plan-role").selectOption("slow");
+		await page.getByText("save offline", { exact: true }).waitFor();
+		await page.getByTestId("plan-approve").click();
+		await until(() => prompts.some(m => String(m.command.message).includes('"revision":7')));
+		assert(puts === 2, "failed preference save blocked a later action");
+		await page.unroute("**/api/chats/chat/plan-prefs");
+		await page.evaluate(() => { const app = (window as any).__gyre.useApp.getState(); for (const pane of Object.values(app.activeWorkspace().panes) as any[]) if (pane.kind === "plan") app.closePane(pane.id); });
+	});
+	const otherProject = gateway.store.addProject("Other project", scratch);
+	await page.evaluate(projects => (window as any).__gyre.useApp.setState({ projects }), gateway.store.listProjects());
+	await step("MCP project switches discard obsolete rows and edit forms", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; });
+		let waiting = false;
+		let completed = false;
+		let hold = true;
+		await page.route("**/api/mcp?**", async route => {
+			const projectId = new URL(route.request().url()).searchParams.get("projectId");
+			if (projectId === registered.id && hold) { waiting = true; await gate; completed = true; }
+			await route.fulfill({ json: [{ name: projectId === registered.id ? "server-A" : "server-B", scope: "project", enabled: true, config: { command: "example" } }] });
+		});
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().addPane({ id: "mcp-review", kind: "settings", section: "mcp" }));
+		const pane = page.locator('[data-pane="mcp-review"]');
+		await until(() => waiting);
+		await pane.locator("select").first().selectOption(otherProject.id);
+		await pane.locator('[data-mcp="server-B"]').waitFor();
+		release();
+		await until(() => completed);
+		hold = false;
+		assert(await pane.locator('[data-mcp="server-A"]').count() === 0, "late A rows replaced B");
+		await pane.locator("select").first().selectOption(registered.id);
+		await pane.locator('[data-mcp="server-A"]').getByRole("button", { name: "Edit", exact: true }).click();
+		await pane.getByTestId("mcp-name").waitFor();
+		await pane.locator("select").first().selectOption(otherProject.id);
+		await pane.locator('[data-mcp="server-B"]').waitFor();
+		assert(await pane.getByTestId("mcp-name").count() === 0, "A form survived project switch");
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().closePane("mcp-review"));
+		await page.unroute("**/api/mcp?**");
+	});
+	await step("new project agent drafts restore only in their owning project", async () => {
+		gateway.store.setKv("ui.agentDrafts", {});
+		await page.route("**/api/agents?**", route => route.fulfill({ json: [] }));
+		await page.evaluate(projectId => (window as any).__gyre.useApp.getState().addPane({ id: "studio-review", kind: "studio", projectId }), registered.id);
+		const pane = page.locator('[data-pane="studio-review"]');
+		await pane.getByRole("button", { name: "New agent", exact: true }).last().click();
+		await pane.getByTestId("agent-name").fill("draft-only-A");
+		await pane.getByTestId("agent-description").fill("A's unsent draft");
+		await pane.locator('select').filter({ has: page.locator('option[value="project"]') }).selectOption("project");
+		await pane.getByRole("button", { name: "Save draft" }).click();
+		await pane.getByText("Draft saved (not yet visible to omp).").waitFor();
+		await pane.locator("select").first().selectOption(otherProject.id);
+		await pane.getByRole("button", { name: "New agent", exact: true }).last().click();
+		assert(await pane.getByTestId("agent-name").inputValue() === "", "A project draft restored into B");
+		await pane.locator("select").first().selectOption(registered.id);
+		await pane.getByRole("button", { name: "New agent", exact: true }).last().click();
+		await page.waitForFunction(() => (document.querySelector('[data-testid="agent-name"]') as HTMLInputElement)?.value === "draft-only-A");
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().closePane("studio-review"));
+		await page.unroute("**/api/agents?**");
+	});
+	await step("published agent identity survives cleanup failure and retry does not republish", async () => {
+		let agentWrites = 0;
+		let failCleanup = true;
+		await page.route("**/api/agents**", route => {
+			if (route.request().method() === "PUT") { agentWrites++; return route.fulfill({ json: { name: "published", scope: "project" } }); }
+			return route.fulfill({ json: [] });
+		});
+		await page.route("**/api/kv/ui.agentDrafts", route => {
+			if (route.request().method() === "PUT" && failCleanup) { failCleanup = false; return route.fulfill({ status: 503, json: { error: "draft store unavailable" } }); }
+			return route.continue();
+		});
+		await page.evaluate(projectId => (window as any).__gyre.useApp.getState().addPane({ id: "publish-review", kind: "studio", projectId }), otherProject.id);
+		const pane = page.locator('[data-pane="publish-review"]');
+		await pane.getByRole("button", { name: "New agent", exact: true }).last().click();
+		await pane.getByTestId("agent-name").fill("published");
+		await pane.getByTestId("agent-description").fill("New agent");
+		await pane.getByTestId("publish-agent").click();
+		await pane.getByText("Published; draft cleanup failed:", { exact: false }).waitFor();
+		await pane.locator(".gy-section").filter({ hasText: "Edit published" }).first().waitFor();
+		assert(await pane.getByTestId("publish-agent").isDisabled(), "failed cleanup invites a duplicate publication");
+		await pane.getByRole("button", { name: "Retry draft cleanup" }).click();
+		await pane.getByText("Published; draft cleanup completed.").waitFor();
+		assert(agentWrites === 1, "cleanup retry rewrote the agent file");
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().closePane("publish-review"));
+		await page.unroute("**/api/agents**");
+		await page.unroute("**/api/kv/ui.agentDrafts");
+	});
+	await step("late publication cleanup cannot replace another project's agent list", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; });
+		let waiting = false;
+		let completed = false;
+		await page.route("**/api/agents**", route => {
+			if (route.request().method() === "PUT") return route.fulfill({ json: {} });
+			const projectId = new URL(route.request().url()).searchParams.get("projectId");
+			const name = projectId === registered.id ? "agent-A" : "agent-B";
+			return route.fulfill({ json: [{ name, scope: "project", frontmatter: { description: name }, instructions: "prompt" }] });
+		});
+		await page.route("**/api/kv/ui.agentDrafts", async route => {
+			if (route.request().method() === "PUT") { waiting = true; await gate; await route.fulfill({ json: {} }); completed = true; return; }
+			return route.continue();
+		});
+		await page.evaluate(projectId => (window as any).__gyre.useApp.getState().addPane({ id: "late-publish", kind: "studio", projectId }), registered.id);
+		const pane = page.locator('[data-pane="late-publish"]');
+		await pane.getByRole("button", { name: "agent-A", exact: false }).click();
+		await pane.getByTestId("publish-agent").click();
+		await until(() => waiting);
+		await pane.locator("select").first().selectOption(otherProject.id);
+		await pane.getByRole("button", { name: "agent-B", exact: false }).click();
+		release();
+		await until(() => completed);
+		await pane.locator(".gy-section").filter({ hasText: "Edit agent-B" }).first().waitFor();
+		assert(await pane.getByTestId("agent-name").inputValue() === "agent-B", "A publish changed B editor identity");
+		assert(await pane.getByRole("button", { name: "agent-A", exact: false }).count() === 0, "A publish replaced B's list");
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().closePane("late-publish"));
+		await page.unroute("**/api/agents**");
+		await page.unroute("**/api/kv/ui.agentDrafts");
+	});
+	await step("closing an inactive workspace's pane removes it from the owning workspace", async () => {
+		const removed = await page.evaluate(() => {
+			const app = (window as any).__gyre.useApp.getState();
+			app.addPane({ id: "failed-fork", kind: "message" });
+			app.createWorkspace("Other workspace");
+			const other = (window as any).__gyre.useApp.getState().activeWorkspaceId;
+			app.closePane("failed-fork");
+			const removed = !(window as any).__gyre.useApp.getState().workspaces.find((ws: any) => ws.id === "review").panes["failed-fork"];
+			app.switchWorkspace("review");
+			app.deleteWorkspace(other);
+			return removed;
+		});
+		assert(removed, "pane survived in its inactive owner");
+	});
+	await step("tool-only graph lanes and hidden assistant rows never overlap", async () => {
+		await page.evaluate(() => (window as any).__gyre.useChats.getState().patch("chat", { items: [], toolResults: {}, subagents: {} }));
+		for (let i = 0; i < 2; i++) await apply({ type: "message_end", message: { role: "assistant", content: [
+			...(i ? [{ type: "text", text: "Assistant reply" }] : []),
+			{ type: "toolCall", id: `graph-${i}-one`, name: "read", arguments: {} },
+			{ type: "toolCall", id: `graph-${i}-two`, name: "read", arguments: {} },
+		] } });
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().addPane({ id: "graph-review", kind: "graph", chatId: "chat" }));
+		const pane = page.locator('[data-pane="graph-review"]');
+		await pane.locator('.react-flow__node[data-id="tgraph-0-one"]').waitFor();
+		await pane.getByRole("button", { name: "Assistant", exact: true }).click();
+		await page.waitForTimeout(80);
+		const positions = await pane.locator('.react-flow__node[data-id^="tgraph-"]').evaluateAll(nodes => nodes.map(n => (n as HTMLElement).style.transform));
+		assert(positions.length === 4 && new Set(positions).size === 4, `overlapping tool lanes: ${positions}`);
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().closePane("graph-review"));
+	});
+	await step("conflict reload closes terminal resources removed by the saved layout", async () => {
+		await page.evaluate(projectId => (window as any).__gyre.useApp.getState().addPane({ id: "removed-terminal", kind: "terminal", projectId }), registered.id);
+		await page.locator('[data-pane="removed-terminal"]').waitFor();
+		// Let the local pane save, then replace that layout in another client.
+		await until(() => Boolean(gateway.store.listWorkspaces().find(ws => ws.id === "review")?.panes["removed-terminal"]));
+		const previous = gateway.store.listWorkspaces().find(ws => ws.id === "review")!;
+		gateway.store.saveWorkspace({ ...previous, panes: { chat: previous.panes.chat! }, layout: { type: "pane", paneId: "chat" }, focusedPaneId: "chat", hidden: [], floating: {} });
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().renameWorkspace("review", "Conflict test"));
+		await until(() => closedPtyKeys.includes("removed-terminal"));
+		await page.waitForFunction(() => !(window as any).__gyre.useApp.getState().workspaces.find((ws: any) => ws.id === "review")?.panes["removed-terminal"]);
 	});
 	await step("a stale workspace save reloads the remote layout and suppresses edits during resync", async () => {
 		const previous = gateway.store.listWorkspaces().find(ws => ws.id === "review")!;

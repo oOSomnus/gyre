@@ -1,5 +1,5 @@
 import { Loader2, ShieldAlert } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { JumpMarks } from "./marks/JumpMarks";
 import { useConnectionState } from "./lib/gateway";
 import { CommandPalette } from "./palette/CommandPalette";
@@ -117,8 +117,13 @@ export function App() {
 function Login() {
 	const [value, setValue] = useState("");
 	const [error, setError] = useState<string | null>(null);
+	const [busy, setBusy] = useState(false);
+	const submitting = useRef(false);
 	const remote = Boolean(window.__GYRE__?.remote);
 	const submit = async () => {
+		if (submitting.current) return;
+		submitting.current = true;
+		setBusy(true);
 		setError(null);
 		try {
 			const response = await fetch("/api/login", {
@@ -130,6 +135,9 @@ function Login() {
 			else setError("That token is not valid.");
 		} catch {
 			setError("Could not reach the gateway. Check your connection and try again.");
+		} finally {
+			submitting.current = false;
+			setBusy(false);
 		}
 	};
 	return (
@@ -156,8 +164,8 @@ function Login() {
 					onChange={e => setValue(e.target.value)}
 					autoFocus
 				/>
-				<button type="submit" className="gy-btn primary" disabled={!value.trim()}>
-					Sign in
+				<button type="submit" className="gy-btn primary" disabled={!value.trim() || busy}>
+					{busy ? "Signing in…" : "Sign in"}
 				</button>
 			</form>
 			{error && (

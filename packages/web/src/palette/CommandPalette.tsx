@@ -36,7 +36,7 @@ export function runSlashCommand(chatId: string, cmd: SlashCommand) {
 	else
 		void runLocalCommand(chatId, `/${cmd.name}`)
 			.then(handled => (handled ? undefined : gateway.rpc(chatId, { type: "prompt", message: `/${cmd.name}` })))
-			.catch(() => undefined);
+			.catch(e => useChats.getState().apply(chatId, { type: "notice", level: "error", message: (e as Error).message }));
 }
 
 export function CommandPalette() {

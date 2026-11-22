@@ -36,6 +36,7 @@ export function ensureChat(pane: PaneSpec, force = false): void {
 export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }) {
 	const chat = useChats(s => s.chats[pane.id]);
 	const updatePane = useApp(s => s.updatePane);
+	const projects = useApp(s => s.projects);
 	const scroller = useRef<HTMLDivElement>(null);
 	const [stick, setStick] = useState(true);
 
@@ -67,7 +68,7 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 					<option value="" disabled>
 						Select project
 					</option>
-					{useApp.getState().projects.map(project => (
+					{projects.map(project => (
 						<option key={project.id} value={project.id}>
 							{project.name}
 						</option>

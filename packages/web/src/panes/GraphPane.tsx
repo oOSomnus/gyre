@@ -62,19 +62,20 @@ function build(chat: ChatState, enabled: Set<Kind>): Built {
 			const blocks = Array.isArray(m.content) ? m.content : [];
 			const text = textOf(m.content);
 			let anchor = spine;
-			if (enabled.has("assistant") && (text.trim() || blocks.length === 0)) {
+			const baseRow = row;
+			const assistantVisible = enabled.has("assistant") && Boolean(text.trim() || blocks.length === 0);
+			if (assistantVisible) {
 				const id = `a${index}`;
 				add(id, "assistant", clip(text.trim() || "(reply)"), 0, row * 90, { message: m, detail: m.model });
 				link(spine, id);
 				spine = id;
 				anchor = id;
-				row++;
 			}
 			let lane = 0;
 			for (const block of blocks) {
 				if (block.type !== "toolCall") continue;
 				const call = block as ToolCallBlock;
-				const y = (row - 1 + lane) * 90;
+				const y = (baseRow + lane) * 90;
 				if (enabled.has("tool")) {
 					add(`t${call.id}`, "tool", `${call.name}${call.intent ? ` · ${clip(call.intent, 40)}` : ""}`, 280, Math.max(0, y));
 					link(anchor, `t${call.id}`);
@@ -90,14 +91,13 @@ function build(chat: ChatState, enabled: Set<Kind>): Built {
 					for (const sub of Object.values(chat.subagents).filter(s => s.parentToolCallId === call.id)) {
 						lane++;
 						const sid = `s${sub.id}`;
-						add(sid, "subagent", `${String(sub.agent ?? "agent")} · ${clip(String(sub.description ?? ""), 40)}`, 560, Math.max(0, (row - 1 + lane) * 90));
+						add(sid, "subagent", `${String(sub.agent ?? "agent")} · ${clip(String(sub.description ?? ""), 40)}`, 560, Math.max(0, (baseRow + lane) * 90));
 						link(enabled.has("tool") ? `t${call.id}` : anchor, sid, true);
 					}
 				}
 				lane++;
 			}
-			if (lane > 1) row += lane - 1;
-			if (!text.trim() && lane > 0) row++;
+			row = baseRow + Math.max(assistantVisible ? 1 : 0, lane);
 		}
 	});
 

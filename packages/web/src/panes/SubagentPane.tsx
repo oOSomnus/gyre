@@ -15,6 +15,7 @@ export function SubagentPane({ pane }: { pane: PaneSpec }) {
 	const sessionFile = sub?.sessionFile;
 	const [messages, setMessages] = useState<AgentMessage[]>([]);
 	const [error, setError] = useState<string | null>(null);
+	const [commandError, setCommandError] = useState<string | null>(null);
 	const [steer, setSteer] = useState("");
 	const cursor = useRef(0);
 	const status = sub ? subStatus(sub) : "unknown";
@@ -68,15 +69,15 @@ export function SubagentPane({ pane }: { pane: PaneSpec }) {
 				{tokens ? <span className="gy-label">{formatTokens(tokens)} tok</span> : null}
 				<span className="min-w-0 flex-1 truncate text-[12px]">{String(sub?.description ?? "")}</span>
 				{active && subagentId && (
-					<button type="button" className="gy-btn danger" onClick={() => void gateway.rpc(chatId, { type: "cancel_subagent", subagentId })}>
+					<button type="button" className="gy-btn danger" onClick={() => void gateway.rpc(chatId, { type: "cancel_subagent", subagentId }).catch(e => setCommandError((e as Error).message))}>
 						<Square size={10} /> Cancel
 					</button>
 				)}
 			</div>
 			<div className="min-h-0 flex-1 space-y-2 overflow-auto p-2">
-				{error && (
+				{(commandError || error) && (
 					<div className="text-[12px]" style={{ color: "var(--err)" }}>
-						{error}
+						{commandError || error}
 					</div>
 				)}
 				{messages.length === 0 && !error && (
@@ -104,10 +105,11 @@ export function SubagentPane({ pane }: { pane: PaneSpec }) {
 						e.preventDefault();
 						if (!steer.trim()) return;
 						const sent = steer;
+						setCommandError(null);
 						void gateway
 							.rpc(chatId, { type: "steer_subagent", subagentId, message: sent.trim() })
 							.then(() => setSteer(current => (current === sent ? "" : current)))
-							.catch(e => setError((e as Error).message));
+							.catch(e => setCommandError((e as Error).message));
 					}}
 				>
 					<input

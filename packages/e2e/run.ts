@@ -362,8 +362,13 @@ await step("phone layout shows one pane with a tab strip", async () => {
 
 await step("layout persists across reload", async () => {
 	const before = await page.locator("[data-pane]").count();
-	const saved = page.waitForResponse(response => response.request().method() === "PUT" && response.url().includes("/api/workspaces/") && response.ok());
-	await page.locator("[data-pane]").first().click();
+	const workspaceId = await page.evaluate(() => (window as unknown as { __gyre: Mc }).__gyre.useApp.getState().activeWorkspaceId);
+	const saved = page.waitForResponse(response => response.request().method() === "PUT" && response.url().endsWith(`/api/workspaces/${workspaceId}`) && response.ok());
+	await page.evaluate(() => {
+		const app = (window as unknown as { __gyre: Mc }).__gyre.useApp.getState();
+		const ws = app.activeWorkspace();
+		app.renameWorkspace(ws.id, `${ws.name} saved`);
+	});
 	await saved;
 	await page.reload();
 	await page.locator("[data-pane]").first().waitFor({ timeout: 15_000 });

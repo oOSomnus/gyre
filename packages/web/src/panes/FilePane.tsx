@@ -20,14 +20,25 @@ function TreeNode({
 	onOpen: (path: string) => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const [retry, setRetry] = useState(0);
 	const [children, setChildren] = useState<FsEntry[] | null>(null);
 	useEffect(() => {
+		let current = true;
 		if (open && entry.kind === "dir" && children === null) {
+			setError(null);
 			void api<FsEntry[]>(`/api/fs/list?projectId=${projectId}&path=${encodeURIComponent(entry.path)}`)
-				.then(setChildren)
-				.catch(() => setChildren([]));
+				.then(rows => {
+					if (current) setChildren(rows);
+				})
+				.catch(e => {
+					if (current) setError((e as Error).message);
+				});
 		}
-	}, [open, entry, projectId, children]);
+		return () => {
+			current = false;
+		};
+	}, [open, entry.kind, entry.path, projectId, children, retry]);
 	const isSelected = selected === entry.path;
 	return (
 		<div>
@@ -45,6 +56,11 @@ function TreeNode({
 				{entry.kind === "dir" ? <Folder size={13} style={{ color: "var(--highlight)" }} /> : <File size={13} style={{ color: "var(--muted)" }} />}
 				<span className="truncate">{entry.name}</span>
 			</button>
+			{open && error && (
+				<div className="px-3 text-[12px]" role="alert">
+					{error} <button type="button" className="gy-btn" onClick={() => setRetry(n => n + 1)}>Retry</button>
+				</div>
+			)}
 			{open && children?.map(child => <TreeNode key={child.path} projectId={projectId} entry={child} depth={depth + 1} selected={selected} onOpen={onOpen} />)}
 		</div>
 	);

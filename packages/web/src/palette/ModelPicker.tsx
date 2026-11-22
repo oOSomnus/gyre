@@ -14,19 +14,31 @@ export function ModelPicker() {
 	const close = () => useApp.getState().openModelPicker(null);
 	const state = useChats(s => (chatId ? s.chats[chatId]?.state : undefined));
 	const [query, setQuery] = useState("");
+	const roles = useRolesStore();
+	useEffect(() => {
+		if (chatId) void roles.load().catch(() => {});
+	}, [chatId, roles.load]);
 	const [rows, setRows] = useState<ModelPickerRow[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
 		if (!chatId) return;
+		let current = true;
 		setError(null);
 		const timer = setTimeout(() => {
 			void gateway
 				.rpc<{ rows: ModelPickerRow[] }>(chatId, { type: "get_model_picker", query, limit: 80 })
-				.then(data => setRows(data?.rows ?? []))
-				.catch(e => setError((e as Error).message));
+				.then(data => {
+					if (current) setRows(data?.rows ?? []);
+				})
+				.catch(e => {
+					if (current) setError((e as Error).message);
+				});
 		}, 120);
-		return () => clearTimeout(timer);
+		return () => {
+			current = false;
+			clearTimeout(timer);
+		};
 	}, [chatId, query]);
 
 	useEffect(() => {
@@ -58,6 +70,7 @@ export function ModelPicker() {
 	const [assigned, setAssigned] = useState<string | null>(null);
 	const assign = async (row: ModelPickerRow, role: string) => {
 		try {
+			if (!roles.loaded || roles.error) throw new Error(roles.error ?? "Model roles are still loading.");
 			await assignRole(role, `${row.provider}/${row.id}`);
 			setAssigned(`@${role} → ${row.provider}/${row.id}`);
 		} catch (e) {
@@ -91,6 +104,14 @@ export function ModelPicker() {
 							))}
 						</div>
 					)}
+					{roles.error && (
+						<div role="alert" className="p-3">
+							{roles.error}
+							<button type="button" className="gy-btn" onClick={() => void roles.load().catch(() => {})}>
+								Retry loading roles
+							</button>
+						</div>
+					)}
 					<Command shouldFilter={false} loop>
 						<Command.Input
 							autoFocus
@@ -106,7 +127,11 @@ export function ModelPicker() {
 									<Loader2 size={14} className="animate-spin" /> Loading models…
 								</div>
 							)}
-							{error && <div className="p-4 text-[12.5px]" style={{ color: "var(--err)" }}>{error}</div>}
+							{error && (
+								<div className="p-4 text-[12.5px]" style={{ color: "var(--err)" }}>
+									{error}
+								</div>
+							)}
 							{rows?.length === 0 && <Command.Empty className="p-4 text-[12.5px]">No models match.</Command.Empty>}
 							{rows?.map(row => (
 								<Command.Item
@@ -130,11 +155,16 @@ export function ModelPicker() {
 											{r.label ?? r.role}
 										</span>
 									))}
-									{row.overContext && <span className="gy-chip" style={{ color: "var(--warn)" }}>over context</span>}
+									{row.overContext && (
+										<span className="gy-chip" style={{ color: "var(--warn)" }}>
+											over context
+										</span>
+									)}
 									{!row.role && (
 										<select
 											className="gy-input h-6 text-[11px]"
 											value=""
+											disabled={!roles.loaded || roles.error !== null}
 											title="Assign this model to a role (saved in omp's modelRoles)"
 											onClick={e => e.stopPropagation()}
 											onKeyDown={e => e.stopPropagation()}
@@ -155,7 +185,11 @@ export function ModelPicker() {
 						</Command.List>
 					</Command>
 					<div className="flex items-center gap-2 border-t px-3 py-1.5 text-[11.5px]" style={{ borderColor: "var(--border-strong)", color: "var(--muted)" }}>
-						{assigned ? <span style={{ color: "var(--ok)" }}>Saved {assigned}</span> : <span>Enter: use for this chat · “Assign to role…”: save as a role in omp · type @ to switch the chat to a role</span>}
+						{assigned ? (
+							<span style={{ color: "var(--ok)" }}>Saved {assigned}</span>
+						) : (
+							<span>Enter: use for this chat · “Assign to role…”: save as a role in omp · type @ to switch the chat to a role</span>
+						)}
 					</div>
 				</Dialog.Content>
 			</Dialog.Portal>

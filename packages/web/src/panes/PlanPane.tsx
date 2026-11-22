@@ -49,6 +49,11 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 	const [prefs, setPrefs] = useState<PlanPrefs>({ role: "default", context: "compact" });
 	const [comments, setComments] = useState<Record<number, string>>({});
 	const [overall, setOverall] = useState("");
+	const [prefsLoaded, setPrefsLoaded] = useState(false);
+	const [savingPrefs, setSavingPrefs] = useState(false);
+	const prefWrites = useRef<Promise<unknown>>(Promise.resolve());
+	const actionPending = useRef(false);
+	const prefGeneration = useRef(0);
 	const [pending, setPending] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [useNative, setUseNative] = useState(false);
@@ -58,7 +63,21 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 
 	useEffect(() => {
 		if (!chatId) return;
-		void api<PlanPrefs>(`/api/chats/${encodeURIComponent(chatId)}/plan-prefs`).then(setPrefs).catch(() => undefined);
+		const generation = ++prefGeneration.current;
+		setPrefsLoaded(false);
+		void api<PlanPrefs>(`/api/chats/${encodeURIComponent(chatId)}/plan-prefs`)
+			.then(value => {
+				if (prefGeneration.current === generation) {
+					setPrefs(value);
+					setPrefsLoaded(true);
+				}
+			})
+			.catch(e => {
+				if (prefGeneration.current === generation) setError((e as Error).message);
+			});
+		return () => {
+			prefGeneration.current++;
+		};
 	}, [chatId]);
 
 	// Track revisions so replaced plans collapse into history.
@@ -74,33 +93,49 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 	const sections = useMemo(() => splitSections(plan?.planContent ?? ""), [plan?.planContent]);
 
 	const savePrefs = (next: PlanPrefs) => {
+		if (!prefsLoaded || actionPending.current) return;
 		setPrefs(next);
-		void api(`/api/chats/${encodeURIComponent(chatId)}/plan-prefs`, { method: "PUT", body: JSON.stringify(next) }).catch(e => setError(String((e as Error).message)));
+		setSavingPrefs(true);
+		const generation = prefGeneration.current;
+		const save = prefWrites.current
+			.catch(() => {})
+			.then(() => api(`/api/chats/${encodeURIComponent(chatId)}/plan-prefs`, { method: "PUT", body: JSON.stringify(next) }));
+		prefWrites.current = save;
+		void save
+			.catch(e => {
+				if (generation === prefGeneration.current) setError((e as Error).message);
+			})
+			.finally(() => {
+				if (prefWrites.current === save && generation === prefGeneration.current) setSavingPrefs(false);
+			});
 	};
 
 	const act = async (label: string, body: Record<string, unknown>) => {
+		if (actionPending.current || !prefsLoaded) return;
+		actionPending.current = true;
 		setPending(label);
 		setError(null);
 		try {
+			await prefWrites.current;
 			await api(`/api/chats/${encodeURIComponent(chatId)}/plan-prefs`, { method: "PUT", body: JSON.stringify(prefs) });
 			await sendControl(chatId, body);
 		} catch (e) {
 			setError(String((e as Error).message));
 		} finally {
+			actionPending.current = false;
 			setPending(null);
 		}
 	};
 
 	const feedback = () => {
-		const parts = sections
-			.map((section, i) => (comments[i]?.trim() ? `On "${section.heading || "intro"}":\n${comments[i]?.trim()}` : ""))
-			.filter(Boolean);
+		const parts = sections.map((section, i) => (comments[i]?.trim() ? `On "${section.heading || "intro"}":\n${comments[i]?.trim()}` : "")).filter(Boolean);
 		if (overall.trim()) parts.push(overall.trim());
 		return parts.join("\n\n");
 	};
 
 	if (!chatId) return <Empty text="This plan pane is not attached to a chat." />;
-	if (!hasExtension && status === "ready") return <Empty text="Plan mode needs Gyre's omp extension, which this chat did not load. Restart the gateway with GYRE_OMP_EXTENSION unset." />;
+	if (!hasExtension && status === "ready")
+		return <Empty text="Plan mode needs Gyre's omp extension, which this chat did not load. Restart the gateway with GYRE_OMP_EXTENSION unset." />;
 
 	const reviewing = plan?.phase === "reviewing";
 	const showIframe = reviewing && plan?.reviewUrl && !useNative;
@@ -111,12 +146,20 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 			{/* toolbar */}
 			<div className="flex flex-wrap items-center gap-2 border-b px-2 py-1.5" style={{ borderColor: "var(--border-strong)", background: "var(--panel-2)" }}>
 				<ClipboardList size={14} />
-				<span className={`gy-chip ${reviewing ? "warn" : plan?.phase === "executing" ? "ok" : plan?.phase === "planning" ? "info" : ""}`}>{plan?.phase ?? "idle"}</span>
+				<span className={`gy-chip ${reviewing ? "warn" : plan?.phase === "executing" ? "ok" : plan?.phase === "planning" ? "info" : ""}`}>
+					{plan?.phase ?? "idle"}
+				</span>
 				{plan?.revision ? <span className="gy-label">rev {plan.revision}</span> : null}
 				<span className="min-w-0 flex-1 truncate text-[13px] font-medium">{plan?.title ?? (plan?.phase === "planning" ? "Planning…" : "No plan yet")}</span>
 				<label className="flex items-center gap-1.5">
 					<span className="gy-label">Continue with</span>
-					<select className="gy-input h-7 text-[12px]" value={prefs.role} onChange={e => savePrefs({ ...prefs, role: e.target.value })} data-testid="plan-role">
+					<select
+						className="gy-input h-7 text-[12px]"
+						disabled={!prefsLoaded || pending !== null}
+						value={prefs.role}
+						onChange={e => savePrefs({ ...prefs, role: e.target.value })}
+						data-testid="plan-role"
+					>
 						{chatRoles.map(role => (
 							<option key={role.id} value={role.id}>
 								{role.name}
@@ -126,7 +169,13 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 				</label>
 				<label className="flex items-center gap-1.5">
 					<span className="gy-label">Context</span>
-					<select className="gy-input h-7 text-[12px]" value={prefs.context} onChange={e => savePrefs({ ...prefs, context: e.target.value as PlanPrefs["context"] })} data-testid="plan-context">
+					<select
+						className="gy-input h-7 text-[12px]"
+						disabled={!prefsLoaded || pending !== null}
+						value={prefs.context}
+						onChange={e => savePrefs({ ...prefs, context: e.target.value as PlanPrefs["context"] })}
+						data-testid="plan-context"
+					>
 						<option value="fresh">Fresh (clear session)</option>
 						<option value="compact">Compact, then execute</option>
 						<option value="keep">Keep full context</option>
@@ -171,12 +220,18 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 					<div className="mx-auto flex max-w-lg flex-col gap-3 p-6">
 						<div className="text-[15px] font-medium">Plan mode is off</div>
 						<div className="text-[12.5px]" style={{ color: "var(--text-dim)" }}>
-							In plan mode the agent switches to your <b>plan</b>-role model, explores read-only and writes a plan. You review it here, send feedback until it is right, then
-							approve: it runs with the role and context handling chosen above.
+							In plan mode the agent switches to your <b>plan</b>-role model, explores read-only and writes a plan. You review it here, send feedback until it
+							is right, then approve: it runs with the role and context handling chosen above.
 						</div>
 						<textarea className="gy-input min-h-20 py-2" placeholder="What should it plan? (optional)" value={task} onChange={e => setTask(e.target.value)} />
 						<div>
-							<button type="button" className="gy-btn primary" disabled={pending !== null || status !== "ready"} onClick={() => void act("enter", { action: "enter", prompt: task })} data-jump="enter-plan">
+							<button
+								type="button"
+								className="gy-btn primary"
+								disabled={!prefsLoaded || savingPrefs || pending !== null || status !== "ready"}
+								onClick={() => void act("enter", { action: "enter", prompt: task })}
+								data-jump="enter-plan"
+							>
 								<Play size={12} /> Enter plan mode
 							</button>
 						</div>
@@ -188,7 +243,12 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 						<div className="max-w-md text-[12.5px]" style={{ color: "var(--text-dim)" }}>
 							The working tree is read-only. The plan opens here for review when the agent submits it.
 						</div>
-						<button type="button" className="gy-btn" disabled={pending !== null} onClick={() => void act("cancel", { action: "cancel" })}>
+						<button
+							type="button"
+							className="gy-btn"
+							disabled={!prefsLoaded || savingPrefs || pending !== null}
+							onClick={() => void act("cancel", { action: "cancel" })}
+						>
 							<X size={12} /> Leave plan mode
 						</button>
 					</div>
@@ -203,7 +263,13 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 						<Markdown text={plan.planContent ?? ""} />
 					</div>
 				) : showIframe ? (
-					<iframe title="Plannotator plan review" src={plan.reviewUrl} className="h-full w-full border-0" style={{ background: "#fff" }} data-testid="plannotator-frame" />
+					<iframe
+						title="Plannotator plan review"
+						src={plan.reviewUrl}
+						className="h-full w-full border-0"
+						style={{ background: "#fff", pointerEvents: savingPrefs || !prefsLoaded ? "none" : "auto" }}
+						data-testid="plannotator-frame"
+					/>
 				) : (
 					<div className="space-y-2 p-3">
 						{sections.map((section, i) => (
@@ -212,7 +278,10 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 								<div className="gy-card-body">
 									<Markdown text={section.body} />
 								</div>
-								<div className="border-t px-3 py-2" style={{ borderColor: "color-mix(in srgb, var(--border-strong) 25%, transparent)", background: "var(--panel)" }}>
+								<div
+									className="border-t px-3 py-2"
+									style={{ borderColor: "color-mix(in srgb, var(--border-strong) 25%, transparent)", background: "var(--panel)" }}
+								>
 									<textarea
 										className="gy-input min-h-8 w-full py-1.5 text-[12.5px]"
 										placeholder={`Comment on ${section.heading ? `“${section.heading}”` : "this part"}…`}
@@ -222,7 +291,13 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 								</div>
 							</div>
 						))}
-						<textarea className="gy-input min-h-16 w-full py-2" placeholder="Overall feedback, or notes for the implementer when approving…" value={overall} onChange={e => setOverall(e.target.value)} data-testid="plan-feedback" />
+						<textarea
+							className="gy-input min-h-16 w-full py-2"
+							placeholder="Overall feedback, or notes for the implementer when approving…"
+							value={overall}
+							onChange={e => setOverall(e.target.value)}
+							data-testid="plan-feedback"
+						/>
 					</div>
 				)}
 			</div>
@@ -246,7 +321,7 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 					<button
 						type="button"
 						className="gy-btn"
-						disabled={pending !== null}
+						disabled={!prefsLoaded || savingPrefs || pending !== null}
 						onClick={() => void act("refine", { action: "refine", feedback: feedback() })}
 						data-jump="request-changes"
 						data-testid="plan-refine"
@@ -256,7 +331,7 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 					<button
 						type="button"
 						className="gy-btn primary"
-						disabled={pending !== null}
+						disabled={!prefsLoaded || savingPrefs || pending !== null}
 						onClick={() => void act("approve", { action: "approve", feedback: feedback() })}
 						data-jump="approve-plan"
 						data-testid="plan-approve"

@@ -10,7 +10,7 @@
 import { gateway } from "../lib/gateway";
 import type { SlashCommand } from "../lib/omp";
 import { useApp } from "../store/app";
-import { resetTranscript, useChats } from "../store/chats";
+import { startFreshSession, useChats } from "../store/chats";
 
 interface LocalCommand extends SlashCommand {
 	run(chatId: string, args: string): Promise<void> | void;
@@ -27,14 +27,15 @@ async function freshSession(chatId: string, label: string, linkParent: boolean):
 		return;
 	}
 	const parentSession = linkParent ? chat?.info.sessionPath : undefined;
-	resetTranscript(chatId);
-	const result = await gateway.rpc<{ cancelled?: boolean }>(chatId, {
-		type: "new_session",
-		...(parentSession ? { parentSession } : {}),
-	});
-	if (result?.cancelled) notice(chatId, "warning", `${label} was cancelled by an extension.`);
-	else if (linkParent)
-		notice(chatId, "info", parentSession ? "Context cleared. The previous conversation is still in Sessions." : "Context cleared.");
+	let created: boolean;
+	try {
+		created = await startFreshSession(chatId, parentSession);
+	} catch (error) {
+		notice(chatId, "error", (error as Error).message);
+		throw error;
+	}
+	if (!created) notice(chatId, "warning", `${label} was cancelled by an extension.`);
+	else if (linkParent) notice(chatId, "info", parentSession ? "Context cleared. The previous conversation is still in Sessions." : "Context cleared.");
 }
 
 const LOCAL_COMMANDS: LocalCommand[] = [

@@ -9,7 +9,7 @@ import { closePaneAndResources, sendToChat, terminals } from "../store/actions";
 import { THEME_ORDER, THEMES } from "../lib/themes";
 import { PANE_META, paneTitle } from "../shell/panes";
 import { focusedChatId, openChatPane, useApp } from "../store/app";
-import { resetTranscript, useChats } from "../store/chats";
+import { startFreshSession, useChats } from "../store/chats";
 
 interface Action {
 	id: string;
@@ -59,14 +59,19 @@ export function CommandPalette() {
 			if (focused.kind === "chat") {
 				const planOn = chat?.plan && chat.plan.phase !== "idle";
 				if (chat?.commands.some(c => c.name === "gyre-plan")) {
-					add("plan", planOn ? "Leave plan mode" : "Enter plan mode", () =>
-						void gateway.rpc(focused.id, { type: "prompt", message: `/gyre-plan ${JSON.stringify({ action: planOn ? "cancel" : "enter" })}` }),
+					add(
+						"plan",
+						planOn ? "Leave plan mode" : "Enter plan mode",
+						() => void gateway.rpc(focused.id, { type: "prompt", message: `/gyre-plan ${JSON.stringify({ action: planOn ? "cancel" : "enter" })}` }),
 					);
 				}
 				add("model", "Switch model…", () => app.openModelPicker(focused.id), "Ctrl M");
 				add("new-session", "Start a fresh session in this pane", () => {
-					resetTranscript(focused.id);
-					void gateway.rpc(focused.id, { type: "new_session" });
+					void startFreshSession(focused.id)
+						.then(ok => {
+							if (!ok) useChats.getState().apply(focused.id, { type: "notice", level: "warning", message: "New session was cancelled." });
+						})
+						.catch(error => useChats.getState().apply(focused.id, { type: "notice", level: "error", message: (error as Error).message }));
 				});
 				add("compact", "Compact context", () => void gateway.rpc(focused.id, { type: "compact" }, 600_000));
 				add("abort", "Stop the agent", () => void gateway.rpc(focused.id, { type: "abort" }));
@@ -98,7 +103,12 @@ export function CommandPalette() {
 		for (const kind of Object.keys(PANE_META) as PaneKind[]) {
 			const meta = PANE_META[kind];
 			if (!meta.creatable) continue;
-			list.push({ id: `pane:${kind}`, group: "Open", label: kind === "chat" ? "New chat" : kind === "terminal" ? "New terminal" : meta.title, run: () => app.addPane({ kind, projectId }) });
+			list.push({
+				id: `pane:${kind}`,
+				group: "Open",
+				label: kind === "chat" ? "New chat" : kind === "terminal" ? "New terminal" : meta.title,
+				run: () => app.addPane({ kind, projectId }),
+			});
 		}
 		if (chatId) {
 			list.push(
@@ -162,7 +172,9 @@ export function CommandPalette() {
 						<Command.Input
 							autoFocus
 							defaultValue={app.paletteQuery}
-							placeholder={app.paletteScope === "pane" ? "Actions for the focused pane…" : chatId ? "Type a command or search omp commands with /…" : "Type a command…"}
+							placeholder={
+								app.paletteScope === "pane" ? "Actions for the focused pane…" : chatId ? "Type a command or search omp commands with /…" : "Type a command…"
+							}
 							className="h-12 w-full border-b bg-transparent px-4 text-[14px] outline-none"
 							style={{ borderColor: "var(--border)" }}
 						/>

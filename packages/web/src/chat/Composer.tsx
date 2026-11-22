@@ -28,7 +28,15 @@ function matchCommands(commands: SlashCommand[], query: string): SlashCommand[] 
 	const scored = commands
 		.map(cmd => {
 			const names = [cmd.name, ...(cmd.aliases ?? [])].map(n => n.toLowerCase());
-			const best = names.some(n => n === q) ? 0 : names.some(n => n.startsWith(q)) ? 1 : names.some(n => n.includes(q)) ? 2 : (cmd.description ?? "").toLowerCase().includes(q) ? 3 : 9;
+			const best = names.some(n => n === q)
+				? 0
+				: names.some(n => n.startsWith(q))
+					? 1
+					: names.some(n => n.includes(q))
+						? 2
+						: (cmd.description ?? "").toLowerCase().includes(q)
+							? 3
+							: 9;
 			return { cmd, best };
 		})
 		.filter(x => x.best < 9)
@@ -42,6 +50,7 @@ export function Composer({ chatId, focused }: { chatId: string; focused: boolean
 	const [images, setImages] = useState<PendingImage[]>([]);
 	const [selected, setSelected] = useState(0);
 	const [sending, setSending] = useState(false);
+	const inFlight = useRef(false);
 	const ref = useRef<HTMLTextAreaElement>(null);
 	const busy = chat?.busy ?? false;
 	const ready = chat?.info.status === "ready";
@@ -76,23 +85,28 @@ export function Composer({ chatId, focused }: { chatId: string; focused: boolean
 
 	const send = async (mode: "prompt" | "steer" | "followUp" = busy ? "steer" : "prompt") => {
 		const message = text.trim();
-		if ((!message && images.length === 0) || !ready) return;
+		if (inFlight.current || (!message && images.length === 0) || !ready) return;
+		inFlight.current = true;
+		const submittedText = text;
+		const submittedImages = images;
+		setText("");
+		setImages([]);
 		setSending(true);
 		const payload = images.length > 0 ? { images } : {};
 		try {
 			const local = images.length === 0 ? findLocalCommand(chatId, message) : undefined;
 			if (local) {
-				setText("");
 				await local();
 				return;
 			}
 			if (mode === "prompt") await gateway.rpc(chatId, { type: "prompt", message, ...payload });
 			else await gateway.rpc(chatId, { type: "prompt", message, streamingBehavior: mode, ...payload });
-			setText("");
-			setImages([]);
 		} catch (error) {
+			setText(current => (current ? `${submittedText}\n${current}` : submittedText));
+			setImages(current => [...submittedImages, ...current]);
 			useChats.getState().apply(chatId, { type: "notice", level: "error", message: String((error as Error).message) });
 		} finally {
+			inFlight.current = false;
 			setSending(false);
 		}
 	};
@@ -122,7 +136,11 @@ export function Composer({ chatId, focused }: { chatId: string; focused: boolean
 							<span className="font-mono text-[12.5px]" style={{ color: "var(--accent)" }}>
 								/{cmd.name}
 							</span>
-							{cmd.input?.hint && <span className="font-mono text-[11px]" style={{ color: "var(--muted)" }}>{cmd.input.hint}</span>}
+							{cmd.input?.hint && (
+								<span className="font-mono text-[11px]" style={{ color: "var(--muted)" }}>
+									{cmd.input.hint}
+								</span>
+							)}
 							<span className="min-w-0 flex-1 truncate text-[12px]" style={{ color: "var(--text-dim)" }}>
 								{cmd.description}
 							</span>
@@ -159,7 +177,12 @@ export function Composer({ chatId, focused }: { chatId: string; focused: boolean
 					{images.map((img, i) => (
 						<div key={img.data.slice(0, 32) + i} className="relative">
 							<img alt="pending" src={`data:${img.mimeType};base64,${img.data}`} className="h-14 rounded border" style={{ borderColor: "var(--border)" }} />
-							<button type="button" className="absolute -right-1 -top-1 rounded-full p-0.5" style={{ background: "var(--panel-3)" }} onClick={() => setImages(imgs => imgs.filter((_, j) => j !== i))}>
+							<button
+								type="button"
+								className="absolute -right-1 -top-1 rounded-full p-0.5"
+								style={{ background: "var(--panel-3)" }}
+								onClick={() => setImages(imgs => imgs.filter((_, j) => j !== i))}
+							>
 								<X size={10} />
 							</button>
 						</div>
@@ -174,7 +197,9 @@ export function Composer({ chatId, focused }: { chatId: string; focused: boolean
 					rows={1}
 					value={text}
 					disabled={!ready}
-					placeholder={!ready ? "Starting omp…" : busy ? "Steer the agent (Enter) · queue a follow-up (Alt+Enter) · Esc to stop" : "Type your message… (/ for commands)"}
+					placeholder={
+						!ready ? "Starting omp…" : busy ? "Steer the agent (Enter) · queue a follow-up (Alt+Enter) · Esc to stop" : "Type your message… (/ for commands)"
+					}
 					onChange={e => setText(e.target.value)}
 					onPaste={async e => {
 						const files = [...e.clipboardData.files].filter(f => f.type.startsWith("image/"));
@@ -184,6 +209,7 @@ export function Composer({ chatId, focused }: { chatId: string; focused: boolean
 						setImages(imgs => [...imgs, ...added]);
 					}}
 					onKeyDown={e => {
+						if (e.nativeEvent.isComposing || e.keyCode === 229) return;
 						if (suggestions.length > 0) {
 							if (e.key === "ArrowDown") {
 								e.preventDefault();
@@ -233,7 +259,13 @@ export function Composer({ chatId, focused }: { chatId: string; focused: boolean
 						<Square size={11} fill="currentColor" /> Stop
 					</button>
 				)}
-				<button type="button" className="gy-btn mb-0.5" disabled={!ready || sending || (!text.trim() && images.length === 0)} onClick={() => void send()} data-jump="send">
+				<button
+					type="button"
+					className="gy-btn mb-0.5"
+					disabled={!ready || sending || (!text.trim() && images.length === 0)}
+					onClick={() => void send()}
+					data-jump="send"
+				>
 					<ArrowUp size={13} /> {busy ? "Steer" : "Send"}
 				</button>
 			</div>

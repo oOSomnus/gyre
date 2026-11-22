@@ -19,6 +19,11 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 	const [chats, setChats] = useState<ChatInfo[]>([]);
 	const [ptys, setPtys] = useState<PtyInfo[]>([]);
 	const [error, setError] = useState<string | null>(null);
+	const [actionError, setActionError] = useState<string | null>(null);
+	const action = (work: Promise<unknown>) => {
+		setActionError(null);
+		void work.catch(e => setActionError((e as Error).message));
+	};
 	const projects = useApp(s => s.projects);
 	const workspaces = useApp(s => s.workspaces);
 	const revealPane = useApp(s => s.revealPane);
@@ -60,15 +65,25 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 
 	return (
 		<div className="h-full overflow-auto" style={{ background: "var(--panel)" }}>
-			{error && <div className="gy-row text-[12px]" style={{ color: "var(--err)" }}>{error}</div>}
+			{(error || actionError) && (
+				<div className="gy-row text-[12px]" style={{ color: "var(--err)" }}>
+					{actionError || error}
+				</div>
+			)}
 			<div className="gy-section">
 				<MessagesSquare size={13} /> omp chats <span className="ml-auto font-normal tracking-normal normal-case">{chats.length} running</span>
 			</div>
-			{chats.length === 0 && <div className="gy-row text-[12.5px]" style={{ color: "var(--muted)" }}>No omp processes.</div>}
+			{chats.length === 0 && (
+				<div className="gy-row text-[12.5px]" style={{ color: "var(--muted)" }}>
+					No omp processes.
+				</div>
+			)}
 			{chats.map(chat => (
 				<div key={chat.chatId} className="gy-row flex-wrap">
 					<span className="gy-chip">chat</span>
-					<span className={`gy-chip ${chat.status === "exited" ? "err" : chat.busy ? "info" : "ok"}`}>{chat.status === "ready" ? (chat.busy ? "running" : "idle") : chat.status}</span>
+					<span className={`gy-chip ${chat.status === "exited" ? "err" : chat.busy ? "info" : "ok"}`}>
+						{chat.status === "ready" ? (chat.busy ? "running" : "idle") : chat.status}
+					</span>
 					<div className="min-w-0 flex-1">
 						<div className="truncate text-[13px] font-medium">{title(chat)}</div>
 						<div className="truncate font-mono text-[11px]" style={{ color: "var(--muted)" }}>
@@ -80,10 +95,10 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 							Open
 						</button>
 					)}
-					<button type="button" className="gy-btn" onClick={() => void api(`/api/chats/${encodeURIComponent(chat.chatId)}/restart`, { method: "POST" })}>
+					<button type="button" className="gy-btn" onClick={() => action(api(`/api/chats/${encodeURIComponent(chat.chatId)}/restart`, { method: "POST" }))}>
 						Restart
 					</button>
-					<button type="button" className="gy-btn danger" onClick={() => void api(`/api/chats/${encodeURIComponent(chat.chatId)}/kill`, { method: "POST" })}>
+					<button type="button" className="gy-btn danger" onClick={() => action(api(`/api/chats/${encodeURIComponent(chat.chatId)}/kill`, { method: "POST" }))}>
 						Kill
 					</button>
 				</div>
@@ -92,7 +107,11 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 			<div className="gy-section">
 				<SquareTerminal size={13} /> Terminals <span className="ml-auto font-normal tracking-normal normal-case">{ptys.length} running</span>
 			</div>
-			{ptys.length === 0 && <div className="gy-row text-[12.5px]" style={{ color: "var(--muted)" }}>No terminals.</div>}
+			{ptys.length === 0 && (
+				<div className="gy-row text-[12.5px]" style={{ color: "var(--muted)" }}>
+					No terminals.
+				</div>
+			)}
 			{ptys.map(pty => (
 				<div key={pty.ptyId} className="gy-row">
 					<span className="gy-chip">terminal</span>
@@ -108,7 +127,7 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 							Open
 						</button>
 					)}
-					<button type="button" className="gy-btn danger" onClick={() => void api(`/api/ptys/${pty.ptyId}`, { method: "DELETE" })}>
+					<button type="button" className="gy-btn danger" onClick={() => action(api(`/api/ptys/${pty.ptyId}`, { method: "DELETE" }))}>
 						Kill
 					</button>
 				</div>
@@ -117,7 +136,11 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 			<div className="gy-section">
 				<Bot size={13} /> Sub-agents <span className="ml-auto font-normal tracking-normal normal-case">{subagents.length} active</span>
 			</div>
-			{subagents.length === 0 && <div className="gy-row text-[12.5px]" style={{ color: "var(--muted)" }}>No running sub-agents.</div>}
+			{subagents.length === 0 && (
+				<div className="gy-row text-[12.5px]" style={{ color: "var(--muted)" }}>
+					No running sub-agents.
+				</div>
+			)}
 			{subagents.map(({ chatId, sub }) => {
 				const p = progressOf(sub);
 				return (
@@ -132,7 +155,11 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 							</div>
 						</div>
 						{sub.subagentId && (
-							<button type="button" className="gy-btn danger" onClick={() => void gateway.rpc(chatId, { type: "cancel_subagent", subagentId: sub.subagentId })}>
+							<button
+								type="button"
+								className="gy-btn danger"
+								onClick={() => action(gateway.rpc(chatId, { type: "cancel_subagent", subagentId: sub.subagentId }))}
+							>
 								Cancel
 							</button>
 						)}

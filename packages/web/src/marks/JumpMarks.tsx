@@ -26,6 +26,7 @@ function download(href: string, name: string) {
 
 /** Second-step actions for rich elements; null means "just click it". */
 function actionsFor(el: HTMLElement): { kind: string; actions: MarkAction[] } | null {
+	if (el.matches("button,input,select,textarea") && !el.hasAttribute("data-jump-kind")) return null;
 	const kindEl = el.closest<HTMLElement>("[data-jump-kind]") ?? (el.matches("[data-jump-kind]") ? el : null);
 	const kind = kindEl?.dataset.jumpKind ?? (el instanceof HTMLAnchorElement && el.href ? "link" : undefined);
 	if (!kind) return null;

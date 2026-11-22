@@ -24,7 +24,7 @@ const out = process.env.E2E_OUT ?? "e2e-out";
 mkdirSync(out, { recursive: true });
 
 const executablePath =
-	process.env.CHROMIUM_PATH ?? join(homedir(), ".cache/ms-playwright/chromium_headless_shell-1255/chrome-headless-shell-linux64/chrome-headless-shell");
+	process.env.CHROMIUM_PATH;
 
 const results: Array<{ step: string; ok: boolean; detail?: string }> = [];
 async function step(name: string, fn: () => Promise<void>) {
@@ -362,7 +362,9 @@ await step("phone layout shows one pane with a tab strip", async () => {
 
 await step("layout persists across reload", async () => {
 	const before = await page.locator("[data-pane]").count();
-	await page.waitForTimeout(800); // debounce for workspace save
+	const saved = page.waitForResponse(response => response.request().method() === "PUT" && response.url().includes("/api/workspaces/") && response.ok());
+	await page.locator("[data-pane]").first().click();
+	await saved;
 	await page.reload();
 	await page.locator("[data-pane]").first().waitFor({ timeout: 15_000 });
 	const after = await page.locator("[data-pane]").count();

@@ -69,7 +69,7 @@ export const THEME_ORDER: ThemeId[] = ["graphite", "riso", "phosphor", "dune", "
 export const DEFAULT_THEME: ThemeId = "graphite";
 
 export function isThemeId(value: unknown): value is ThemeId {
-	return typeof value === "string" && value in THEMES;
+	return typeof value === "string" && Object.hasOwn(THEMES, value);
 }
 
 /** A theme's four signature colours as a small strip. */

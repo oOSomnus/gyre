@@ -93,8 +93,10 @@ function handleKbdMode(event: KeyboardEvent): boolean {
 	const ws = app.activeWorkspace();
 	const focused = ws?.focusedPaneId;
 	const key = event.key.toLowerCase();
-	const dir = WASD[key];
-	if (key === "escape" || key === "enter" || (event.altKey && key === "m")) {
+	const isKey = (letter: string) => key === letter || event.code === `Key${letter.toUpperCase()}`;
+	const physical = event.code.startsWith("Key") ? event.code.slice(3).toLowerCase() : "";
+	const dir = WASD[key] ?? WASD[physical];
+	if (key === "escape" || key === "enter" || (event.altKey && isKey("m"))) {
 		app.setKbdMode(false);
 		return true;
 	}
@@ -113,7 +115,7 @@ function handleKbdMode(event: KeyboardEvent): boolean {
 		if (id) app.focusPane(id);
 		return true;
 	}
-	switch (key) {
+	switch (/^[a-z]$/.test(key) ? key : physical || key) {
 		case "q":
 			app.cycleWorkspace(-1);
 			return true;
@@ -158,19 +160,20 @@ export function installShortcuts(): () => void {
 			return;
 		}
 		const key = event.key.toLowerCase();
+		const isKey = (letter: string) => key === letter || event.code === `Key${letter.toUpperCase()}`;
 		const mod = event.ctrlKey || event.metaKey;
 
-		if ((mod && !event.shiftKey && key === "k") || (event.altKey && !mod && !event.shiftKey && key === "x")) {
+		if ((mod && !event.shiftKey && isKey("k")) || (event.altKey && !mod && !event.shiftKey && isKey("x"))) {
 			stop();
 			app.paletteOpen ? app.closePalette() : app.openPalette("", "global");
 			return;
 		}
-		if (event.altKey && !mod && !event.shiftKey && key === "c") {
+		if (event.altKey && !mod && !event.shiftKey && isKey("c")) {
 			stop();
 			app.paletteOpen ? app.closePalette() : app.openPalette("", "pane");
 			return;
 		}
-		if (mod && !event.shiftKey && key === "m") {
+		if (mod && !event.shiftKey && isKey("m")) {
 			const chatId = focusedChatId();
 			if (chatId) {
 				stop();
@@ -178,12 +181,12 @@ export function installShortcuts(): () => void {
 			}
 			return;
 		}
-		if (event.altKey && !mod && (key === "w" || key === "j")) {
+		if (event.altKey && !mod && (isKey("w") || isKey("j"))) {
 			stop();
 			app.setJumpMode(true);
 			return;
 		}
-		if (event.altKey && !mod && !event.shiftKey && key === "m") {
+		if (event.altKey && !mod && !event.shiftKey && isKey("m")) {
 			stop();
 			app.setKbdMode(true);
 			return;
@@ -193,7 +196,7 @@ export function installShortcuts(): () => void {
 			moveFocus(key.slice(5) as Direction);
 			return;
 		}
-		if (event.altKey && !mod && key === "z") {
+		if (event.altKey && !mod && isKey("z")) {
 			const id = app.activeWorkspace()?.focusedPaneId;
 			if (id) {
 				stop();

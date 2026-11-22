@@ -59,6 +59,25 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 		if (el && stick) el.scrollTop = el.scrollHeight;
 	});
 
+	if (!pane.projectId)
+		return (
+			<div className="p-4">
+				Select a project to start this chat.
+				<select className="gy-input" value="" onChange={e => updatePane(pane.id, { projectId: e.target.value })}>
+					<option value="" disabled>
+						Select project
+					</option>
+					{useApp.getState().projects.map(project => (
+						<option key={project.id} value={project.id}>
+							{project.name}
+						</option>
+					))}
+				</select>
+				<button type="button" className="gy-btn" onClick={() => useApp.getState().setAddProjectOpen(true)}>
+					Add project
+				</button>
+			</div>
+		);
 	if (!chat) {
 		return (
 			<div className="flex h-full items-center justify-center gap-2" style={{ color: "var(--muted)" }}>

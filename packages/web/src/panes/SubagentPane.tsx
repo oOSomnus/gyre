@@ -23,7 +23,10 @@ export function SubagentPane({ pane }: { pane: PaneSpec }) {
 	useEffect(() => {
 		if (!chatId || (!subagentId && !sessionFile)) return;
 		let live = true;
+		let pending = false;
 		const poll = async () => {
+			if (pending) return;
+			pending = true;
 			try {
 				const data = await gateway.rpc<{ messages?: AgentMessage[]; nextByte?: number; reset?: boolean }>(chatId, {
 					type: "get_subagent_messages",
@@ -37,6 +40,8 @@ export function SubagentPane({ pane }: { pane: PaneSpec }) {
 				setError(null);
 			} catch (e) {
 				if (live) setError(String((e as Error).message));
+			} finally {
+				pending = false;
 			}
 		};
 		void poll();
@@ -53,7 +58,10 @@ export function SubagentPane({ pane }: { pane: PaneSpec }) {
 
 	return (
 		<div className="flex h-full min-h-0 flex-col" style={{ background: "var(--panel)" }}>
-			<div className="flex flex-wrap items-center gap-2 border-b px-2 py-1.5" style={{ borderColor: "var(--border-strong)", background: "var(--tint-subagent)" }}>
+			<div
+				className="flex flex-wrap items-center gap-2 border-b px-2 py-1.5"
+				style={{ borderColor: "var(--border-strong)", background: "var(--tint-subagent)" }}
+			>
 				<span className="font-mono text-[11.5px] font-semibold tracking-widest uppercase">{String(sub?.agent ?? "sub-agent")}</span>
 				<span className={`gy-chip ${status === "completed" ? "ok" : active ? "info" : "err"}`}>{status}</span>
 				{modelName(p.resolvedModel) && <span className="font-mono text-[11px]">{modelName(p.resolvedModel)}</span>}
@@ -66,7 +74,11 @@ export function SubagentPane({ pane }: { pane: PaneSpec }) {
 				)}
 			</div>
 			<div className="min-h-0 flex-1 space-y-2 overflow-auto p-2">
-				{error && <div className="text-[12px]" style={{ color: "var(--err)" }}>{error}</div>}
+				{error && (
+					<div className="text-[12px]" style={{ color: "var(--err)" }}>
+						{error}
+					</div>
+				)}
 				{messages.length === 0 && !error && (
 					<div className="flex items-center gap-2 p-3 text-[12.5px]" style={{ color: "var(--muted)" }}>
 						<Loader2 size={13} className="animate-spin" /> Waiting for the transcript…
@@ -91,10 +103,19 @@ export function SubagentPane({ pane }: { pane: PaneSpec }) {
 					onSubmit={e => {
 						e.preventDefault();
 						if (!steer.trim()) return;
-						void gateway.rpc(chatId, { type: "steer_subagent", subagentId, message: steer.trim() }).then(() => setSteer(""));
+						const sent = steer;
+						void gateway
+							.rpc(chatId, { type: "steer_subagent", subagentId, message: sent.trim() })
+							.then(() => setSteer(current => (current === sent ? "" : current)))
+							.catch(e => setError((e as Error).message));
 					}}
 				>
-					<input className="flex-1 bg-transparent py-1 font-mono text-[13px] outline-none" placeholder="Steer this sub-agent…" value={steer} onChange={e => setSteer(e.target.value)} />
+					<input
+						className="flex-1 bg-transparent py-1 font-mono text-[13px] outline-none"
+						placeholder="Steer this sub-agent…"
+						value={steer}
+						onChange={e => setSteer(e.target.value)}
+					/>
 					<button type="submit" className="gy-btn" disabled={!steer.trim()}>
 						<Send size={12} /> Steer
 					</button>

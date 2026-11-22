@@ -8,7 +8,6 @@ import { sendToChat, terminalCloser, terminals } from "../store/actions";
 import { useApp } from "../store/app";
 import { THEMES } from "../lib/themes";
 
-
 export function TerminalPane({ pane, focused }: { pane: PaneSpec; focused: boolean }) {
 	const host = useRef<HTMLDivElement>(null);
 	const termRef = useRef<Terminal | null>(null);
@@ -39,30 +38,50 @@ export function TerminalPane({ pane, focused }: { pane: PaneSpec; focused: boole
 
 		let ptyId: string | null = null;
 		let disposed = false;
+		let explicitlyClosed = false;
+		let attaching = false;
 		const off = gateway.on(msg => {
+			if (msg.t === "welcome") attach();
 			if (msg.t === "pty_data" && msg.ptyId === ptyId) term.write(msg.data);
 			if (msg.t === "pty_exit" && msg.ptyId === ptyId) setExited(msg.code ?? 0);
 		});
 		// The pane id keys the shell: hiding, floating or moving the pane reattaches to the same shell.
-		void gateway.openPty(pane.projectId, term.cols, term.rows, pane.id).then(({ ptyId: id, reused, cols, rows }) => {
-			if (disposed) {
-				gateway.send({ t: "pty_detach", ptyId: id });
-				return;
-			}
-			ptyId = id;
-			if (reused && cols && rows) {
-				// Replay scrollback at the size it was produced at, then fit to this pane.
-				term.resize(cols, rows);
-				setTimeout(() => {
-					if (disposed) return;
-					try {
-						fit.fit();
-						gateway.send({ t: "pty_resize", ptyId: id, cols: term.cols, rows: term.rows });
-					} catch {}
-				}, 120);
-			}
+		const attach = () => {
+			if (disposed || explicitlyClosed || attaching) return;
+			attaching = true;
+			if (ptyId) term.reset();
+			void gateway
+				.openPty(pane.projectId!, term.cols, term.rows, pane.id)
+				.then(({ ptyId: id, reused, cols, rows }) => {
+					if (disposed) {
+						gateway.send({ t: explicitlyClosed ? "pty_close" : "pty_detach", ptyId: id });
+						return;
+					}
+					ptyId = id;
+					if (reused && cols && rows) {
+						// Replay scrollback at the size it was produced at, then fit to this pane.
+						term.resize(cols, rows);
+						setTimeout(() => {
+							if (disposed) return;
+							try {
+								fit.fit();
+								gateway.send({ t: "pty_resize", ptyId: id, cols: term.cols, rows: term.rows });
+							} catch {}
+						}, 120);
+					}
+				})
+				.catch(error => {
+					if (!disposed) term.write(`\r\n${(error as Error).message}\r\n`);
+				})
+				.finally(() => {
+					attaching = false;
+				});
+		};
+		attach();
+		terminalCloser.set(pane.id, () => {
+			explicitlyClosed = true;
+			if (ptyId) gateway.send({ t: "pty_close", ptyId });
 		});
-		terminalCloser.set(pane.id, () => ptyId && gateway.send({ t: "pty_close", ptyId }));
 		const input = term.onData(data => ptyId && gateway.send({ t: "pty_input", ptyId, data }));
 		const select = term.onSelectionChange(() => setSelection(term.getSelection()));
 		const observer = new ResizeObserver(() => {

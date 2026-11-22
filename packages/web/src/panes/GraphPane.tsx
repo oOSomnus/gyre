@@ -97,6 +97,7 @@ function build(chat: ChatState, enabled: Set<Kind>): Built {
 				lane++;
 			}
 			if (lane > 1) row += lane - 1;
+			if (!text.trim() && lane > 0) row++;
 		}
 	});
 

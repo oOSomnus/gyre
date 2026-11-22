@@ -14,20 +14,27 @@ export function SubagentsPane({ pane }: { pane: PaneSpec }) {
 	const [snapshot, setSnapshot] = useState<SubagentInfo[]>([]);
 
 	useEffect(() => {
+		let current = true;
+		setSnapshot([]);
 		if (!chatId || chat?.info.status !== "ready") return;
 		void gateway.rpc(chatId, { type: "set_subagent_subscription", level: "progress" }).catch(() => undefined);
 		const poll = () =>
 			void gateway
 				.rpc<SubagentInfo[] | { subagents?: SubagentInfo[] }>(chatId, { type: "get_subagents" })
-				.then(data => setSnapshot(Array.isArray(data) ? data : (data?.subagents ?? [])))
+				.then(data => {
+					if (current) setSnapshot(Array.isArray(data) ? data : (data?.subagents ?? []));
+				})
 				.catch(() => undefined);
 		poll();
 		const timer = setInterval(poll, 3000);
-		return () => clearInterval(timer);
+		return () => {
+			current = false;
+			clearInterval(timer);
+		};
 	}, [chatId, chat?.info.status]);
 
 	const merged = new Map<string, SubagentInfo>();
-	for (const s of snapshot) merged.set(s.id, s);
+	for (const s of snapshot) merged.set(s.id, { ...s, subagentId: s.subagentId ?? s.id });
 	for (const s of Object.values(chat?.subagents ?? {})) merged.set(s.id, { ...merged.get(s.id), ...s });
 	const list = [...merged.values()].sort((a, b) => (b.lastUpdate ?? 0) - (a.lastUpdate ?? 0));
 
@@ -44,7 +51,11 @@ export function SubagentsPane({ pane }: { pane: PaneSpec }) {
 				</select>
 			</div>
 			<div className="min-h-0 flex-1 space-y-2 overflow-auto p-2">
-				{list.length === 0 && <div className="p-3 text-[12.5px]" style={{ color: "var(--muted)" }}>No sub-agents running. They appear here when the agent delegates with the task tool.</div>}
+				{list.length === 0 && (
+					<div className="p-3 text-[12.5px]" style={{ color: "var(--muted)" }}>
+						No sub-agents running. They appear here when the agent delegates with the task tool.
+					</div>
+				)}
 				{list.map(agent => (
 					<div key={agent.id} className="gy-card tool">
 						<div className="gy-card-head">
@@ -55,7 +66,12 @@ export function SubagentsPane({ pane }: { pane: PaneSpec }) {
 							<span className="min-w-0 flex-1 truncate text-[12.5px]">{String(agent.description ?? agent.task ?? "")}</span>
 							<span className="gy-chip">{String(agent.status ?? "…")}</span>
 							{chatId && (agent.status === "running" || agent.status === "pending") && (
-								<button type="button" className="gy-icon-btn" title="Cancel" onClick={() => void gateway.rpc(chatId, { type: "cancel_subagent", subagentId: agent.id })}>
+								<button
+									type="button"
+									className="gy-icon-btn"
+									title="Cancel"
+									onClick={() => void gateway.rpc(chatId, { type: "cancel_subagent", subagentId: agent.subagentId ?? agent.id })}
+								>
 									<Square size={12} />
 								</button>
 							)}

@@ -59,11 +59,20 @@ export function SubagentCard({ chatId, sub }: { chatId: string; sub: SubagentInf
 					{modelName(p.resolvedModel) && <span title="model">{modelName(p.resolvedModel)}</span>}
 					{tokens ? <span>{formatTokens(tokens)} tok</span> : null}
 					{typeof p.cost === "number" && p.cost > 0 ? <span>${p.cost.toFixed(4)}</span> : null}
-					<button type="button" title="Open in a pane" data-jump="open-subagent" onClick={() => openChatPane("subagent", chatId, { ref: sub.id, subagentId: sub.subagentId })}>
+					<button
+						type="button"
+						title="Open in a pane"
+						data-jump="open-subagent"
+						onClick={() => openChatPane("subagent", chatId, { ref: sub.id, subagentId: sub.subagentId })}
+					>
 						<ExternalLink size={12} />
 					</button>
 					{active && sub.subagentId && (
-						<button type="button" title="Cancel" onClick={() => void gateway.rpc(chatId, { type: "cancel_subagent", subagentId: sub.subagentId }).catch(() => undefined)}>
+						<button
+							type="button"
+							title="Cancel"
+							onClick={() => void gateway.rpc(chatId, { type: "cancel_subagent", subagentId: sub.subagentId }).catch(() => undefined)}
+						>
 							<Square size={11} />
 						</button>
 					)}
@@ -92,9 +101,10 @@ export function SubagentCard({ chatId, sub }: { chatId: string; sub: SubagentInf
 	);
 }
 
-export function SubagentCards({ chatId, toolCallId }: { chatId: string; toolCallId: string }) {
-	const subs = useChats(s => Object.values(s.chats[chatId]?.subagents ?? {}).filter(sub => sub.parentToolCallId === toolCallId));
-	if (subs.length === 0) return null;
+export function SubagentCards({ chatId, toolCallId, fallback }: { chatId: string; toolCallId: string; fallback?: React.ReactNode }) {
+	const map = useChats(s => s.chats[chatId]?.subagents);
+	const subs = Object.values(map ?? {}).filter(sub => sub.parentToolCallId === toolCallId);
+	if (subs.length === 0) return fallback ?? null;
 	return (
 		<div className="space-y-2">
 			{subs

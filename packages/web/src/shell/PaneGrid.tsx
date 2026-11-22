@@ -1,7 +1,20 @@
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import type { FloatRect, LayoutNode, PaneSpec, Workspace } from "@gyre/protocol";
-import { ArrowRightLeft, Columns2, EyeOff, FolderGit2, Maximize2, Minimize2, MessagesSquare, PictureInPicture2, RotateCcw, Rows2, SlidersHorizontal, X } from "lucide-react";
-import { Fragment, type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
+import {
+	ArrowRightLeft,
+	Columns2,
+	EyeOff,
+	FolderGit2,
+	Maximize2,
+	Minimize2,
+	MessagesSquare,
+	PictureInPicture2,
+	RotateCcw,
+	Rows2,
+	SlidersHorizontal,
+	X,
+} from "lucide-react";
+import { Fragment, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
 import { ChatPane } from "../chat/ChatPane";
 import { api } from "../lib/gateway";
@@ -28,7 +41,7 @@ import { Gyroscope } from "./Gyroscope";
 
 const menuItem = "gy-menu-item";
 
-function PaneMenu({ pane, floating }: { pane: PaneSpec; floating: boolean }) {
+export function PaneMenu({ pane, floating }: { pane: PaneSpec; floating: boolean }) {
 	const app = useApp();
 	const others = app.workspaces.filter(ws => ws.id !== app.activeWorkspaceId);
 	const split = (direction: "row" | "column") =>
@@ -141,7 +154,13 @@ function PaneFrame({
 					<X size={13} strokeWidth={3} />
 				</button>
 				{!floating && (
-					<button type="button" className="gy-frame-btn" title={maximized ? "Restore" : "Maximize"} onClick={() => toggleMaximize(pane.id)} data-jump="maximize">
+					<button
+						type="button"
+						className="gy-frame-btn"
+						title={maximized ? "Restore" : "Maximize"}
+						onClick={() => toggleMaximize(pane.id)}
+						data-jump="maximize"
+					>
 						{maximized ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
 					</button>
 				)}
@@ -241,7 +260,12 @@ function Node({ node, path, ws, numbers }: { node: LayoutNode; path: number[]; w
 			groupRef={groupRef}
 			orientation={node.direction === "row" ? "horizontal" : "vertical"}
 			defaultLayout={defaultLayout}
-			onLayoutChanged={layout => setSizes(path, ids.map(id => layout[id] ?? 0))}
+			onLayoutChanged={layout =>
+				setSizes(
+					path,
+					ids.map(id => layout[id] ?? 0),
+				)
+			}
 			className="h-full w-full"
 		>
 			{node.children.map((child, i) => (
@@ -260,6 +284,7 @@ function FloatingPane({ pane, rect, ws, number }: { pane: PaneSpec; rect: FloatR
 	const setFloatRect = useApp(s => s.setFloatRect);
 	const drag = (e: React.PointerEvent, mode: "move" | "resize") => {
 		if (mode === "move" && (e.target as HTMLElement).closest("button")) return;
+		useApp.getState().focusPane(pane.id);
 		e.preventDefault();
 		const start = { x: e.clientX, y: e.clientY, rect };
 		const onMove = (ev: PointerEvent) => {
@@ -291,6 +316,7 @@ function FloatingPane({ pane, rect, ws, number }: { pane: PaneSpec; rect: FloatR
 }
 
 function HiddenBar({ ws }: { ws: Workspace }) {
+	const [hovered, setHovered] = useState<string | null>(null);
 	const restorePane = useApp(s => s.restorePane);
 	const chats = useChats(s => s.chats);
 	const hidden = (ws.hidden ?? []).filter(id => ws.panes[id]);
@@ -305,7 +331,7 @@ function HiddenBar({ ws }: { ws: Workspace }) {
 				const Icon = PANE_META[pane.kind]?.icon ?? MessagesSquare;
 				const status = paneStatus(pane, chats);
 				return (
-					<div key={id} className="group relative">
+					<div key={id} className="group relative" onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)}>
 						<button type="button" className="gy-chrome-btn h-6" onClick={() => restorePane(id)} data-jump="hidden-pane" data-hidden-pane={id}>
 							<span className={`inline-block h-2 w-2 rounded-full border border-black gy-light-${status}`} />
 							<Icon size={12} />
@@ -316,15 +342,19 @@ function HiddenBar({ ws }: { ws: Workspace }) {
 							className="pointer-events-none absolute bottom-8 left-0 z-50 hidden overflow-hidden group-hover:block"
 							style={{ width: 300, height: 190, border: "2px solid var(--chrome-ink)", boxShadow: "var(--soft-shadow)", background: "var(--panel)" }}
 						>
-							{pane.kind === "terminal" ? (
-								<div className="flex h-full items-center justify-center font-mono text-[12px]" style={{ background: "var(--terminal-bg)", color: "var(--terminal-fg)" }}>
-									Terminal (running)
-								</div>
-							) : (
-								<div style={{ width: 750, height: 475, transform: "scale(0.4)", transformOrigin: "top left" }}>
-									<PaneContent pane={pane} focused={false} />
-								</div>
-							)}
+							{hovered === id &&
+								(pane.kind === "terminal" ? (
+									<div
+										className="flex h-full items-center justify-center font-mono text-[12px]"
+										style={{ background: "var(--terminal-bg)", color: "var(--terminal-fg)" }}
+									>
+										Terminal (running)
+									</div>
+								) : (
+									<div style={{ width: 750, height: 475, transform: "scale(0.4)", transformOrigin: "top left" }}>
+										<PaneContent pane={pane} focused={false} />
+									</div>
+								))}
 						</div>
 					</div>
 				);

@@ -6,9 +6,10 @@
  */
 import type { PaneSpec } from "@gyre/protocol";
 import { Bot, Copy, FilePlus2, Save, Send, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/gateway";
 import { useRoles } from "../lib/roles";
+import { useRoutingStore } from "../lib/config-map";
 import { FALLBACK_TOOLS, fetchTools, groupTools, type ToolInfo } from "../lib/tools";
 import { useApp } from "../store/app";
 import { useChats } from "../store/chats";
@@ -71,34 +72,51 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 	const [selected, setSelected] = useState<string | null>(null);
 	const [draft, setDraft] = useState<Draft>(EMPTY);
 	const [drafts, setDrafts] = useState<Record<string, Draft>>({});
-	const [overrides, setOverrides] = useState<Record<string, string>>({});
+	const overrides = useRoutingStore(s => s.assignments);
 	const [tools, setTools] = useState<ToolInfo[]>(FALLBACK_TOOLS);
 	const [message, setMessage] = useState<string | null>(null);
 	const { roles } = useRoles();
 	const chatId = useChats(s => Object.values(s.chats).find(c => c.info.status === "ready" && (!projectId || c.info.projectId === projectId))?.info.chatId);
 
+	const generation = useChats(s => (chatId ? s.chats[chatId]?.info.generation : undefined));
+	const reloadGeneration = useRef(0);
 	const reload = async () => {
-		const [list, saved, routing] = await Promise.all([
+		const request = ++reloadGeneration.current;
+		const [list, saved] = await Promise.all([
 			api<AgentFile[]>(`/api/agents${projectId ? `?projectId=${projectId}` : ""}`),
 			api<Record<string, Draft> | null>("/api/kv/ui.agentDrafts"),
-			api<{ value: Record<string, string> | null }>("/api/omp/config?key=task.agentModelOverrides").catch(() => ({ value: {} })),
+			useRoutingStore.getState().load(),
 		]);
+		if (request !== reloadGeneration.current) return;
 		setAgents(list);
 		setDrafts(saved ?? {});
-		setOverrides(routing.value ?? {});
+		// Shared routing store was loaded above.
 	};
 
 	useEffect(() => {
+		setSelected(null);
+		setDraft(EMPTY);
 		void reload().catch(e => setMessage(String((e as Error).message)));
+		return () => {
+			reloadGeneration.current++;
+		};
 		// biome-ignore lint/correctness/useExhaustiveDependencies: reload on project change
 	}, [projectId]);
 
 	useEffect(() => {
-		if (chatId) void fetchTools(chatId).then(list => list.length && setTools(list.filter(t => t.name !== "submit_plan")));
-	}, [chatId]);
+		let current = true;
+		if (chatId)
+			void fetchTools(chatId).then(list => {
+				if (current) setTools(list.filter(t => t.name !== "submit_plan"));
+			});
+		return () => {
+			current = false;
+		};
+	}, [chatId, generation]);
 
+	const keyOf = (scope: string, name: string) => (scope === "project" ? `project:${projectId}:${name}` : `${scope}:${name}`);
 	const select = (agent: AgentFile | null) => {
-		const key = agent ? `${agent.scope}:${agent.name}` : "new";
+		const key = agent ? keyOf(agent.scope, agent.name) : "new";
 		setSelected(key);
 		setDraft(drafts[key] ?? (agent ? draftFrom(agent) : { ...EMPTY }));
 		setMessage(null);
@@ -119,18 +137,32 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 			model: draft.model || undefined,
 			thinking: draft.thinking || undefined,
 			tools: draft.tools ?? undefined,
-			spawns: draft.spawns.trim() ? (draft.spawns.trim() === "*" ? "*" : draft.spawns.split(",").map(s => s.trim()).filter(Boolean)) : undefined,
+			spawns: draft.spawns.trim()
+				? draft.spawns.trim() === "*"
+					? "*"
+					: draft.spawns
+							.split(",")
+							.map(s => s.trim())
+							.filter(Boolean)
+				: undefined,
 		};
 		try {
 			await api("/api/agents", {
 				method: "PUT",
-				body: JSON.stringify({ scope: draft.scope, projectId, name: draft.name, previousName: draft.previousName, frontmatter, instructions: draft.instructions }),
+				body: JSON.stringify({
+					scope: draft.scope,
+					projectId,
+					name: draft.name,
+					previousName: draft.previousName,
+					frontmatter,
+					instructions: draft.instructions,
+				}),
 			});
 			const next = { ...drafts };
 			delete next[selected ?? "new"];
 			await api("/api/kv/ui.agentDrafts", { method: "PUT", body: JSON.stringify(next) });
 			await reload();
-			setSelected(`${draft.scope}:${draft.name}`);
+			setSelected(keyOf(draft.scope, draft.name));
 			setDraft(d => ({ ...d, previousName: d.name }));
 			setMessage(`Published ${draft.name}. omp uses it on the next sub-agent spawn.`);
 		} catch (e) {
@@ -146,11 +178,10 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 	};
 
 	const setOverride = async (name: string, selector: string) => {
-		const next = { ...overrides };
-		if (selector) next[name] = selector;
-		else delete next[name];
-		await api("/api/omp/config", { method: "PUT", body: JSON.stringify({ key: "task.agentModelOverrides", value: next }) });
-		setOverrides(next);
+		await useRoutingStore
+			.getState()
+			.assign(name, selector)
+			.catch(e => setMessage((e as Error).message));
 	};
 
 	const groups = useMemo(() => groupTools(tools), [tools]);
@@ -166,7 +197,7 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 		for (const n of names) on ? next.add(n) : next.delete(n);
 		setDraft(d => ({ ...d, tools: [...next] }));
 	};
-	const current = agents.find(a => `${a.scope}:${a.name}` === selected);
+	const current = agents.find(a => keyOf(a.scope, a.name) === selected);
 	const readOnly = current?.scope === "bundled";
 
 	return (
@@ -194,7 +225,7 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 							<div key={scope}>
 								<div className="gy-section py-1">{scope}</div>
 								{list.map(agent => {
-									const key = `${agent.scope}:${agent.name}`;
+									const key = keyOf(agent.scope, agent.name);
 									return (
 										<button
 											type="button"
@@ -241,7 +272,14 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 							{readOnly ? "Bundled agent (read-only)" : draft.previousName ? `Edit ${draft.previousName}` : "New agent"}
 							<span className="ml-auto flex gap-1.5 font-normal tracking-normal normal-case">
 								{readOnly ? (
-									<button type="button" className="gy-btn" onClick={() => setDraft(d => ({ ...d, previousName: undefined, scope: "user", name: `${d.name}-custom` }))}>
+									<button
+										type="button"
+										className="gy-btn"
+										onClick={() => {
+											setSelected("new");
+											setDraft(d => ({ ...d, previousName: undefined, scope: "user", name: `${d.name}-custom` }));
+										}}
+									>
 										<Copy size={11} /> Customize
 									</button>
 								) : (
@@ -254,7 +292,13 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 										<button type="button" className="gy-btn" onClick={() => void saveDraft()}>
 											<Save size={11} /> Save draft
 										</button>
-										<button type="button" className="gy-btn primary" onClick={() => void publish()} disabled={!draft.name || !draft.description} data-testid="publish-agent">
+										<button
+											type="button"
+											className="gy-btn primary"
+											onClick={() => void publish()}
+											disabled={!draft.name || !draft.description}
+											data-testid="publish-agent"
+										>
 											<Send size={11} /> Publish
 										</button>
 									</>
@@ -265,7 +309,13 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 						<fieldset disabled={readOnly} className="contents">
 							<div className="gy-row">
 								<label className="w-28 shrink-0 text-[12.5px]">Name</label>
-								<input className="gy-input flex-1" value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} placeholder="reviewer-strict" data-testid="agent-name" />
+								<input
+									className="gy-input flex-1"
+									value={draft.name}
+									onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
+									placeholder="reviewer-strict"
+									data-testid="agent-name"
+								/>
 								<select className="gy-input" value={draft.scope} onChange={e => setDraft(d => ({ ...d, scope: e.target.value as Draft["scope"] }))}>
 									<option value="user">User (all projects)</option>
 									<option value="project" disabled={!projectId}>
@@ -285,7 +335,11 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 							</div>
 							<div className="gy-row">
 								<label className="w-28 shrink-0 text-[12.5px]">Model</label>
-								<select className="gy-input" value={draft.model.startsWith("@") || draft.model === "" ? draft.model : "custom"} onChange={e => setDraft(d => ({ ...d, model: e.target.value === "custom" ? "" : e.target.value }))}>
+								<select
+									className="gy-input"
+									value={draft.model.startsWith("@") || draft.model === "" ? draft.model : "custom"}
+									onChange={e => setDraft(d => ({ ...d, model: e.target.value === "custom" ? "" : e.target.value }))}
+								>
 									<option value="">Inherit (task role)</option>
 									{roles
 										.filter(r => r.section === "chat")
@@ -297,7 +351,12 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 									<option value="custom">Specific model…</option>
 								</select>
 								{!draft.model.startsWith("@") && (
-									<input className="gy-input flex-1" placeholder="provider/model-id" value={draft.model} onChange={e => setDraft(d => ({ ...d, model: e.target.value }))} />
+									<input
+										className="gy-input flex-1"
+										placeholder="provider/model-id"
+										value={draft.model}
+										onChange={e => setDraft(d => ({ ...d, model: e.target.value }))}
+									/>
 								)}
 								<label className="text-[12.5px]">Thinking</label>
 								<select className="gy-input" value={draft.thinking} onChange={e => setDraft(d => ({ ...d, thinking: e.target.value }))}>
@@ -310,12 +369,22 @@ export function StudioPane({ pane }: { pane: PaneSpec }) {
 							</div>
 							<div className="gy-row">
 								<label className="w-28 shrink-0 text-[12.5px]">Can spawn</label>
-								<input className="gy-input flex-1" value={draft.spawns} onChange={e => setDraft(d => ({ ...d, spawns: e.target.value }))} placeholder="Agent names, comma-separated, or * (needs the task tool)" />
+								<input
+									className="gy-input flex-1"
+									value={draft.spawns}
+									onChange={e => setDraft(d => ({ ...d, spawns: e.target.value }))}
+									placeholder="Agent names, comma-separated, or * (needs the task tool)"
+								/>
 							</div>
 						</fieldset>
 						<div className="gy-row">
 							<label className="w-28 shrink-0 text-[12.5px]">Routing override</label>
-							<select className="gy-input" value={overrides[draft.name] ?? ""} onChange={e => void setOverride(draft.name, e.target.value)} disabled={!draft.name}>
+							<select
+								className="gy-input"
+								value={overrides[draft.name] ?? ""}
+								onChange={e => void setOverride(draft.name, e.target.value)}
+								disabled={!draft.name}
+							>
 								<option value="">None (use the agent's model)</option>
 								{roles
 									.filter(r => r.section === "chat")

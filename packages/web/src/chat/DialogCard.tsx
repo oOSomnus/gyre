@@ -25,14 +25,26 @@ function Choice({
 	return (
 		<button type="button" data-jump="choice" onClick={onPick} data-active={index === 0} className="gy-choice">
 			<span className="gy-kbd mt-[1px]">{index < 9 ? index + 1 : "·"}</span>
-			{marker && <span className="mt-[1px] font-mono text-[12px]" style={{ color: "var(--highlight)" }}>{marker === "checkbox" ? (checked ? "[x]" : "[ ]") : checked ? "(•)" : "( )"}</span>}
+			{marker && (
+				<span className="mt-[1px] font-mono text-[12px]" style={{ color: "var(--highlight)" }}>
+					{marker === "checkbox" ? (checked ? "[x]" : "[ ]") : checked ? "(•)" : "( )"}
+				</span>
+			)}
 			<span className="min-w-0 flex-1">
 				<span className="block text-[13px]">{label}</span>
-				{description && <span className="block text-[12px]" style={{ color: "var(--muted)" }}>{description}</span>}
+				{description && (
+					<span className="block text-[12px]" style={{ color: "var(--muted)" }}>
+						{description}
+					</span>
+				)}
 			</span>
 			<span className="gy-kbd hidden sm:inline-flex">↵</span>
 		</button>
 	);
+}
+
+function nativeElements(form: HTMLFormElement): HTMLFormControlsCollection {
+	return Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, "elements")!.get!.call(form) as HTMLFormControlsCollection;
 }
 
 export function DialogCard({ chatId, request, active }: { chatId: string; request: UiRequest; active: boolean }) {
@@ -40,12 +52,33 @@ export function DialogCard({ chatId, request, active }: { chatId: string; reques
 		gateway.respondUi(chatId, { id: request.id, ...response } as OmpUiResponse);
 	const cancel = () => respond({ cancelled: true });
 
+	const cancelRef = useRef(cancel);
+	cancelRef.current = cancel;
+	useEffect(() => {
+		if (!active || !["select", "confirm"].includes(request.method)) return;
+		const handler = (event: KeyboardEvent) => {
+			if (event.key === "Escape") {
+				event.preventDefault();
+				event.stopImmediatePropagation();
+				cancelRef.current();
+			}
+		};
+		window.addEventListener("keydown", handler, true);
+		return () => window.removeEventListener("keydown", handler, true);
+	}, [active, request.method]);
 	const title =
-		request.title ??
-		(request.method === "confirm" ? "Confirm" : request.method === "ask" ? "Questions" : request.method === "form" ? "Form" : "Choose");
+		request.title ?? (request.method === "confirm" ? "Confirm" : request.method === "ask" ? "Questions" : request.method === "form" ? "Form" : "Choose");
 	// omp's tool approval prompts arrive as selects whose options end with "Deny".
 	const safety = request.method === "select" && (request.options ?? []).some(o => o === "Deny") && (request.options ?? []).some(o => /^Approve/.test(o));
-	const kind = safety ? "Tool safety" : request.method === "confirm" ? "Confirmation" : request.method === "select" ? "Completion choice" : request.method === "ask" ? "Question" : request.method;
+	const kind = safety
+		? "Tool safety"
+		: request.method === "confirm"
+			? "Confirmation"
+			: request.method === "select"
+				? "Completion choice"
+				: request.method === "ask"
+					? "Question"
+					: request.method;
 	const optionCount = request.method === "select" ? (request.options?.length ?? 0) : request.method === "confirm" ? 2 : 0;
 
 	return (
@@ -126,7 +159,11 @@ function ConfirmBody({ request, active, onAnswer }: { request: UiRequest; active
 	useAltDigits(active, 2, i => onAnswer(i === 0));
 	return (
 		<div className="space-y-2">
-			{request.message && <div className="whitespace-pre-wrap" style={{ color: "var(--text-dim)" }}>{request.message}</div>}
+			{request.message && (
+				<div className="whitespace-pre-wrap" style={{ color: "var(--text-dim)" }}>
+					{request.message}
+				</div>
+			)}
 			<div className="space-y-1.5">
 				<Choice index={0} label="Yes" onPick={() => onAnswer(true)} />
 				<Choice index={1} label="No" onPick={() => onAnswer(false)} />
@@ -182,20 +219,20 @@ function optionLabel(option: AskQuestion["options"][number]): { label: string; d
 }
 
 function AskBody({ request, onSubmit }: { request: UiRequest; onSubmit: (answers: unknown) => void }) {
-	const questions = (request.questions ?? []) as Array<AskQuestion & { multi?: boolean; recommended?: number }>;
+	const questions = (request.questions ?? []) as Array<AskQuestion & { multiSelect?: boolean; recommended?: number }>;
 	const [selected, setSelected] = useState<Record<string, string[]>>(() =>
 		Object.fromEntries(
 			questions.map(q => {
 				const rec = typeof q.recommended === "number" ? q.options[q.recommended] : undefined;
-				return [q.id, rec && !q.multi ? [optionLabel(rec).label] : []];
+				return [q.id, rec && !q.multiSelect ? [optionLabel(rec).label] : []];
 			}),
 		),
 	);
 	const [custom, setCustom] = useState<Record<string, string>>({});
-	const toggle = (q: AskQuestion & { multi?: boolean }, label: string) =>
+	const toggle = (q: AskQuestion & { multiSelect?: boolean }, label: string) =>
 		setSelected(prev => {
 			const cur = prev[q.id] ?? [];
-			if (q.multi) return { ...prev, [q.id]: cur.includes(label) ? cur.filter(l => l !== label) : [...cur, label] };
+			if (q.multiSelect) return { ...prev, [q.id]: cur.includes(label) ? cur.filter(l => l !== label) : [...cur, label] };
 			return { ...prev, [q.id]: cur[0] === label ? [] : [label] };
 		});
 	return (
@@ -212,25 +249,27 @@ function AskBody({ request, onSubmit }: { request: UiRequest; onSubmit: (answers
 								index={i}
 								label={label}
 								description={description}
-								marker={q.multi ? "checkbox" : "radio"}
+								marker={q.multiSelect ? "checkbox" : "radio"}
 								checked={(selected[q.id] ?? []).includes(label)}
 								onPick={() => {
 									toggle(q, label);
-									if (!q.multi) setCustom(prev => ({ ...prev, [q.id]: "" }));
+									if (!q.multiSelect) setCustom(prev => ({ ...prev, [q.id]: "" }));
 								}}
 							/>
 						);
 					})}
-					<input
-						className="gy-input w-full"
-						placeholder="Other (free text)…"
-						value={custom[q.id] ?? ""}
-						onChange={e => {
-							const text = e.target.value;
-							setCustom(prev => ({ ...prev, [q.id]: text }));
-							if (!q.multi && text.trim()) setSelected(prev => ({ ...prev, [q.id]: [] }));
-						}}
-					/>
+					{q.allowCustom !== false && (
+						<input
+							className="gy-input w-full"
+							placeholder="Other (free text)…"
+							value={custom[q.id] ?? ""}
+							onChange={e => {
+								const text = e.target.value;
+								setCustom(prev => ({ ...prev, [q.id]: text }));
+								if (!q.multiSelect && text.trim()) setSelected(prev => ({ ...prev, [q.id]: [] }));
+							}}
+						/>
+					)}
 				</div>
 			))}
 			<div className="flex justify-end">
@@ -240,10 +279,10 @@ function AskBody({ request, onSubmit }: { request: UiRequest; onSubmit: (answers
 					onClick={() =>
 						onSubmit(
 							questions.map(q => {
-								const customInput = (custom[q.id] ?? "").trim();
+								const customInput = q.allowCustom === false ? "" : (custom[q.id] ?? "").trim();
 								return {
 									id: q.id,
-									selectedOptions: q.multi || !customInput ? (selected[q.id] ?? []) : [],
+									selectedOptions: q.multiSelect || !customInput ? (selected[q.id] ?? []) : [],
 									...(customInput ? { customInput } : {}),
 								};
 							}),
@@ -260,8 +299,36 @@ function AskBody({ request, onSubmit }: { request: UiRequest; onSubmit: (answers
 // ---------- HTML form rendering (the `ask` tool's form protocol) ----------
 
 const ALLOWED_TAGS = new Set([
-	"FORM", "FIELDSET", "LEGEND", "LABEL", "INPUT", "SELECT", "OPTION", "OPTGROUP", "TEXTAREA", "DIV", "SPAN", "P",
-	"BR", "STRONG", "EM", "B", "I", "CODE", "PRE", "UL", "OL", "LI", "H1", "H2", "H3", "H4", "SMALL", "DETAILS", "SUMMARY", "HR",
+	"FORM",
+	"FIELDSET",
+	"LEGEND",
+	"LABEL",
+	"INPUT",
+	"SELECT",
+	"OPTION",
+	"OPTGROUP",
+	"TEXTAREA",
+	"DIV",
+	"SPAN",
+	"P",
+	"BR",
+	"STRONG",
+	"EM",
+	"B",
+	"I",
+	"CODE",
+	"PRE",
+	"UL",
+	"OL",
+	"LI",
+	"H1",
+	"H2",
+	"H3",
+	"H4",
+	"SMALL",
+	"DETAILS",
+	"SUMMARY",
+	"HR",
 ]);
 
 function sanitizeForm(html: string): HTMLFormElement {
@@ -294,17 +361,17 @@ function sanitizeForm(html: string): HTMLFormElement {
 function collectFormData(form: HTMLFormElement): Record<string, unknown> {
 	const data: Record<string, unknown> = {};
 	const names = new Set<string>();
-	for (const el of form.elements) {
+	for (const el of nativeElements(form)) {
 		const name = (el as HTMLInputElement).name;
 		if (name && !name.startsWith("__mc_other__")) names.add(name);
 	}
 	for (const name of names) {
-		const fields = [...form.elements].filter(el => (el as HTMLInputElement).name === name) as Array<
+		const fields = [...nativeElements(form)].filter(el => (el as HTMLInputElement).name === name) as Array<
 			HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
 		>;
 		const first = fields[0];
 		if (!first) continue;
-		const other = (form.elements.namedItem(`__mc_other__${name}`) as HTMLInputElement | null)?.value.trim();
+		const other = (nativeElements(form).namedItem(`__mc_other__${name}`) as HTMLInputElement | null)?.value.trim();
 		if (first instanceof HTMLInputElement && (first.type === "checkbox" || first.type === "radio")) {
 			const group = fields as HTMLInputElement[];
 			const chosen = group.filter(f => f.checked && !f.disabled).map(f => f.value);
@@ -359,7 +426,7 @@ function FormBody({ request, onSubmit, onCancel }: { request: UiRequest; onSubmi
 		}
 		const submit = (event: SubmitEvent) => {
 			event.preventDefault();
-			if (!form.reportValidity()) return;
+			if (!HTMLFormElement.prototype.reportValidity.call(form)) return;
 			onSubmit(collectFormData(form));
 		};
 		form.addEventListener("submit", submit);
@@ -372,7 +439,7 @@ function FormBody({ request, onSubmit, onCancel }: { request: UiRequest; onSubmi
 				<button type="button" className="gy-btn" onClick={onCancel}>
 					Cancel
 				</button>
-				<button type="button" className="gy-btn primary" onClick={() => form.requestSubmit()}>
+				<button type="button" className="gy-btn primary" onClick={() => HTMLFormElement.prototype.requestSubmit.call(form)}>
 					Submit
 				</button>
 			</div>

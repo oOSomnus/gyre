@@ -1,6 +1,6 @@
 import type { PaneSpec, SessionSummary } from "@gyre/protocol";
 import { GitFork, Loader2, MessageSquarePlus, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/gateway";
 import { useApp } from "../store/app";
 
@@ -21,13 +21,20 @@ export function SessionsPane({ pane }: { pane: PaneSpec }) {
 	const [error, setError] = useState<string | null>(null);
 	const [query, setQuery] = useState("");
 
+	const generation = useRef(0);
 	const load = useCallback(async () => {
-		if (!projectId) return;
+		const request = ++generation.current;
+		if (!projectId) {
+			setSessions([]);
+			return;
+		}
 		setSessions(null);
 		setError(null);
 		try {
-			setSessions(await api<SessionSummary[]>(`/api/sessions?projectId=${projectId}`));
+			const result = await api<SessionSummary[]>(`/api/sessions?projectId=${projectId}`);
+			if (generation.current === request) setSessions(result);
 		} catch (e) {
+			if (generation.current !== request) return;
 			setError((e as Error).message);
 			setSessions([]);
 		}
@@ -35,6 +42,9 @@ export function SessionsPane({ pane }: { pane: PaneSpec }) {
 
 	useEffect(() => {
 		void load();
+		return () => {
+			generation.current++;
+		};
 	}, [load]);
 
 	const open = (session?: SessionSummary) => {
@@ -74,8 +84,16 @@ export function SessionsPane({ pane }: { pane: PaneSpec }) {
 						<Loader2 size={14} className="animate-spin" /> Loading sessions…
 					</div>
 				)}
-				{error && <div className="p-3 text-[12px]" style={{ color: "var(--err)" }}>{error}</div>}
-				{sessions && filtered.length === 0 && !error && <div className="p-3 text-[12.5px]" style={{ color: "var(--muted)" }}>No sessions yet for this project.</div>}
+				{error && (
+					<div className="p-3 text-[12px]" style={{ color: "var(--err)" }}>
+						{error}
+					</div>
+				)}
+				{sessions && filtered.length === 0 && !error && (
+					<div className="p-3 text-[12.5px]" style={{ color: "var(--muted)" }}>
+						No sessions yet for this project.
+					</div>
+				)}
 				<div className="flex flex-col gap-1">
 					{filtered.map(s => (
 						<button

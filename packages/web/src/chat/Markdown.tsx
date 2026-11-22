@@ -1,6 +1,6 @@
 import { Check, Copy, Download } from "lucide-react";
-import { memo, useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { createContext, useContext, memo, useEffect, useRef, useState } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -35,17 +35,26 @@ function flush() {
 	for (const [projectId, paths] of queue) {
 		queue.delete(projectId);
 		const list = [...paths];
-		void api<Record<string, "file" | "dir">>("/api/fs/stat", { method: "POST", body: JSON.stringify({ projectId, paths: list }) })
-			.catch(() => ({}) as Record<string, "file" | "dir">)
-			.then(result => {
-				for (const path of list) {
-					const key = `${projectId}|${path}`;
-					const value = result[path] ?? null;
-					cache.set(key, value);
-					for (const resolve of waiting.get(key) ?? []) resolve(value);
-					waiting.delete(key);
-				}
-			});
+		for (let offset = 0; offset < list.length; offset += 200) {
+			const chunk = list.slice(offset, offset + 200);
+			void api<Record<string, "file" | "dir">>("/api/fs/stat", { method: "POST", body: JSON.stringify({ projectId, paths: chunk }) })
+				.then(result => {
+					for (const path of chunk) {
+						const key = `${projectId}|${path}`;
+						const value = result[path] ?? null;
+						cache.set(key, value);
+						for (const resolve of waiting.get(key) ?? []) resolve(value);
+						waiting.delete(key);
+					}
+				})
+				.catch(() => {
+					for (const path of chunk) {
+						const key = `${projectId}|${path}`;
+						for (const resolve of waiting.get(key) ?? []) resolve(null);
+						waiting.delete(key);
+					}
+				});
+		}
 	}
 }
 
@@ -60,7 +69,6 @@ function statPath(projectId: string, path: string): Promise<"file" | "dir" | nul
 	});
 }
 
-
 type Highlighter = (code: string, lang: string, theme: string) => Promise<string>;
 let highlighterPromise: Promise<Highlighter> | null = null;
 
@@ -72,20 +80,39 @@ function getHighlighter(): Promise<Highlighter> {
 	return highlighterPromise;
 }
 
-const LANG_ALIASES: Record<string, string> = { ts: "typescript", js: "javascript", py: "python", sh: "bash", shell: "bash", yml: "yaml", rs: "rust", md: "markdown" };
+const LANG_ALIASES: Record<string, string> = {
+	ts: "typescript",
+	js: "javascript",
+	py: "python",
+	sh: "bash",
+	shell: "bash",
+	yml: "yaml",
+	rs: "rust",
+	md: "markdown",
+};
 
 export function CopyButton({ text, label }: { text: string; label?: string }) {
 	const [copied, setCopied] = useState(false);
+	const [error, setError] = useState<string | null>(null);
 	return (
 		<button
 			type="button"
 			className="gy-icon-btn"
-			title={label ?? "Copy"}
+			title={error ?? label ?? "Copy"}
+			aria-label={error ?? label ?? "Copy"}
 			data-jump="copy"
 			onClick={() => {
-				void navigator.clipboard.writeText(text);
-				setCopied(true);
-				setTimeout(() => setCopied(false), 1200);
+				void Promise.resolve()
+					.then(() => navigator.clipboard.writeText(text))
+					.then(() => {
+						setError(null);
+						setCopied(true);
+						setTimeout(() => setCopied(false), 1200);
+					})
+					.catch(() => {
+						setCopied(false);
+						setError("Copy failed. Check clipboard permissions and retry.");
+					});
 			}}
 		>
 			{copied ? <Check size={14} /> : <Copy size={14} />}
@@ -208,40 +235,46 @@ function FileLink({ text, chatId }: { text: string; chatId?: string }) {
 	);
 }
 
+const MarkdownChat = createContext<string | undefined>(undefined);
+const markdownComponents: Components = {
+	a: ({ href, children }) => (
+		<a href={href} target="_blank" rel="noreferrer" data-jump-kind="link">
+			{children}
+		</a>
+	),
+	img: function MarkdownImage({ src, alt }) {
+		const chatId = useContext(MarkdownChat);
+		return typeof src === "string" ? (
+			<button type="button" onClick={() => openImage(chatId, src, alt)} data-jump="image" data-jump-kind="image" data-jump-text={src}>
+				<img src={src} alt={alt ?? ""} />
+			</button>
+		) : null;
+	},
+	pre: ({ children }) => <>{children}</>,
+	code: function MarkdownCode({ className, children }) {
+		const chatId = useContext(MarkdownChat);
+		const match = /language-([\w+-]+)/.exec(className ?? "");
+		const content = String(children ?? "");
+		if (!match && !content.includes("\n")) {
+			return chatId && looksLikePath(content) ? <FileLink text={content} chatId={chatId} /> : <code>{children}</code>;
+		}
+		return <CodeBlock code={content.replace(/\n$/, "")} lang={match?.[1]} />;
+	},
+	table: ({ children }) => <TableBlock>{children}</TableBlock>,
+};
 export const Markdown = memo(function Markdown({ text, streaming, chatId }: { text: string; streaming?: boolean; chatId?: string }) {
 	return (
-		<div className={`gy-md ${streaming ? "gy-streaming-caret" : ""}`}>
-			<ReactMarkdown
-				remarkPlugins={[remarkGfm, remarkMath]}
-				rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: "ignore" }]]}
-				components={{
-					a: ({ href, children }) => (
-						<a href={href} target="_blank" rel="noreferrer" data-jump-kind="link">
-							{children}
-						</a>
-					),
-					img: ({ src, alt }) =>
-						typeof src === "string" ? (
-							<button type="button" onClick={() => openImage(chatId, src, alt)} data-jump="image" data-jump-kind="image" data-jump-text={src}>
-								<img src={src} alt={alt ?? ""} />
-							</button>
-						) : null,
-					pre: ({ children }) => <>{children}</>,
-					code: ({ className, children }) => {
-						const match = /language-([\w+-]+)/.exec(className ?? "");
-						const content = String(children ?? "");
-						if (!match && !content.includes("\n")) {
-							if (chatId && looksLikePath(content)) return <FileLink text={content} chatId={chatId} />;
-							return <code>{children}</code>;
-						}
-						return <CodeBlock code={content.replace(/\n$/, "")} lang={match?.[1]} />;
-					},
-					table: ({ children }) => <TableBlock>{children}</TableBlock>,
-				}}
-			>
-				{text}
-			</ReactMarkdown>
-		</div>
+		<MarkdownChat.Provider value={chatId}>
+			<div className={`gy-md ${streaming ? "gy-streaming-caret" : ""}`}>
+				<ReactMarkdown
+					remarkPlugins={[remarkGfm, remarkMath]}
+					rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: "ignore" }]]}
+					components={markdownComponents}
+				>
+					{text}
+				</ReactMarkdown>
+			</div>
+		</MarkdownChat.Provider>
 	);
 });
 
@@ -250,12 +283,20 @@ export function tableText(table: HTMLTableElement, sep: "md" | "tsv"): string {
 	const rows = [...table.querySelectorAll("tr")].map(tr => [...tr.querySelectorAll("th,td")].map(cell => (cell.textContent ?? "").trim()));
 	return sep === "tsv"
 		? rows.map(r => r.join("\t")).join("\n")
-		: rows.map((r, i) => `| ${r.join(" | ")} |${i === 0 ? `\n|${r.map(() => " --- |").join("")}` : ""}`).join("\n");
+		: rows.map((r, i) => `| ${r.map(cell => cell.replace(/\|/g, "\\|")).join(" | ")} |${i === 0 ? `\n|${r.map(() => " --- |").join("")}` : ""}`).join("\n");
 }
 
 function TableBlock({ children }: { children: React.ReactNode }) {
 	const ref = useRef<HTMLTableElement>(null);
-	const copyAs = (sep: "md" | "tsv") => ref.current && void navigator.clipboard.writeText(tableText(ref.current, sep));
+	const [copyError, setCopyError] = useState<string | null>(null);
+	const copyAs = (sep: "md" | "tsv") => {
+		if (!ref.current) return;
+		const text = tableText(ref.current, sep);
+		void Promise.resolve()
+			.then(() => navigator.clipboard.writeText(text))
+			.then(() => setCopyError(null))
+			.catch(() => setCopyError("Copy failed. Check clipboard permissions and retry."));
+	};
 	return (
 		<div className="group relative inline-block max-w-full overflow-auto" data-jump-kind="table">
 			<div className="absolute right-1 top-1 hidden gap-1 group-hover:flex">
@@ -266,6 +307,7 @@ function TableBlock({ children }: { children: React.ReactNode }) {
 					TSV
 				</button>
 			</div>
+			{copyError && <div role="alert">{copyError}</div>}
 			<table ref={ref}>{children}</table>
 		</div>
 	);

@@ -17,6 +17,9 @@ export function fetchTools(chatId: string): Promise<ToolInfo[]> {
 			.catch(() => {
 				cache.delete(chatId);
 				return [];
+			})
+			.finally(() => {
+				if (cache.get(chatId) === pending) cache.delete(chatId);
 			});
 		cache.set(chatId, pending);
 	}
@@ -25,7 +28,22 @@ export function fetchTools(chatId: string): Promise<ToolInfo[]> {
 
 /** omp built-ins when no chat is running to ask. */
 export const FALLBACK_TOOLS: ToolInfo[] = [
-	"read", "write", "edit", "ast_edit", "grep", "glob", "find", "ast_grep", "bash", "eval", "fetch", "web_search", "browser", "task", "ask", "todo",
+	"read",
+	"write",
+	"edit",
+	"ast_edit",
+	"grep",
+	"glob",
+	"find",
+	"ast_grep",
+	"bash",
+	"eval",
+	"fetch",
+	"web_search",
+	"browser",
+	"task",
+	"ask",
+	"todo",
 ].map(name => ({ name, description: "" }));
 
 const AREAS: Array<{ area: string; test: (name: string) => boolean }> = [

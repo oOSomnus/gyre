@@ -15,16 +15,12 @@ function resolveToken(): string {
 		history.replaceState(null, "", location.pathname + location.search);
 		// Remote browsers: trade the link's token for a session cookie so later visits need no link.
 		if (window.__GYRE__?.remote) {
-			void fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: fromHash }) }).catch(() => undefined);
+			void fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: fromHash }) }).catch(
+				() => undefined,
+			);
 		}
 	}
-	return (
-		window.__GYRE__?.token ??
-		fromHash ??
-		sessionStorage.getItem("gyre.token") ??
-		(import.meta.env.VITE_GYRE_TOKEN as string | undefined) ??
-		""
-	);
+	return window.__GYRE__?.token ?? fromHash ?? sessionStorage.getItem("gyre.token") ?? (import.meta.env.VITE_GYRE_TOKEN as string | undefined) ?? "";
 }
 
 export const token = resolveToken();
@@ -43,6 +39,7 @@ export class GatewayError extends Error {
 	constructor(
 		message: string,
 		readonly code?: string,
+		readonly status?: number,
 	) {
 		super(message);
 	}
@@ -54,7 +51,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 		headers: { "content-type": "application/json", "x-gyre-token": token, ...(init.headers ?? {}) },
 	});
 	const body = (await response.json().catch(() => ({}))) as { error?: string };
-	if (!response.ok) throw new GatewayError(body.error ?? `HTTP ${response.status}`);
+	if (!response.ok) throw new GatewayError(body.error ?? `HTTP ${response.status}`, undefined, response.status);
 	return body as T;
 }
 
@@ -116,6 +113,8 @@ class GatewayClient {
 			if (this.state === "unauthorized") return;
 			this.#setState("closed");
 			for (const pending of this.#pending.values()) pending.reject(new GatewayError("connection lost"));
+			const rejected = new Set(this.#pending.keys());
+			this.#queue = this.#queue.filter(message => !("reqId" in message && rejected.has(message.reqId)));
 			this.#pending.clear();
 			const delay = Math.min(10_000, 500 * 2 ** this.#retry++);
 			setTimeout(() => this.connect(), delay);
@@ -155,12 +154,10 @@ class GatewayClient {
 	}
 
 	openChat(projectId: string, opts: { chatId?: string; sessionPath?: string } = {}) {
-		return this.request<import("@gyre/protocol").ChatInfo>(reqId => ({ t: "open_chat", reqId, projectId, ...opts })).then(
-			info => {
-				this.#subscribed.add(info.chatId);
-				return info;
-			},
-		);
+		return this.request<import("@gyre/protocol").ChatInfo>(reqId => ({ t: "open_chat", reqId, projectId, ...opts })).then(info => {
+			this.#subscribed.add(info.chatId);
+			return info;
+		});
 	}
 
 	closeChat(chatId: string): void {

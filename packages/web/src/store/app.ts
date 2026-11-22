@@ -10,7 +10,8 @@
  */
 import type { FloatRect, LayoutNode, PaneKind, PaneSpec, Project, Workspace } from "@gyre/protocol";
 import { create } from "zustand";
-import { api } from "../lib/gateway";
+import { api, GatewayError } from "../lib/gateway";
+import { closePaneResources } from "./actions";
 import { DEFAULT_THEME, isThemeId, type ThemeId } from "../lib/themes";
 
 export type Theme = ThemeId;
@@ -52,6 +53,7 @@ interface AppStore {
 	modelPickerChatId: string | null;
 	addProjectOpen: boolean;
 	loaded: boolean;
+	saveError: string | null;
 	maximizedPaneId: string | null;
 	gridSize: { w: number; h: number } | null;
 
@@ -233,16 +235,63 @@ export function fitWorkspace(ws: Workspace, size: { w: number; h: number } | nul
 }
 
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingSaves = new Map<string, Workspace>();
+const saving = new Map<string, Promise<void>>();
+const deleted = new Set<string>();
+const resyncing = new Set<string>();
 function persist(workspace: Workspace | null | undefined) {
-	if (!workspace) return;
+	if (!workspace || deleted.has(workspace.id) || resyncing.has(workspace.id)) return;
+	pendingSaves.set(workspace.id, workspace);
 	clearTimeout(saveTimers.get(workspace.id));
 	saveTimers.set(
 		workspace.id,
 		setTimeout(() => {
 			saveTimers.delete(workspace.id);
-			void api(`/api/workspaces/${workspace.id}`, { method: "PUT", body: JSON.stringify(workspace) }).catch(() => undefined);
+			void flushWorkspace(workspace.id);
 		}, 400),
 	);
+}
+async function flushWorkspace(id: string): Promise<void> {
+	if (saving.has(id)) return saving.get(id);
+	const run = async () => {
+		while (!deleted.has(id) && pendingSaves.has(id)) {
+			const workspace = pendingSaves.get(id)!;
+			pendingSaves.delete(id);
+			const revision = useApp.getState().workspaces.find(ws => ws.id === id)?.revision ?? workspace.revision ?? 0;
+			try {
+				const saved = await api<Workspace>(`/api/workspaces/${id}`, { method: "PUT", body: JSON.stringify({ ...workspace, revision }) });
+				useApp.setState(state => ({ saveError: null, workspaces: state.workspaces.map(ws => (ws.id === id ? { ...ws, revision: saved.revision } : ws)) }));
+			} catch (error) {
+				pendingSaves.delete(id);
+				clearTimeout(saveTimers.get(id));
+				if (error instanceof GatewayError && error.status === 409 && !deleted.has(id)) {
+					resyncing.add(id);
+					try {
+						const fresh = await api<Workspace[]>("/api/workspaces");
+						if (!deleted.has(id))
+							useApp.setState(state => {
+								const workspaces = state.workspaces.flatMap(ws => (ws.id === id ? fresh.filter(ws => ws.id === id).map(normalize) : [ws]));
+								return {
+									workspaces,
+									activeWorkspaceId: workspaces.some(ws => ws.id === state.activeWorkspaceId) ? state.activeWorkspaceId : (workspaces[0]?.id ?? null),
+								};
+							});
+					} finally {
+						resyncing.delete(id);
+					}
+				}
+				useApp.setState({ saveError: (error as Error).message });
+				return;
+			}
+		}
+	};
+	const work = run()
+		.catch(error => {
+			useApp.setState({ saveError: (error as Error).message });
+		})
+		.finally(() => saving.delete(id));
+	saving.set(id, work);
+	return work;
 }
 
 export function readTheme(): Theme {
@@ -298,6 +347,7 @@ export const useApp = create<AppStore>((set, get) => {
 		modelPickerChatId: null,
 		addProjectOpen: false,
 		loaded: false,
+		saveError: null,
 		maximizedPaneId: null,
 		gridSize: null,
 
@@ -357,11 +407,23 @@ export const useApp = create<AppStore>((set, get) => {
 		},
 
 		deleteWorkspace(id) {
+			deleted.add(id);
+			clearTimeout(saveTimers.get(id));
+			saveTimers.delete(id);
+			pendingSaves.delete(id);
+			const removed = get().workspaces.find(ws => ws.id === id);
+			for (const pane of Object.values(removed?.panes ?? {})) closePaneResources(pane);
 			const remaining = get().workspaces.filter(ws => ws.id !== id);
-			if (remaining.length === 0) remaining.push(newWorkspace("Main"));
+			if (remaining.length === 0) {
+				const replacement = newWorkspace("Main");
+				remaining.push(replacement);
+				persist(replacement);
+			}
 			const active = get().activeWorkspaceId === id ? (remaining[0]?.id ?? null) : get().activeWorkspaceId;
 			set({ workspaces: remaining, activeWorkspaceId: active });
-			void api(`/api/workspaces/${id}`, { method: "DELETE" }).catch(() => undefined);
+			void (saving.get(id) ?? Promise.resolve())
+				.then(() => api(`/api/workspaces/${id}`, { method: "DELETE" }))
+				.catch(e => set({ saveError: (e as Error).message }));
 		},
 
 		addPane(spec, opts = {}) {
@@ -639,10 +701,14 @@ export function openChatPane(kind: PaneKind, chatId: string, extra: Partial<Pane
 	for (const ws of app.workspaces) {
 		const existing = Object.values(ws.panes).find(p => p.kind === kind && p.chatId === chatId && (extra.ref === undefined || p.ref === extra.ref));
 		if (existing) {
+			if (extra.section !== undefined) app.updatePane(existing.id, { section: extra.section });
 			app.revealPane(existing.id);
 			return existing.id;
 		}
 	}
 	const chatPane = app.workspaces.flatMap(ws => Object.values(ws.panes)).find(p => p.id === chatId);
-	return app.addPane({ kind, chatId, projectId: chatPane?.projectId, ...extra }, paneIdsInOrder(app.activeWorkspace()?.layout ?? null).includes(chatId) ? { nextTo: chatId, direction: "row" } : {});
+	return app.addPane(
+		{ kind, chatId, projectId: chatPane?.projectId, ...extra },
+		paneIdsInOrder(app.activeWorkspace()?.layout ?? null).includes(chatId) ? { nextTo: chatId, direction: "row" } : {},
+	);
 }

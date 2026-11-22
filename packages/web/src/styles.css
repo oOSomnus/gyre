@@ -1575,3 +1575,5 @@ button.gy-gyro {
 }
 
 }
+
+:root:is([data-theme="dune"], [data-theme="dusk"]) :is([data-kind="plan"], [data-kind="message"], [data-kind="sessions"]) { --title-text: var(--badge-ink); --frame-a: color-mix(in srgb, var(--frame-b) 70%, var(--badge-bg)); }

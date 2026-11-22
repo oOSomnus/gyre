@@ -44,7 +44,7 @@ export function ChatStrip({ chatId }: { chatId: string }) {
 	const ctx = contextPercent(stats?.contextUsage ?? state?.contextUsage);
 	const remaining = chat.todoPhases.flatMap(p => p.tasks).filter(t => t.status === "pending" || t.status === "in_progress").length;
 	const runningSubagents = Object.values(chat.subagents).filter(s => {
-		const st = String((s.progress as { status?: string } | undefined)?.status ?? s.status ?? "");
+		const st = String(s.status ?? (s.progress as { status?: string } | undefined)?.status ?? "");
 		return st === "running" || st === "started" || st === "pending";
 	}).length;
 	const plan = chat.plan;

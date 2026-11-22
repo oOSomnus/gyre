@@ -1,7 +1,6 @@
 /** omp model roles (built-ins mirror omp's config/model-roles.ts) plus configured custom roles. */
 import { useEffect, useState } from "react";
-import { create } from "zustand";
-import { api } from "./gateway";
+import { configMap } from "./config-map";
 
 export interface RoleInfo {
 	id: string;
@@ -30,34 +29,7 @@ export const BUILTIN_ROLES: RoleInfo[] = [
 	{ id: "judge", name: "Judge", section: "kind", builtin: true },
 ];
 
-interface RolesStore {
-	assignments: Record<string, string>;
-	loaded: boolean;
-	error: string | null;
-	load(): Promise<void>;
-	assign(role: string, selector: string | null): Promise<void>;
-}
-
-export const useRolesStore = create<RolesStore>((set, get) => ({
-	assignments: {},
-	loaded: false,
-	error: null,
-	async load() {
-		try {
-			const { value } = await api<{ value: Record<string, string> | null }>("/api/omp/config?key=modelRoles");
-			set({ assignments: value ?? {}, loaded: true, error: null });
-		} catch (error) {
-			set({ loaded: true, error: (error as Error).message });
-		}
-	},
-	async assign(role, selector) {
-		const next = { ...get().assignments };
-		if (selector) next[role] = selector;
-		else delete next[role];
-		await api("/api/omp/config", { method: "PUT", body: JSON.stringify({ key: "modelRoles", value: next }) });
-		set({ assignments: next });
-	},
-}));
+export const useRolesStore = configMap("modelRoles");
 
 /** All roles: built-ins first, then custom roles found in the config. */
 export function useRoles(): { roles: RoleInfo[]; assignments: Record<string, string>; loaded: boolean; error: string | null } {
@@ -66,7 +38,7 @@ export function useRoles(): { roles: RoleInfo[]; assignments: Record<string, str
 	useEffect(() => {
 		if (!loaded && !requested) {
 			setRequested(true);
-			void load();
+			void load().catch(() => {});
 		}
 	}, [loaded, requested, load]);
 	const custom = Object.keys(assignments)

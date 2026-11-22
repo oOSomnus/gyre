@@ -133,8 +133,10 @@ function emptyChat(info: ChatInfo): ChatState {
 	};
 }
 
-/** Key subagents by their parent tool call and index so lifecycle and progress frames merge. */
-export function subagentKey(payload: { id?: unknown; parentToolCallId?: unknown; index?: unknown }): string {
+/** Prefer omp identity (including progress.id), falling back to the parent/index until known. */
+export function subagentKey(payload: { subagentId?: unknown; id?: unknown; progress?: unknown; parentToolCallId?: unknown; index?: unknown }): string {
+	const id = payload.subagentId ?? payload.id ?? (payload.progress as { id?: unknown } | undefined)?.id;
+	if (id) return String(id);
 	if (payload.parentToolCallId !== undefined && payload.index !== undefined) return `${String(payload.parentToolCallId)}:${String(payload.index)}`;
 	return String(payload.id ?? "");
 }
@@ -157,12 +159,15 @@ export function applyFrame(chat: ChatState, frame: OmpFrame): ChatState {
 
 	switch (frame.type) {
 		case "agent_start":
+			turnRevisions.set(chat.info.chatId, (turnRevisions.get(chat.info.chatId) ?? 0) + 1);
 			next.busy = true;
 			break;
 		case "agent_end":
+			turnRevisions.set(chat.info.chatId, (turnRevisions.get(chat.info.chatId) ?? 0) + 1);
 			next.items = next.items.map(item => (item.kind === "message" && item.streaming ? { ...item, streaming: false } : item));
 			break;
 		case "session_settled":
+			turnRevisions.set(chat.info.chatId, (turnRevisions.get(chat.info.chatId) ?? 0) + 1);
 			next.busy = false;
 			break;
 		case "message_start":
@@ -283,28 +288,42 @@ export function applyFrame(chat: ChatState, frame: OmpFrame): ChatState {
 		case "prompt_result":
 			if (f.status === "error") {
 				const error = f.error as { message?: string } | undefined;
-				next.items = [
-					...next.items,
-					{ kind: "notice", key: nextKey("n"), level: "error", message: error?.message ?? "The request failed", ts: now },
-				];
+				next.items = [...next.items, { kind: "notice", key: nextKey("n"), level: "error", message: error?.message ?? "The request failed", ts: now }];
 			}
 			break;
 		case "subagent_lifecycle":
 		case "subagent_progress": {
 			const payload = (f.payload ?? f) as SubagentInfo;
-			const id = subagentKey(payload);
-			if (!id) break;
-			const merged: SubagentInfo = { ...next.subagents[id], ...payload, id, lastUpdate: now };
+			const key = subagentKey(payload);
+			if (!key) break;
+			const previousKey = Object.keys(next.subagents).find(
+				key =>
+					key !== subagentKey(payload) &&
+					payload.parentToolCallId !== undefined &&
+					next.subagents[key]?.parentToolCallId === payload.parentToolCallId &&
+					next.subagents[key]?.index === payload.index,
+			);
+			const previous = next.subagents[previousKey ?? key];
+			const subagentId = payload.subagentId ?? payload.id ?? (payload.progress as { id?: string } | undefined)?.id ?? previous?.subagentId;
+			const id = String(subagentId ?? key);
+			const merged: SubagentInfo = {
+				...previous,
+				...payload,
+				id,
+				subagentId,
+				lastUpdate: now,
+			};
+			if (previousKey && previousKey !== id) {
+				next.subagents = { ...next.subagents };
+				delete next.subagents[previousKey];
+			}
 			if (frame.type === "subagent_lifecycle" && payload.id) merged.subagentId = String(payload.id);
 			next.subagents = { ...next.subagents, [id]: merged };
 			break;
 		}
 		case "response":
 			if (f.success === false) {
-				next.items = [
-					...next.items,
-					{ kind: "notice", key: nextKey("n"), level: "error", message: `${String(f.command)}: ${String(f.error)}`, ts: now },
-				];
+				next.items = [...next.items, { kind: "notice", key: nextKey("n"), level: "error", message: `${String(f.command)}: ${String(f.error)}`, ts: now }];
 			}
 			break;
 		default: {
@@ -361,6 +380,7 @@ export const useChats = create<ChatStore>(set => ({
 // Side effects: state refresh and history loading
 // ---------------------------------------------------------------------------
 
+const turnRevisions = new Map<string, number>();
 const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function refreshState(chatId: string, delay = 150): void {
@@ -371,6 +391,7 @@ export function refreshState(chatId: string, delay = 150): void {
 			refreshTimers.delete(chatId);
 			const chat = useChats.getState().chats[chatId];
 			if (!chat || chat.info.status !== "ready") return;
+			const revision = turnRevisions.get(chatId) ?? 0;
 			const [state, stats] = await Promise.all([
 				gateway.rpc<SessionState>(chatId, { type: "get_state" }).catch(() => null),
 				gateway.rpc<SessionStats>(chatId, { type: "get_session_stats" }).catch(() => null),
@@ -381,7 +402,7 @@ export function refreshState(chatId: string, delay = 150): void {
 				delete state.systemPrompt;
 				delete state.dumpTools;
 				patch.state = state;
-				patch.busy = state.isSettled === false || state.isStreaming === true;
+				if ((turnRevisions.get(chatId) ?? 0) === revision) patch.busy = state.isSettled === false || state.isStreaming === true;
 				const phases = (state as { todoPhases?: TodoPhase[] }).todoPhases;
 				if (Array.isArray(phases)) patch.todoPhases = phases;
 				const tps = state.tokensPerSecond;
@@ -393,7 +414,32 @@ export function refreshState(chatId: string, delay = 150): void {
 	);
 }
 
-export async function loadHistory(chatId: string): Promise<void> {
+const sessionTransitions = new Map<string, OmpFrame[]>();
+export async function startFreshSession(chatId: string, parentSession?: string): Promise<boolean> {
+	if (sessionTransitions.has(chatId)) throw new Error("A session change is already pending.");
+	const frames: OmpFrame[] = [];
+	sessionTransitions.set(chatId, frames);
+	try {
+		const result = await gateway.rpc<{ cancelled?: boolean }>(chatId, { type: "new_session", ...(parentSession ? { parentSession } : {}) });
+		if (result?.cancelled) return false;
+		resetTranscript(chatId);
+		return true;
+	} finally {
+		sessionTransitions.delete(chatId);
+		for (const frame of frames) useChats.getState().apply(chatId, frame);
+		refreshState(chatId, 0);
+	}
+}
+const historyLoads = new Map<string, Promise<void>>();
+export function loadHistory(chatId: string): Promise<void> {
+	const generation = useChats.getState().chats[chatId]?.info.generation;
+	const key = `${chatId}:${generation}`;
+	if (historyLoads.has(key)) return historyLoads.get(key)!;
+	const pending = readHistory(chatId, generation).finally(() => historyLoads.delete(key));
+	historyLoads.set(key, pending);
+	return pending;
+}
+async function readHistory(chatId: string, generation?: string): Promise<void> {
 	const data = await gateway.rpc<{ messages?: AgentMessage[] } | AgentMessage[]>(chatId, { type: "get_messages" }, 60_000);
 	const messages = Array.isArray(data) ? data : (data?.messages ?? []);
 	const toolResults: Record<string, AgentMessage> = {};
@@ -404,6 +450,7 @@ export async function loadHistory(chatId: string): Promise<void> {
 	}
 	const chat = useChats.getState().chats[chatId];
 	if (!chat) return;
+	if (chat.info.generation !== generation) return;
 	// Keep live items that arrived while history was loading.
 	useChats.getState().patch(chatId, {
 		items: [...items, ...chat.items.filter(item => item.kind !== "message")],
@@ -431,16 +478,25 @@ export function wireChatStore(): void {
 	});
 	gateway.on(message => {
 		const store = useChats.getState();
-		if (message.t === "chat") {
+		if (message.t === "chat" || message.t === "chat_replay") {
+			const old = store.chats[message.chat.chatId];
+			const replaced = old?.info.generation !== message.chat.generation;
 			const previous = store.chats[message.chat.chatId]?.info.status;
 			store.setInfo(message.chat);
-			if (message.chat.status === "ready" && previous !== "ready") {
+			if (message.t === "chat_replay") store.patch(message.chat.chatId, { pendingUi: [] });
+			if (replaced) store.patch(message.chat.chatId, { historyLoaded: false });
+			if (message.chat.status === "ready" && (previous !== "ready" || replaced || message.t === "chat_replay")) {
 				void loadHistory(message.chat.chatId).catch(() => undefined);
 				void loadCommands(message.chat.chatId).catch(() => undefined);
 				void gateway.rpc(message.chat.chatId, { type: "set_subagent_subscription", level: "progress" }).catch(() => undefined);
 				refreshState(message.chat.chatId, 0);
 			}
 		} else if (message.t === "frame") {
+			const buffered = sessionTransitions.get(message.chatId);
+			if (buffered) {
+				buffered.push(message.frame);
+				return;
+			}
 			store.apply(message.chatId, message.frame);
 			if (REFRESH_ON.has(message.frame.type)) refreshState(message.chatId);
 		}

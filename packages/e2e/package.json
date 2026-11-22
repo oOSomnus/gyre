@@ -2,6 +2,11 @@
   "name": "@gyre/e2e",
   "private": true,
   "type": "module",
-  "scripts": { "test": "bun run.ts" },
-  "devDependencies": { "playwright-core": "^1.58.0" }
+  "scripts": {
+    "test": "bun run.ts",
+    "test:review": "bun validate-review.ts"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.58.0"
+  }
 }

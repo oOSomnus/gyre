@@ -120,7 +120,11 @@ export function DiffView({ diff, max = 400 }: { diff: string; max?: number }) {
 					</div>
 				);
 			})}
-			{lines.length > max && <div className="px-2" style={{ color: "var(--muted)" }}>… {lines.length - max} more lines</div>}
+			{lines.length > max && (
+				<div className="px-2" style={{ color: "var(--muted)" }}>
+					… {lines.length - max} more lines
+				</div>
+			)}
 		</pre>
 	);
 }
@@ -274,20 +278,27 @@ const task: ToolRenderer = {
 	},
 	body: ({ args, result, partial, chatId, toolCallId }) => {
 		const tasks = (Array.isArray(args.tasks) ? args.tasks : []).map(rec).filter(Boolean) as Record<string, unknown>[];
-		const live = chatId && toolCallId ? <SubagentCards chatId={chatId} toolCallId={toolCallId} /> : null;
-		return (
+		const fallback = (
 			<div className="space-y-2">
-				{live}
-				{!live && tasks.map((t, i) => (
+				{tasks.map((t, i) => (
 					// biome-ignore lint/suspicious/noArrayIndexKey: positional
 					<div key={i} className="rounded border p-2" style={{ borderColor: "var(--border)" }}>
 						<div className="flex items-center gap-2">
 							<span className="gy-chip">{String(t.agent ?? "task")}</span>
 							<span className="text-[12.5px]">{String(t.description ?? "")}</span>
 						</div>
-						{str(t.assignment) && <div className="mt-1 text-[12px]" style={{ color: "var(--text-dim)" }}>{truncate(String(t.assignment), 400)}</div>}
+						{str(t.assignment) && (
+							<div className="mt-1 text-[12px]" style={{ color: "var(--text-dim)" }}>
+								{truncate(String(t.assignment), 400)}
+							</div>
+						)}
 					</div>
 				))}
+			</div>
+		);
+		return (
+			<div className="space-y-2">
+				{chatId && toolCallId ? <SubagentCards chatId={chatId} toolCallId={toolCallId} fallback={fallback} /> : fallback}
 				<Output text={resultText(result ?? partial)} max={8000} />
 			</div>
 		);
@@ -349,5 +360,5 @@ const RENDERERS: Record<string, ToolRenderer> = {
 };
 
 export function rendererFor(toolName: string): ToolRenderer {
-	return RENDERERS[toolName] ?? generic;
+	return Object.hasOwn(RENDERERS, toolName) ? RENDERERS[toolName]! : generic;
 }

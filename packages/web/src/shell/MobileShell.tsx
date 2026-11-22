@@ -1,12 +1,12 @@
 /** Phone layout: the same panes, one at a time, with a bottom tab strip. */
 import type { PaneSpec } from "@gyre/protocol";
-import { MessagesSquare, Plus } from "lucide-react";
+import { MessagesSquare, Plus, X, EyeOff } from "lucide-react";
 import { paneStatus } from "../lib/status";
 import { useApp } from "../store/app";
 import { useChats } from "../store/chats";
-import { numberedPanes } from "../store/actions";
+import { numberedPanes, closePaneAndResources } from "../store/actions";
 import { NewPaneMenu } from "./TopBar";
-import { PaneContent } from "./PaneGrid";
+import { PaneContent, PaneMenu } from "./PaneGrid";
 import { PANE_META, paneTitle } from "./panes";
 
 export function MobileShell() {
@@ -23,6 +23,13 @@ export function MobileShell() {
 					<section className="gy-frame focused" data-kind={current.kind} data-pane={current.id}>
 						<header className="gy-frame-head">
 							<div className="gy-frame-title justify-start">{paneTitle(current)}</div>
+							<PaneMenu pane={current} floating={Boolean(ws.floating?.[current.id])} />
+							<button type="button" className="gy-frame-btn h-6 w-6" aria-label="Hide pane" onClick={() => useApp.getState().hidePane(current.id)}>
+								<EyeOff size={14} />
+							</button>
+							<button type="button" className="gy-frame-btn close h-6 w-6" aria-label="Close pane" onClick={() => closePaneAndResources(current)}>
+								<X size={14} />
+							</button>
 						</header>
 						<div className="min-h-0 flex-1">
 							<PaneContent pane={current} focused />

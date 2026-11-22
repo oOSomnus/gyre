@@ -23,16 +23,29 @@ export const snapshots = new Map<string, { text: string; role: string; model?: s
 
 // ---------------------------------------------------------------- pane lifecycle
 
-export function closePaneAndResources(pane: PaneSpec): void {
+export function closePaneResources(pane: PaneSpec): void {
 	if (pane.kind === "chat") gateway.closeChat(pane.id);
-	if (pane.kind === "terminal") terminalCloser.get(pane.id)?.();
+	if (pane.kind === "terminal") {
+		terminalCloser.get(pane.id)?.();
+		if (pane.projectId) gateway.send({ t: "pty_close_key", key: pane.id, projectId: pane.projectId });
+		terminalCloser.delete(pane.id);
+	}
+}
+
+export function closePaneAndResources(pane: PaneSpec): void {
+	closePaneResources(pane);
 	useApp.getState().closePane(pane.id);
 }
 
 /** Order used by keyboard-mode numbers: docked panes in layout order, then floating. */
 export function numberedPanes(ws: Workspace | null | undefined): string[] {
 	if (!ws) return [];
-	return [...paneIdsInOrder(ws.layout), ...Object.entries(ws.floating ?? {}).sort((a, b) => a[1].z - b[1].z).map(([id]) => id)];
+	return [
+		...paneIdsInOrder(ws.layout),
+		...Object.entries(ws.floating ?? {})
+			.sort((a, b) => a[1].z - b[1].z)
+			.map(([id]) => id),
+	];
 }
 
 // ---------------------------------------------------------------- composing into a chat
@@ -91,13 +104,18 @@ export async function forkAtMessage(chatId: string, message: AgentMessage): Prom
 	if (!entry) throw new Error("Could not find this message in the session history");
 	const source = app.workspaces.flatMap(ws => Object.values(ws.panes)).find(p => p.id === chatId);
 	const paneId = app.addPane({ kind: "chat", projectId: source?.projectId, sessionPath, title: undefined }, { nextTo: chatId, direction: "row" });
-	const info = await gateway.openChat(source?.projectId ?? chat.info.projectId, { chatId: paneId, sessionPath });
-	useChats.getState().setInfo(info);
-	await gateway.rpc(paneId, { type: "fork", entryId: entry.id }, 120_000);
-	resetTranscript(paneId);
-	await loadHistory(paneId);
-	const state = await gateway.rpc<{ sessionFile?: string }>(paneId, { type: "get_state" });
-	if (state.sessionFile) useApp.getState().updatePane(paneId, { sessionPath: state.sessionFile });
+	try {
+		const info = await gateway.openChat(source?.projectId ?? chat.info.projectId, { chatId: paneId, sessionPath });
+		useChats.getState().setInfo(info);
+		await gateway.rpc(paneId, { type: "fork", entryId: entry.id }, 120_000);
+		resetTranscript(paneId);
+		await loadHistory(paneId);
+		const state = await gateway.rpc<{ sessionFile?: string }>(paneId, { type: "get_state" });
+		if (state.sessionFile) useApp.getState().updatePane(paneId, { sessionPath: state.sessionFile });
+	} catch (error) {
+		closePaneAndResources({ id: paneId, kind: "chat" });
+		throw error;
+	}
 }
 
 /** Show an image at actual size in its own pane. */

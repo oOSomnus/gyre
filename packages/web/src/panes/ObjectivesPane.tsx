@@ -42,8 +42,16 @@ export function ObjectivesPane({ pane }: { pane: PaneSpec }) {
 	const done = all.filter(t => t.status === "completed").length;
 	// Timeline: completed todo updates, newest first.
 	const timeline = Object.entries(chat.toolExec)
-		.filter(([, exec]) => exec.status === "done" && (exec.args as { op?: string } | undefined)?.op && ["done", "start"].includes(String((exec.args as { op?: string }).op)))
-		.map(([id, exec]) => ({ id, ts: exec.endedAt ?? exec.startedAt, op: String((exec.args as { op?: string }).op), task: (exec.args as { task?: unknown }).task }))
+		.filter(
+			([, exec]) =>
+				exec.status === "done" && (exec.args as { op?: string } | undefined)?.op && ["done", "start"].includes(String((exec.args as { op?: string }).op)),
+		)
+		.map(([id, exec]) => ({
+			id,
+			ts: exec.endedAt ?? exec.startedAt,
+			op: String((exec.args as { op?: string }).op),
+			task: (exec.args as { task?: unknown }).task,
+		}))
 		.sort((a, b) => b.ts - a.ts)
 		.slice(0, 30);
 
@@ -52,8 +60,10 @@ export function ObjectivesPane({ pane }: { pane: PaneSpec }) {
 		try {
 			await gateway.rpc(chatId, { type: "goal", ...body }, 60_000);
 			refreshState(chatId, 0);
+			return true;
 		} catch (e) {
 			setError(String((e as Error).message));
+			return false;
 		}
 	};
 
@@ -92,16 +102,28 @@ export function ObjectivesPane({ pane }: { pane: PaneSpec }) {
 					className="gy-row"
 					onSubmit={e => {
 						e.preventDefault();
-						if (objective.trim()) void goalCmd({ op: "create", objective: objective.trim() }).then(() => setObjective(""));
+						if (objective.trim())
+							void goalCmd({ op: "create", objective: objective.trim() }).then(ok => {
+								if (ok) setObjective(current => (current === objective ? "" : current));
+							});
 					}}
 				>
-					<input className="gy-input flex-1" placeholder="Track an objective: the agent keeps working until it is met" value={objective} onChange={e => setObjective(e.target.value)} />
+					<input
+						className="gy-input flex-1"
+						placeholder="Track an objective: the agent keeps working until it is met"
+						value={objective}
+						onChange={e => setObjective(e.target.value)}
+					/>
 					<button type="submit" className="gy-btn primary" disabled={!objective.trim()}>
 						Track objective
 					</button>
 				</form>
 			)}
-			{error && <div className="gy-row text-[12px]" style={{ color: "var(--err)" }}>{error}</div>}
+			{error && (
+				<div className="gy-row text-[12px]" style={{ color: "var(--err)" }}>
+					{error}
+				</div>
+			)}
 
 			<div className="gy-section">
 				<ClipboardList size={13} /> Checklist
@@ -131,7 +153,10 @@ export function ObjectivesPane({ pane }: { pane: PaneSpec }) {
 							<div key={i} className="gy-row items-start py-1.5">
 								<Icon size={15} style={{ color: COLOR[task.status] }} className="mt-0.5 shrink-0" />
 								<div className="min-w-0 flex-1">
-									<div className="text-[13px]" style={task.status === "completed" || task.status === "abandoned" ? { textDecoration: "line-through", color: "var(--muted)" } : undefined}>
+									<div
+										className="text-[13px]"
+										style={task.status === "completed" || task.status === "abandoned" ? { textDecoration: "line-through", color: "var(--muted)" } : undefined}
+									>
 										{task.content}
 									</div>
 									{(task.notes || task.details) && (

@@ -152,7 +152,7 @@ export function textOf(content: AgentMessage["content"]): string {
 		.join("\n");
 }
 
-const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)/g;
+const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)/g;
 export function stripAnsi(text: string): string {
 	return text.replace(ANSI, "");
 }

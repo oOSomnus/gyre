@@ -5,10 +5,11 @@
  */
 import type { PaneSpec } from "@gyre/protocol";
 import { CheckCircle2, Copy, KeyRound, Loader2, LogOut, Plus, RotateCcw, Trash2, X } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { api, gateway, token } from "../lib/gateway";
 import type { ModelPickerRow } from "../lib/omp";
 import { useRoles, useRolesStore } from "../lib/roles";
+import { useRoutingStore } from "../lib/config-map";
 import { SHORTCUT_HELP } from "../shell/shortcuts";
 import { useApp } from "../store/app";
 import { useChats } from "../store/chats";
@@ -125,7 +126,15 @@ function General() {
 					);
 				})}
 			</div>
-			<Head right={<button type="button" className="gy-btn" onClick={() => setAddProjectOpen(true)}><Plus size={11} /> Add project</button>}>Projects</Head>
+			<Head
+				right={
+					<button type="button" className="gy-btn" onClick={() => setAddProjectOpen(true)}>
+						<Plus size={11} /> Add project
+					</button>
+				}
+			>
+				Projects
+			</Head>
 			{projects.map(p => (
 				<div key={p.id} className="gy-row">
 					<span className="text-[13px] font-medium">{p.name}</span>
@@ -162,7 +171,16 @@ function Providers() {
 	const [message, setMessage] = useState<string | null>(null);
 	const load = () => {
 		if (!chatId) return;
-		void gateway.rpc<Provider[] | { providers?: Provider[] }>(chatId, { type: "get_login_providers" }).then(d => setProviders(Array.isArray(d) ? d : (d?.providers ?? [])));
+		void gateway
+			.rpc<Provider[] | { providers?: Provider[] }>(chatId, { type: "get_login_providers" })
+			.then(d => {
+				setProviders(Array.isArray(d) ? d : (d?.providers ?? []));
+				setMessage(null);
+			})
+			.catch(e => {
+				setProviders([]);
+				setMessage((e as Error).message);
+			});
 	};
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reload when a chat becomes available
 	useEffect(load, [chatId]);
@@ -195,6 +213,11 @@ function Providers() {
 				<div className="gy-row">
 					<Loader2 size={14} className="animate-spin" />
 				</div>
+			)}
+			{message && (
+				<button type="button" className="gy-btn" onClick={load}>
+					Retry loading providers
+				</button>
 			)}
 			{message && <div className="gy-row text-[12.5px]">{message}</div>}
 			{busy && loginNotice?.url && (
@@ -247,7 +270,13 @@ function ModelSearch({ chatId, onPick, onClose }: { chatId: string | null; onPic
 	return (
 		<div className="border-y px-3 py-2" style={{ borderColor: "var(--border-strong)", background: "var(--panel)" }}>
 			<div className="mb-2 flex items-center gap-2">
-				<input autoFocus className="gy-input flex-1" placeholder={chatId ? "Search models…" : "Open a chat to search models"} value={query} onChange={e => setQuery(e.target.value)} />
+				<input
+					autoFocus
+					className="gy-input flex-1"
+					placeholder={chatId ? "Search models…" : "Open a chat to search models"}
+					value={query}
+					onChange={e => setQuery(e.target.value)}
+				/>
 				<select className="gy-input" value={thinking} onChange={e => setThinking(e.target.value)} title="Thinking level for this role">
 					{["", "off", "minimal", "low", "medium", "high", "xhigh", "max"].map(t => (
 						<option key={t} value={t}>
@@ -283,7 +312,12 @@ function ModelSearch({ chatId, onPick, onClose }: { chatId: string | null; onPic
 					if (manual.trim()) pick(manual.trim());
 				}}
 			>
-				<input className="gy-input flex-1 font-mono" placeholder="…or type a selector (provider/model, @role, comma fallbacks)" value={manual} onChange={e => setManual(e.target.value)} />
+				<input
+					className="gy-input flex-1 font-mono"
+					placeholder="…or type a selector (provider/model, @role, comma fallbacks)"
+					value={manual}
+					onChange={e => setManual(e.target.value)}
+				/>
 				<button type="submit" className="gy-btn" disabled={!manual.trim()}>
 					Use
 				</button>
@@ -302,7 +336,9 @@ function Roles() {
 	const [storage, setStorage] = useState<string>("global");
 	const [message, setMessage] = useState<string | null>(null);
 	useEffect(() => {
-		void api<{ value: string }>("/api/omp/config?key=modelRoleStorage").then(d => setStorage(String(d.value ?? "global"))).catch(() => undefined);
+		void api<{ value: string }>("/api/omp/config?key=modelRoleStorage")
+			.then(d => setStorage(String(d.value ?? "global")))
+			.catch(() => undefined);
 	}, []);
 	const save = async (role: string, selector: string | null) => {
 		setMessage(null);
@@ -338,12 +374,24 @@ function Roles() {
 	);
 	return (
 		<>
-			<Head right={<button type="button" className="gy-btn" onClick={() => void reload()}><RotateCcw size={11} /> Reload</button>}>Model roles</Head>
+			<Head
+				right={
+					<button type="button" className="gy-btn" onClick={() => void reload().catch(e => setMessage((e as Error).message))}>
+						<RotateCcw size={11} /> Reload
+					</button>
+				}
+			>
+				Model roles
+			</Head>
 			<Hint>
-				omp maps roles to models. The main chat uses <b>default</b>, plan mode uses <b>plan</b>, sub-agents use <b>task</b> unless an agent names its own role (see Agent routing), and
-				omp uses the rest for specific jobs.
+				omp maps roles to models. The main chat uses <b>default</b>, plan mode uses <b>plan</b>, sub-agents use <b>task</b> unless an agent names its own role
+				(see Agent routing), and omp uses the rest for specific jobs.
 			</Hint>
-			{error && <div className="gy-row text-[12px]" style={{ color: "var(--err)" }}>{error}</div>}
+			{error && (
+				<div className="gy-row text-[12px]" style={{ color: "var(--err)" }}>
+					{error}
+				</div>
+			)}
 			{message && <div className="gy-row text-[12px]">{message}</div>}
 			{!loaded && (
 				<div className="gy-row">
@@ -369,12 +417,19 @@ function Roles() {
 					}
 				}}
 			>
-				<input className="gy-input flex-1" placeholder="Add a custom role (e.g. reviewer), then pick its model" value={custom} onChange={e => setCustom(e.target.value)} />
+				<input
+					className="gy-input flex-1"
+					placeholder="Add a custom role (e.g. reviewer), then pick its model"
+					value={custom}
+					onChange={e => setCustom(e.target.value)}
+				/>
 				<button type="submit" className="gy-btn" disabled={!/^[A-Za-z0-9_-]{1,40}$/.test(custom.trim())}>
 					<Plus size={11} /> Add role
 				</button>
 			</form>
-			{editing && !roles.some(r => r.id === editing) && <ModelSearch chatId={chatId} onPick={selector => void save(editing, selector)} onClose={() => setEditing(null)} />}
+			{editing && !roles.some(r => r.id === editing) && (
+				<ModelSearch chatId={chatId} onPick={selector => void save(editing, selector)} onClose={() => setEditing(null)} />
+			)}
 			<Head>Storage</Head>
 			<div className="gy-row">
 				<span className="flex-1 text-[12.5px]">Where role assignments made from model pickers are saved</span>
@@ -401,33 +456,42 @@ function Routing() {
 	const addPane = useApp(s => s.addPane);
 	const { roles } = useRoles();
 	const [agents, setAgents] = useState<Array<{ name: string; scope: string; frontmatter: Record<string, unknown>; shadowed?: boolean }>>([]);
-	const [overrides, setOverrides] = useState<Record<string, string>>({});
+	const overrides = useRoutingStore(s => s.assignments);
 	const [error, setError] = useState<string | null>(null);
 	useEffect(() => {
-		void Promise.all([
-			api<typeof agents>(`/api/agents${projects[0] ? `?projectId=${projects[0].id}` : ""}`),
-			api<{ value: Record<string, string> | null }>("/api/omp/config?key=task.agentModelOverrides"),
-		])
-			.then(([list, routing]) => {
+		void Promise.all([api<typeof agents>(`/api/agents${projects[0] ? `?projectId=${projects[0].id}` : ""}`), useRoutingStore.getState().load()])
+			.then(([list]) => {
 				setAgents(list.filter(a => !a.shadowed));
-				setOverrides(routing.value ?? {});
+				// Shared routing store was loaded above.
 			})
 			.catch(e => setError(String((e as Error).message)));
 	}, [projects]);
 	const set = async (name: string, selector: string) => {
-		const next = { ...overrides };
-		if (selector) next[name] = selector;
-		else delete next[name];
-		await api("/api/omp/config", { method: "PUT", body: JSON.stringify({ key: "task.agentModelOverrides", value: next }) });
-		setOverrides(next);
+		await useRoutingStore
+			.getState()
+			.assign(name, selector)
+			.catch(e => setError((e as Error).message));
 	};
 	return (
 		<>
-			<Head right={<button type="button" className="gy-btn" onClick={() => addPane({ kind: "studio" })}>Open Agent Studio</button>}>Sub-agent models</Head>
+			<Head
+				right={
+					<button type="button" className="gy-btn" onClick={() => addPane({ kind: "studio" })}>
+						Open Agent Studio
+					</button>
+				}
+			>
+				Sub-agent models
+			</Head>
 			<Hint>
-				Route each sub-agent to a role (or keep the model its definition asks for). Saved as omp's <span className="font-mono">task.agentModelOverrides</span>; applies to the next spawn.
+				Route each sub-agent to a role (or keep the model its definition asks for). Saved as omp's <span className="font-mono">task.agentModelOverrides</span>;
+				applies to the next spawn.
 			</Hint>
-			{error && <div className="gy-row text-[12px]" style={{ color: "var(--err)" }}>{error}</div>}
+			{error && (
+				<div className="gy-row text-[12px]" style={{ color: "var(--err)" }}>
+					{error}
+				</div>
+			)}
 			{agents.map(agent => (
 				<div key={`${agent.scope}:${agent.name}`} className="gy-row" data-agent={agent.name}>
 					<div className="w-44 shrink-0">
@@ -439,7 +503,12 @@ function Routing() {
 					<div className="min-w-0 flex-1 truncate text-[12px]" style={{ color: "var(--text-dim)" }}>
 						{String(agent.frontmatter.description ?? "")}
 					</div>
-					<select className="gy-input" value={overrides[agent.name] ?? ""} onChange={e => void set(agent.name, e.target.value)} data-testid={`route-${agent.name}`}>
+					<select
+						className="gy-input"
+						value={overrides[agent.name] ?? ""}
+						onChange={e => void set(agent.name, e.target.value)}
+						data-testid={`route-${agent.name}`}
+					>
 						<option value="">Agent's own model</option>
 						{roles
 							.filter(r => r.section === "chat")
@@ -465,7 +534,17 @@ interface McpEntry {
 	config: Record<string, unknown>;
 }
 
-const EMPTY_MCP = { name: "", scope: "user" as "user" | "project", type: "stdio", command: "", url: "", auth: "none", token: "", previousName: undefined as string | undefined };
+const EMPTY_MCP = {
+	name: "",
+	scope: "user" as "user" | "project",
+	type: "stdio",
+	command: "",
+	args: [] as string[],
+	url: "",
+	auth: "none",
+	token: "",
+	previousName: undefined as string | undefined,
+};
 
 function Mcp() {
 	const projects = useApp(s => s.projects);
@@ -481,26 +560,33 @@ function Mcp() {
 		return last?.kind === "command_output" ? last : null;
 	});
 	const [awaiting, setAwaiting] = useState<number | null>(null);
-	const load = () => void api<McpEntry[]>(`/api/mcp${projectId ? `?projectId=${projectId}` : ""}`).then(setServers).catch(e => setMessage(String((e as Error).message)));
+	const load = () =>
+		void api<McpEntry[]>(`/api/mcp${projectId ? `?projectId=${projectId}` : ""}`)
+			.then(setServers)
+			.catch(e => setMessage(String((e as Error).message)));
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reload on project change
 	useEffect(load, [projectId]);
 
 	const save = async () => {
 		if (!form) return;
-		const config: Record<string, unknown> =
-			form.type === "stdio"
-				? (() => {
-						const [command, ...args] = form.command.trim().split(/\s+/);
-						return { type: "stdio", command, ...(args.length ? { args } : {}) };
-					})()
-				: {
-						type: form.type,
-						url: form.url.trim(),
-						...(form.auth === "token" && form.token ? { headers: { Authorization: `Bearer ${form.token}` } } : {}),
-						...(form.auth === "oauth" ? { auth: { type: "oauth" } } : {}),
-					};
 		try {
-			await api("/api/mcp", { method: "PUT", body: JSON.stringify({ scope: form.scope, projectId, name: form.name, previousName: form.previousName, config }) });
+			const config: Record<string, unknown> =
+				form.type === "stdio"
+					? (() => {
+							const command = form.command.trim();
+							const args = form.args;
+							return { type: "stdio", command, ...(args.length ? { args } : {}) };
+						})()
+					: {
+							type: form.type,
+							url: form.url.trim(),
+							...(form.auth === "token" && form.token ? { headers: { Authorization: `Bearer ${form.token}` } } : {}),
+							...(form.auth === "oauth" ? { auth: { type: "oauth" } } : {}),
+						};
+			await api("/api/mcp", {
+				method: "PUT",
+				body: JSON.stringify({ scope: form.scope, projectId, name: form.name, previousName: form.previousName, config }),
+			});
 			setForm(null);
 			setDirty(true);
 			setMessage(`Saved ${form.name}. Restart this project's chats to connect it.`);
@@ -524,7 +610,8 @@ function Mcp() {
 			name: s.name,
 			scope: s.scope,
 			type: String(c.type ?? (c.url ? "http" : "stdio")),
-			command: [c.command, ...((c.args as string[] | undefined) ?? [])].filter(Boolean).join(" "),
+			command: String(c.command ?? ""),
+			args: Array.isArray(c.args) ? c.args.map(String) : [],
 			url: String(c.url ?? ""),
 			auth: c.auth ? "oauth" : headers?.Authorization ? "token" : "none",
 			token: headers?.Authorization?.replace(/^Bearer\s+/, "") ?? "",
@@ -560,9 +647,9 @@ function Mcp() {
 							type="button"
 							className="gy-btn"
 							onClick={() =>
-								void api<{ restarted: number }>(`/api/projects/${projectId}/restart-chats`, { method: "POST" }).then(r => {
-									setDirty(false);
-									setMessage(`Restarted ${r.restarted} chat(s).`);
+								void api<{ restarted: number; failed: string[] }>(`/api/projects/${projectId}/restart-chats`, { method: "POST" }).then(r => {
+									setDirty(r.failed.length > 0);
+									setMessage(`Restarted ${r.restarted} chat(s).${r.failed.length ? ` Failed: ${r.failed.join(", ")}. Retry restarting these chats.` : ""}`);
 								})
 							}
 						>
@@ -575,7 +662,13 @@ function Mcp() {
 				<div className="space-y-0 border-b" style={{ borderColor: "var(--border-strong)" }}>
 					<div className="gy-row">
 						<label className="w-24 text-[12.5px]">Name</label>
-						<input className="gy-input flex-1" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="github" data-testid="mcp-name" />
+						<input
+							className="gy-input flex-1"
+							value={form.name}
+							onChange={e => setForm({ ...form, name: e.target.value })}
+							placeholder="github"
+							data-testid="mcp-name"
+						/>
 						<select className="gy-input" value={form.scope} onChange={e => setForm({ ...form, scope: e.target.value as "user" | "project" })}>
 							<option value="user">All projects</option>
 							<option value="project" disabled={!projectId}>
@@ -591,9 +684,46 @@ function Mcp() {
 							<option value="sse">Web address (SSE)</option>
 						</select>
 						{form.type === "stdio" ? (
-							<input className="gy-input flex-1 font-mono" value={form.command} onChange={e => setForm({ ...form, command: e.target.value })} placeholder="npx -y @modelcontextprotocol/server-github" data-testid="mcp-command" />
+							<>
+								<input
+									className="gy-input flex-1 font-mono"
+									value={form.command}
+									onChange={e => setForm({ ...form, command: e.target.value })}
+									placeholder="npx"
+									data-testid="mcp-command"
+								/>
+								<div className="flex min-w-0 flex-1 flex-col gap-1">
+									<span className="gy-label">Arguments</span>
+									{form.args.map((argument, index) => (
+										<div className="flex gap-1" key={index}>
+											<input
+												aria-label={`Argument ${index + 1}`}
+												className="gy-input min-w-0 flex-1"
+												value={argument}
+												onChange={e => setForm({ ...form, args: form.args.map((value, i) => (i === index ? e.target.value : value)) })}
+											/>
+											<button
+												type="button"
+												className="gy-icon-btn"
+												aria-label={`Remove argument ${index + 1}`}
+												onClick={() => setForm({ ...form, args: form.args.filter((_, i) => i !== index) })}
+											>
+												<X size={12} />
+											</button>
+										</div>
+									))}
+									<button type="button" className="gy-btn" onClick={() => setForm({ ...form, args: [...form.args, ""] })}>
+										Add argument
+									</button>
+								</div>
+							</>
 						) : (
-							<input className="gy-input flex-1 font-mono" value={form.url} onChange={e => setForm({ ...form, url: e.target.value })} placeholder="https://example.com/mcp" />
+							<input
+								className="gy-input flex-1 font-mono"
+								value={form.url}
+								onChange={e => setForm({ ...form, url: e.target.value })}
+								placeholder="https://example.com/mcp"
+							/>
 						)}
 					</div>
 					{form.type !== "stdio" && (
@@ -604,8 +734,20 @@ function Mcp() {
 								<option value="token">Saved key</option>
 								<option value="oauth">OAuth</option>
 							</select>
-							{form.auth === "token" && <input className="gy-input flex-1" type="password" value={form.token} onChange={e => setForm({ ...form, token: e.target.value })} placeholder="API key" />}
-							{form.auth === "oauth" && <span className="text-[12px]" style={{ color: "var(--muted)" }}>After saving, use Reauth to sign in.</span>}
+							{form.auth === "token" && (
+								<input
+									className="gy-input flex-1"
+									type="password"
+									value={form.token}
+									onChange={e => setForm({ ...form, token: e.target.value })}
+									placeholder="API key"
+								/>
+							)}
+							{form.auth === "oauth" && (
+								<span className="text-[12px]" style={{ color: "var(--muted)" }}>
+									After saving, use Reauth to sign in.
+								</span>
+							)}
 						</div>
 					)}
 					<div className="gy-row justify-end">
@@ -618,10 +760,28 @@ function Mcp() {
 					</div>
 				</div>
 			)}
-			{servers.length === 0 && <Hint>No MCP servers configured in omp's mcp.json files. Servers from other tools' configs (Claude, Cursor…) load when enabled under Config sources.</Hint>}
+			{servers.length === 0 && (
+				<Hint>
+					No MCP servers configured in omp's mcp.json files. Servers from other tools' configs (Claude, Cursor…) load when enabled under Config sources.
+				</Hint>
+			)}
 			{servers.map(s => (
 				<div key={`${s.scope}:${s.name}`} className="gy-row" data-mcp={s.name}>
-					<button type="button" className="gy-toggle" data-on={s.enabled} title={s.enabled ? "Disable" : "Enable"} onClick={() => void api("/api/mcp/enabled", { method: "POST", body: JSON.stringify({ scope: s.scope, projectId, name: s.name, enabled: !s.enabled }) }).then(() => { setDirty(true); setMessage("Changed. Restart chats to apply."); load(); })} />
+					<button
+						type="button"
+						className="gy-toggle"
+						data-on={s.enabled}
+						title={s.enabled ? "Disable" : "Enable"}
+						onClick={() =>
+							void api("/api/mcp/enabled", { method: "POST", body: JSON.stringify({ scope: s.scope, projectId, name: s.name, enabled: !s.enabled }) }).then(
+								() => {
+									setDirty(true);
+									setMessage("Changed. Restart chats to apply.");
+									load();
+								},
+							)
+						}
+					/>
 					<div className="min-w-0 flex-1">
 						<div className="text-[13px] font-medium">
 							{s.name} <span className="gy-chip ml-1">{s.scope}</span> <span className="gy-chip">{String(s.config.type ?? "stdio")}</span>
@@ -639,7 +799,19 @@ function Mcp() {
 					<button type="button" className="gy-btn" onClick={() => edit(s)}>
 						Edit
 					</button>
-					<button type="button" className="gy-icon-btn" title="Remove" onClick={() => void api(`/api/mcp?scope=${s.scope}&name=${encodeURIComponent(s.name)}${projectId ? `&projectId=${projectId}` : ""}`, { method: "DELETE" }).then(() => { setDirty(true); load(); })}>
+					<button
+						type="button"
+						className="gy-icon-btn"
+						title="Remove"
+						onClick={() =>
+							void api(`/api/mcp?scope=${s.scope}&name=${encodeURIComponent(s.name)}${projectId ? `&projectId=${projectId}` : ""}`, { method: "DELETE" }).then(
+								() => {
+									setDirty(true);
+									load();
+								},
+							)
+						}
+					>
 						<Trash2 size={13} />
 					</button>
 				</div>
@@ -668,35 +840,56 @@ const SOURCES: Array<[string, string]> = [
 ];
 
 function Sources() {
+	const saving = useRef(false);
+	const [pending, setPending] = useState(false);
 	const [value, setValue] = useState<unknown[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	useEffect(() => {
-		void api<{ value: unknown[] }>("/api/omp/config?key=enabledProviders").then(d => setValue(Array.isArray(d.value) ? d.value : [])).catch(e => setError(String((e as Error).message)));
+		void api<{ value: unknown[] }>("/api/omp/config?key=enabledProviders")
+			.then(d => setValue(Array.isArray(d.value) ? d.value : []))
+			.catch(e => setError(String((e as Error).message)));
 	}, []);
 	const toggle = async (id: string, on: boolean) => {
-		const current = value ?? [];
+		if (saving.current || value === null) return;
+		saving.current = true;
+		setPending(true);
+		const current = value;
 		const next = on ? [...current.filter(v => v !== id), id] : current.filter(v => v !== id);
 		try {
 			await api("/api/omp/config", { method: "PUT", body: JSON.stringify({ key: "enabledProviders", value: next }) });
 			setValue(next);
 		} catch (e) {
 			setError(String((e as Error).message));
+		} finally {
+			saving.current = false;
+			setPending(false);
 		}
 	};
 	return (
 		<>
 			<Head>Use settings from other tools</Head>
 			<Hint>
-				omp reads other coding tools' user-level skills, agents, commands, rules and MCP servers live: nothing is copied. Project-level files from these tools are always read. Turn
-				on the tools whose user configuration Gyre should pick up (omp setting <span className="font-mono">enabledProviders</span>).
+				omp reads other coding tools' user-level skills, agents, commands, rules and MCP servers live: nothing is copied. Project-level files from these tools
+				are always read. Turn on the tools whose user configuration Gyre should pick up (omp setting <span className="font-mono">enabledProviders</span>).
 			</Hint>
-			{error && <div className="gy-row text-[12px]" style={{ color: "var(--err)" }}>{error}</div>}
+			{error && (
+				<div className="gy-row text-[12px]" style={{ color: "var(--err)" }}>
+					{error}
+				</div>
+			)}
 			{SOURCES.map(([id, label]) => {
 				const on = value?.includes(id) ?? false;
 				return (
 					<div key={id} className="gy-row">
 						<span className="min-w-0 flex-1 text-[13px]">{label}</span>
-						<button type="button" className="gy-toggle" data-on={on} disabled={value === null} onClick={() => void toggle(id, !on)} data-source={id} />
+						<button
+							type="button"
+							className="gy-toggle"
+							data-on={on}
+							disabled={pending || value === null}
+							onClick={() => void toggle(id, !on)}
+							data-source={id}
+						/>
 					</div>
 				);
 			})}
@@ -719,10 +912,14 @@ function Skills() {
 		<>
 			<Head>Skills</Head>
 			<Hint>
-				Skills omp can load. Run one in a chat with <span className="font-mono">/skill:name</span>. Add skills under <span className="font-mono">~/.omp/agent/skills/</span> or the
-				project's <span className="font-mono">.omp/skills/</span>.
+				Skills omp can load. Run one in a chat with <span className="font-mono">/skill:name</span>. Add skills under{" "}
+				<span className="font-mono">~/.omp/agent/skills/</span> or the project's <span className="font-mono">.omp/skills/</span>.
 			</Hint>
-			{error && <div className="gy-row text-[12px]" style={{ color: "var(--err)" }}>{error}</div>}
+			{error && (
+				<div className="gy-row text-[12px]" style={{ color: "var(--err)" }}>
+					{error}
+				</div>
+			)}
 			{skills === null && !error && (
 				<div className="gy-row">
 					<Loader2 size={14} className="animate-spin" />
@@ -758,8 +955,8 @@ function Remote() {
 		<>
 			<Head>Remote access</Head>
 			<Hint>
-				Gyre runs on this machine; any browser that can reach the gateway can use it, including a phone. Remote browsers sign in once with the token link below (it sets a
-				30-day cookie).
+				Gyre runs on this machine; any browser that can reach the gateway can use it, including a phone. Remote browsers sign in once with the token link below
+				(it sets a 30-day cookie).
 			</Hint>
 			<div className="gy-row">
 				<span className="w-40 text-[12.5px]">Listening on</span>
@@ -789,13 +986,16 @@ function Remote() {
 			<Head>Set up</Head>
 			<div className="p-3 text-[12.5px]" style={{ color: "var(--text-dim)" }}>
 				<p className="mb-2">Start the gateway listening on your network and name the hosts you will use:</p>
-				<pre className="gy-pre">{"GYRE_HOST=0.0.0.0 \\\nGYRE_ALLOWED_HOSTS=my-laptop.tailnet.ts.net,192.168.1.20 \\\nGYRE_TOKEN=<a long secret> gyre-gateway"}</pre>
+				<pre className="gy-pre">
+					{"GYRE_HOST=0.0.0.0 \\\nGYRE_ALLOWED_HOSTS=my-laptop.tailnet.ts.net,192.168.1.20 \\\nGYRE_TOKEN=<a long secret> gyre-gateway"}
+				</pre>
 				<ul className="mt-2 list-disc pl-5">
 					<li>
 						<b>Tailscale</b>: reach the machine by its tailnet name and add that name to <span className="font-mono">GYRE_ALLOWED_HOSTS</span>.
 					</li>
 					<li>
-						<b>Cloudflare Tunnel</b>: point the tunnel at <span className="font-mono">http://127.0.0.1:{info?.port ?? 7341}</span> and allow the tunnel host name.
+						<b>Cloudflare Tunnel</b>: point the tunnel at <span className="font-mono">http://127.0.0.1:{info?.port ?? 7341}</span> and allow the tunnel host
+						name.
 					</li>
 					<li>
 						<b>Port forwarding / SSH</b>: <span className="font-mono">ssh -L 7341:127.0.0.1:{info?.port ?? 7341} host</span> needs no settings at all.

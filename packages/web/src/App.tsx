@@ -27,13 +27,18 @@ function useIsPhone(): boolean {
 export function App() {
 	const conn = useConnectionState();
 	const loaded = useApp(s => s.loaded);
+	const saveError = useApp(s => s.saveError);
 	const kbdMode = useApp(s => s.kbdMode);
 	const [loadError, setLoadError] = useState<string | null>(null);
 	const phone = useIsPhone();
 
 	useEffect(() => installShortcuts(), []);
 	useEffect(() => {
-		if (conn === "open" && !loaded) void useApp.getState().load().catch(e => setLoadError((e as Error).message));
+		if (conn === "open" && !loaded)
+			void useApp
+				.getState()
+				.load()
+				.catch(e => setLoadError((e as Error).message));
 	}, [conn, loaded]);
 
 	if (conn === "unauthorized") return <Login />;
@@ -42,7 +47,22 @@ export function App() {
 		return (
 			<Centered>
 				{loadError ? (
-					<div style={{ color: "var(--err)" }}>{loadError}</div>
+					<div style={{ color: "var(--err)" }}>
+						{loadError}
+						<button
+							className="gy-btn"
+							type="button"
+							onClick={() => {
+								setLoadError(null);
+								void useApp
+									.getState()
+									.load()
+									.catch(e => setLoadError((e as Error).message));
+							}}
+						>
+							Retry
+						</button>
+					</div>
 				) : (
 					<>
 						<Gyroscope state="working" size={56} />
@@ -59,18 +79,33 @@ export function App() {
 	return (
 		<div className="flex h-full flex-col">
 			<TopBar />
+			{saveError && (
+				<div role="alert" className="gy-row" style={{ color: "var(--err)" }}>
+					{saveError}
+					<button type="button" className="gy-btn" onClick={() => useApp.setState({ saveError: null })}>
+						Dismiss
+					</button>
+				</div>
+			)}
 			<main className="flex min-h-0 flex-1 flex-col">{phone ? <MobileShell /> : <PaneGrid />}</main>
 			<CommandPalette />
 			<ModelPicker />
 			<AddProjectDialog />
 			<JumpMarks />
 			{kbdMode && (
-				<div className="fixed bottom-3 left-1/2 z-50 -translate-x-1/2 px-3 py-1.5 font-mono text-[11px]" style={{ background: "var(--mark-bg)", color: "var(--mark-ink)", border: "1px solid #000", boxShadow: "3px 3px 0 #000" }} data-testid="kbd-mode">
+				<div
+					className="fixed bottom-3 left-1/2 z-50 -translate-x-1/2 px-3 py-1.5 font-mono text-[11px]"
+					style={{ background: "var(--mark-bg)", color: "var(--mark-ink)", border: "1px solid #000", boxShadow: "3px 3px 0 #000" }}
+					data-testid="kbd-mode"
+				>
 					KEYBOARD MODE · WASD focus · ⇧WASD swap · Ctrl+WASD resize · Q/E workspace · 1-9 jump · H hide · F float · Z max · X close · Esc exit
 				</div>
 			)}
 			{conn !== "open" && (
-				<div className="fixed top-16 left-1/2 z-50 -translate-x-1/2 px-3 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--border-strong)", color: "var(--warn)" }}>
+				<div
+					className="fixed top-16 left-1/2 z-50 -translate-x-1/2 px-3 py-1.5 text-[12px]"
+					style={{ background: "var(--panel-2)", border: "1px solid var(--border-strong)", color: "var(--warn)" }}
+				>
 					Reconnecting to gateway…
 				</div>
 			)}
@@ -85,9 +120,17 @@ function Login() {
 	const remote = Boolean(window.__GYRE__?.remote);
 	const submit = async () => {
 		setError(null);
-		const response = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: value.trim() }) });
-		if (response.ok) location.replace(location.pathname);
-		else setError("That token is not valid.");
+		try {
+			const response = await fetch("/api/login", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ token: value.trim() }),
+			});
+			if (response.ok) location.replace(location.pathname);
+			else setError("That token is not valid.");
+		} catch {
+			setError("Could not reach the gateway. Check your connection and try again.");
+		}
 	};
 	return (
 		<Centered>
@@ -105,12 +148,23 @@ function Login() {
 					void submit();
 				}}
 			>
-				<input className="gy-input w-72 font-mono" type="password" placeholder="gateway token" value={value} onChange={e => setValue(e.target.value)} autoFocus />
+				<input
+					className="gy-input w-72 font-mono"
+					type="password"
+					placeholder="gateway token"
+					value={value}
+					onChange={e => setValue(e.target.value)}
+					autoFocus
+				/>
 				<button type="submit" className="gy-btn primary" disabled={!value.trim()}>
 					Sign in
 				</button>
 			</form>
-			{error && <div className="text-[12px]" style={{ color: "var(--err)" }}>{error}</div>}
+			{error && (
+				<div className="text-[12px]" style={{ color: "var(--err)" }}>
+					{error}
+				</div>
+			)}
 		</Centered>
 	);
 }

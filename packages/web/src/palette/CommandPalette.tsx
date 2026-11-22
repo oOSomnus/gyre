@@ -150,7 +150,7 @@ export function CommandPalette() {
 				id: `view:theme:${id}`,
 				group: "View",
 				label: `Theme: ${THEMES[id].label}${app.theme === id ? " (current)" : ""}`,
-				keywords: `theme ${THEMES[id].scheme} ${THEMES[id].description}`,
+				keywords: `theme ${THEMES[id].family} ${THEMES[id].scheme} ${THEMES[id].description}`,
 				run: () => app.setTheme(id),
 			})),
 			{ id: "view:jump", group: "View", label: "Marks (label everything)", hint: "Alt W", run: () => app.setJumpMode(true) },

@@ -242,7 +242,12 @@ export function TopBar() {
 								<Dropdown.Label className="px-2 pt-1 pb-0.5 font-mono text-[9.5px] tracking-[0.16em] uppercase" style={{ color: "var(--muted)" }}>
 									Theme
 								</Dropdown.Label>
-								<Dropdown.RadioGroup value={theme} onValueChange={value => isThemeId(value) && setTheme(value)}>
+								<Dropdown.RadioGroup value={theme} onValueChange={value => isThemeId(value) && setTheme(value)} className="grid grid-cols-2">
+									{["Light", "Dark"].map(scheme => (
+										<span key={scheme} className="px-2 pb-0.5 pl-7 font-mono text-[9px] tracking-[0.14em] uppercase" style={{ color: "var(--muted)" }}>
+											{scheme}
+										</span>
+									))}
 									{THEME_ORDER.map(id => (
 										<Dropdown.RadioItem key={id} value={id} className={itemCls} data-testid={`menu-theme-${id}`}>
 											<span className="w-3 text-center">{theme === id ? "●" : ""}</span>

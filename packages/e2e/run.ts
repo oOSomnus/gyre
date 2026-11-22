@@ -175,8 +175,17 @@ await step("jump marks label actionable elements", async () => {
 	await page.keyboard.press("Escape");
 });
 
-const THEME_IDS = ["graphite", "riso", "phosphor", "dune", "dusk"] as const;
-const LABELS: Record<(typeof THEME_IDS)[number], string> = { graphite: "Graphite", riso: "Riso", phosphor: "Phosphor", dune: "Dune", dusk: "Dusk" };
+const THEME_IDS = ["graphite", "carbon", "riso", "blacklight", "greenbar", "phosphor", "dune", "dusk"] as const;
+const LABELS: Record<(typeof THEME_IDS)[number], string> = {
+	graphite: "Graphite",
+	carbon: "Carbon",
+	riso: "Riso",
+	blacklight: "Blacklight",
+	greenbar: "Greenbar",
+	phosphor: "Phosphor",
+	dune: "Dune",
+	dusk: "Dusk",
+};
 
 await step("each theme applies (palette)", async () => {
 	if ((await page.evaluate(() => document.documentElement.dataset.theme)) !== "graphite") throw new Error("default theme is not graphite");

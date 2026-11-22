@@ -5,7 +5,7 @@
  */
 import type { PaneSpec, ProjectUsage } from "@gyre/protocol";
 import { CheckCircle2, Copy, FolderGit2, KeyRound, Loader2, LogOut, MessagesSquare, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { api, gateway, token } from "../lib/gateway";
 import type { ModelPickerRow } from "../lib/omp";
 import { useRoles, useRolesStore } from "../lib/roles";
@@ -15,7 +15,7 @@ import { needsSetup, useOmpStatus } from "../lib/ompStatus";
 import { OmpSetupGuide } from "../shell/OmpSetup";
 import { useApp } from "../store/app";
 import { useChats } from "../store/chats";
-import { THEME_ORDER, THEMES, ThemeSwatch } from "../lib/themes";
+import { THEME_FAMILIES, type ThemeId, THEMES, ThemeSwatch } from "../lib/themes";
 
 const SECTIONS = [
 	["general", "General"],
@@ -101,40 +101,56 @@ export function SettingsPane({ pane }: { pane?: PaneSpec }) {
 
 function General() {
 	const { theme, setTheme } = useApp();
+	const label = "font-mono text-[10px] tracking-[0.16em] uppercase";
 	return (
 		<>
 			<Head>Theme</Head>
-			<div className="grid gap-2 p-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))" }}>
-				{THEME_ORDER.map(id => {
-					const meta = THEMES[id];
-					const on = theme === id;
-					return (
-						<button
-							type="button"
-							key={id}
-							data-testid={`theme-${id}`}
-							aria-pressed={on}
-							onClick={() => setTheme(id)}
-							className="flex flex-col items-start gap-2 p-3 text-left"
-							style={{
-								background: on ? "var(--choice-active)" : "var(--panel-2)",
-								border: `1px solid ${on ? "var(--border-strong)" : "var(--border)"}`,
-								borderRadius: "var(--radius)",
-								boxShadow: on ? "2px 2px 0 var(--border-strong)" : "none",
-							}}
-						>
-							<span className="flex w-full items-center justify-between gap-2">
-								<span className="font-mono text-[11px] font-semibold tracking-[0.14em] uppercase">{meta.label}</span>
-								<ThemeSwatch theme={meta} />
-							</span>
-							<span className="text-[12px] leading-snug" style={{ color: "var(--text-dim)" }}>
-								{meta.description}
-							</span>
-						</button>
-					);
-				})}
+			<div className="grid items-stretch gap-2 p-3" style={{ gridTemplateColumns: "auto minmax(0, 1fr) minmax(0, 1fr)" }}>
+				<span />
+				<span className={label} style={{ color: "var(--muted)" }}>
+					Light
+				</span>
+				<span className={label} style={{ color: "var(--muted)" }}>
+					Dark
+				</span>
+				{THEME_FAMILIES.map(family => (
+					<Fragment key={family.id}>
+						<span className={`${label} self-center pr-1 font-semibold`} style={{ color: "var(--text-dim)" }}>
+							{family.label}
+						</span>
+						<ThemeCard id={family.light} on={theme === family.light} onPick={setTheme} />
+						<ThemeCard id={family.dark} on={theme === family.dark} onPick={setTheme} />
+					</Fragment>
+				))}
 			</div>
 		</>
+	);
+}
+
+function ThemeCard({ id, on, onPick }: { id: ThemeId; on: boolean; onPick: (id: ThemeId) => void }) {
+	const meta = THEMES[id];
+	return (
+		<button
+			type="button"
+			data-testid={`theme-${id}`}
+			aria-pressed={on}
+			onClick={() => onPick(id)}
+			className="flex flex-col items-start gap-2 p-3 text-left"
+			style={{
+				background: on ? "var(--choice-active)" : "var(--panel-2)",
+				border: `1px solid ${on ? "var(--border-strong)" : "var(--border)"}`,
+				borderRadius: "var(--radius)",
+				boxShadow: on ? "2px 2px 0 var(--border-strong)" : "none",
+			}}
+		>
+			<span className="flex w-full flex-wrap items-center justify-between gap-2">
+				<span className="font-mono text-[11px] font-semibold tracking-[0.14em] uppercase">{meta.label}</span>
+				<ThemeSwatch theme={meta} />
+			</span>
+			<span className="text-[12px] leading-snug" style={{ color: "var(--text-dim)" }}>
+				{meta.description}
+			</span>
+		</button>
 	);
 }
 

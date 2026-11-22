@@ -9,7 +9,8 @@
 @import "@xyflow/react/dist/style.css";
 
 /*
- * Gyre themes: graphite (default), riso, phosphor, dune and dusk.
+ * Gyre themes come in light/dark pairs: graphite (default) / carbon, riso / blacklight,
+ * greenbar / phosphor and dune / dusk.
  * Each theme defines the full token set below; components only read tokens.
  * A halftone dot runs through the chrome, title bars and chat strip of every theme.
  * Title-bar treatments per theme live at the end of the components layer.
@@ -103,6 +104,95 @@
 	color-scheme: light;
 }
 
+[data-theme="carbon"] {
+	--chrome: #0b101a;
+	--chrome-2: #131b2b;
+	--chrome-3: #1d263a;
+	--chrome-ink: #070a11;
+	--chrome-edge: #030408;
+	--chrome-hi: #161e2f;
+	--chrome-text: #d7deea;
+	--chrome-muted: #7d8aa3;
+	--grid-bg: #080c14;
+	--panel: #1a2130;
+	--panel-2: #202838;
+	--panel-3: #283246;
+	--border: #34405a;
+	--border-strong: #05070c;
+	--text: #dbe3ee;
+	--text-dim: #aab6c8;
+	--muted: #7d8aa3;
+	--accent: #2ad0e0;
+	--accent-ink: #04161a;
+	--highlight: #a598ff;
+	--ok: #3cc98a;
+	--warn: #ff8a45;
+	--err: #ff5f63;
+	--info: #5ea8ee;
+	--think: #a598ff;
+	--tool: #2ad0e0;
+	--user: #7aa6e8;
+	--mark-bg: #2ad0e0;
+	--mark-ink: #04161a;
+	--code-bg: #151b27;
+	--shadow: 4px 4px 0 rgb(0 0 0 / 0.75);
+	--soft-shadow: 0 12px 30px rgb(0 0 0 / 0.55);
+	--tint-user: #1f2d45;
+	--tint-assistant: #222a3a;
+	--tint-thinking: #2a2850;
+	--tint-tool: #163a40;
+	--tint-shell: #15363c;
+	--tint-choice: #1c3450;
+	--tint-error: #4a2026;
+	--tint-notice: #262d3b;
+	--tint-safety: #4a2c18;
+	--tint-command: #1d3330;
+	--tint-plan: #2a2850;
+	--tint-subagent: #173a3a;
+	--terminal-bg: #0a0e17;
+	--terminal-fg: #cfe1f0;
+	--halftone: rgb(255 255 255 / 0.05);
+	--halftone-head: rgb(255 255 255 / 0.07);
+	--radius: 4px;
+	--led-on: #2ad0e0;
+	--chrome-on-bg: #173a44;
+	--chrome-on-text: #ffffff;
+	--badge-bg: #e3e9f3;
+	--badge-ink: #0f1420;
+	--badge-hot: #ff7a2f;
+	--on-color: #ffffff;
+	--st-running: #22b8c8;
+	--st-waiting: #ff7a2f;
+	--st-error: #ff5f63;
+	--st-idle: #3cc98a;
+	--st-none: #3a4558;
+	--spark: #6fd6e2;
+	--ring-track: #2a3448;
+	--choice-active: #173a44;
+	--frame-btn-bg: #2a3448;
+	--frame-btn-ink: #e3e9f3;
+	--title-bg: #0c111b;
+	--title-text: #e3e9f3;
+	--gy-metal: #aebdcf;
+	--gy-hi: #ffffff;
+	--gy-work: #2ad0e0;
+	--gy-alert: #ff7a2f;
+	--gy-steps: 0;
+	--k-default-a: #7d8aa3; --k-default-b: #7d8aa3; --k-default-line: #7d8aa3;
+	--k-chat-a: #2ad0e0; --k-chat-b: #2ad0e0; --k-chat-line: #2ad0e0;
+	--k-terminal-a: #7390ff; --k-terminal-b: #7390ff; --k-terminal-line: #7390ff;
+	--k-tasks-a: #3cc98a; --k-tasks-b: #3cc98a; --k-tasks-line: #3cc98a;
+	--k-file-a: #5ea8ee; --k-file-b: #5ea8ee; --k-file-line: #5ea8ee;
+	--k-plan-a: #9486ff; --k-plan-b: #9486ff; --k-plan-line: #9486ff;
+	--k-settings-a: #8d9ab3; --k-settings-b: #8d9ab3; --k-settings-line: #8d9ab3;
+	--k-sessions-a: #dba45a; --k-sessions-b: #dba45a; --k-sessions-line: #dba45a;
+	--k-subagents-a: #34c2b4; --k-subagents-b: #34c2b4; --k-subagents-line: #34c2b4;
+	--k-events-a: #6a9fd2; --k-events-b: #6a9fd2; --k-events-line: #6a9fd2;
+	--k-objectives-a: #ff8a45; --k-objectives-b: #ff8a45; --k-objectives-line: #ff8a45;
+	--k-message-a: #a3bb5e; --k-message-b: #a3bb5e; --k-message-line: #a3bb5e;
+	color-scheme: dark;
+}
+
 [data-theme="riso"] {
 	--chrome: #0a6fd6;
 	--chrome-2: #0b63bf;
@@ -189,6 +279,184 @@
 	--k-events-a: #0a6fd6; --k-events-b: #0a6fd6; --k-events-line: #0a6fd6;
 	--k-objectives-a: #ff6c2f; --k-objectives-b: #ff6c2f; --k-objectives-line: #ff6c2f;
 	--k-message-a: #ffe14d; --k-message-b: #ffe14d; --k-message-line: #ffe14d;
+	color-scheme: light;
+}
+
+[data-theme="blacklight"] {
+	--chrome: #0c3d78;
+	--chrome-2: #0a356a;
+	--chrome-3: #134c90;
+	--chrome-ink: #082c58;
+	--chrome-edge: #050505;
+	--chrome-hi: #0c3d78;
+	--chrome-text: #ffffff;
+	--chrome-muted: #a9c6ea;
+	--grid-bg: #0a3266;
+	--panel: #1c1b19;
+	--panel-2: #24221f;
+	--panel-3: #2e2b27;
+	--border: #45413a;
+	--border-strong: #e9e4d8;
+	--text: #f3eee3;
+	--text-dim: #cfc9bc;
+	--muted: #9a948a;
+	--accent: #3f9bff;
+	--accent-ink: #0b0b0b;
+	--highlight: #ff4fa3;
+	--ok: #4fd696;
+	--warn: #ff4fa3;
+	--err: #ff5a3c;
+	--info: #3f9bff;
+	--think: #b77dff;
+	--tool: #3f9bff;
+	--user: #ff4fa3;
+	--mark-bg: #ffe14d;
+	--mark-ink: #161616;
+	--code-bg: #161513;
+	--shadow: 4px 4px 0 #ff4fa3;
+	--soft-shadow: 0 12px 30px rgb(0 0 0 / 0.6);
+	--tint-user: #4a1d34;
+	--tint-assistant: #262421;
+	--tint-thinking: #33264a;
+	--tint-tool: #17304f;
+	--tint-shell: #142b48;
+	--tint-choice: #17304f;
+	--tint-error: #4d1f17;
+	--tint-notice: #2c2924;
+	--tint-safety: #4d1d36;
+	--tint-command: #1f2c3a;
+	--tint-plan: #33264a;
+	--tint-subagent: #172c45;
+	--terminal-bg: #0e0e0e;
+	--terminal-fg: #f3eee3;
+	--halftone: rgb(0 0 0 / 0.22);
+	--halftone-head: rgb(0 0 0 / 0.22);
+	--radius: 0px;
+	--led-on: #ff4fa3;
+	--chrome-on-bg: #050505;
+	--chrome-on-text: #ffffff;
+	--badge-bg: #f3eee3;
+	--badge-ink: #161616;
+	--badge-hot: #ffe14d;
+	--on-color: #ffffff;
+	--st-running: #ff4fa3;
+	--st-waiting: #ffe14d;
+	--st-error: #ff5a3c;
+	--st-idle: #7fd9a8;
+	--st-none: #5d5952;
+	--spark: #ff8cc6;
+	--ring-track: #3a3a3a;
+	--choice-active: #17304f;
+	--frame-btn-bg: #f3eee3;
+	--frame-btn-ink: #161616;
+	--title-bg: #050505;
+	--title-text: #161616;
+	--gy-metal: #d9d3c6;
+	--gy-hi: #ffffff;
+	--gy-work: #ff4fa3;
+	--gy-alert: #ffe14d;
+	--gy-steps: 4;
+	--k-default-a: #9d978d; --k-default-b: #9d978d; --k-default-line: #9d978d;
+	--k-chat-a: #ff4fa3; --k-chat-b: #ff4fa3; --k-chat-line: #ff4fa3;
+	--k-terminal-a: #2f8cf0; --k-terminal-b: #2f8cf0; --k-terminal-line: #2f8cf0;
+	--k-tasks-a: #22c477; --k-tasks-b: #22c477; --k-tasks-line: #22c477;
+	--k-file-a: #6fb4ff; --k-file-b: #6fb4ff; --k-file-line: #6fb4ff;
+	--k-plan-a: #a463d6; --k-plan-b: #a463d6; --k-plan-line: #a463d6;
+	--k-settings-a: #9d978d; --k-settings-b: #9d978d; --k-settings-line: #9d978d;
+	--k-sessions-a: #ffe14d; --k-sessions-b: #ffe14d; --k-sessions-line: #ffe14d;
+	--k-subagents-a: #22c477; --k-subagents-b: #22c477; --k-subagents-line: #22c477;
+	--k-events-a: #2f8cf0; --k-events-b: #2f8cf0; --k-events-line: #2f8cf0;
+	--k-objectives-a: #ff6c2f; --k-objectives-b: #ff6c2f; --k-objectives-line: #ff6c2f;
+	--k-message-a: #ffe14d; --k-message-b: #ffe14d; --k-message-line: #ffe14d;
+	color-scheme: dark;
+}
+
+[data-theme="greenbar"] {
+	--chrome: #0c1a12;
+	--chrome-2: #12241a;
+	--chrome-3: #1b3124;
+	--chrome-ink: #07110b;
+	--chrome-edge: #030805;
+	--chrome-hi: #12241a;
+	--chrome-text: #c4ead0;
+	--chrome-muted: #6f9a7c;
+	--grid-bg: #09140e;
+	--panel: #e6f0e4;
+	--panel-2: #f4f8f0;
+	--panel-3: #d4e3d3;
+	--border: #b3cbb6;
+	--border-strong: #1d3a28;
+	--text: #11261a;
+	--text-dim: #2f4a39;
+	--muted: #5f7a68;
+	--accent: #1f8f4e;
+	--accent-ink: #ffffff;
+	--highlight: #b87800;
+	--ok: #1f8f4e;
+	--warn: #c27c00;
+	--err: #c8382f;
+	--info: #1a7f99;
+	--think: #5b52c9;
+	--tool: #1a7f99;
+	--user: #a86c00;
+	--mark-bg: #ffb000;
+	--mark-ink: #140c00;
+	--code-bg: #eef5ea;
+	--shadow: 4px 4px 0 rgb(7 17 11 / 0.85);
+	--soft-shadow: 0 12px 30px rgb(0 0 0 / 0.3);
+	--tint-user: #f4e6c2;
+	--tint-assistant: #e8f0e5;
+	--tint-thinking: #e1e0f3;
+	--tint-tool: #d3ebe6;
+	--tint-shell: #cfe7e1;
+	--tint-choice: #d6e6ee;
+	--tint-error: #f6d3cf;
+	--tint-notice: #e4ebdf;
+	--tint-safety: #f7e1b8;
+	--tint-command: #d8eadb;
+	--tint-plan: #f4e6c2;
+	--tint-subagent: #d1e9e4;
+	--terminal-bg: #06100a;
+	--terminal-fg: #9ff0b4;
+	--halftone: rgb(124 242 154 / 0.07);
+	--halftone-head: rgb(29 58 40 / 0.1);
+	--radius: 3px;
+	--led-on: #7cf29a;
+	--chrome-on-bg: #143322;
+	--chrome-on-text: #d9ffe4;
+	--badge-bg: #c4ead0;
+	--badge-ink: #0c1a12;
+	--badge-hot: #ffb000;
+	--on-color: #ffffff;
+	--st-running: #7cf29a;
+	--st-waiting: #ffb000;
+	--st-error: #ff5c5c;
+	--st-idle: #3f8f5a;
+	--st-none: #2b3b31;
+	--spark: #7cf29a;
+	--ring-track: #1d3127;
+	--choice-active: #c5e3cc;
+	--frame-btn-bg: #f4f8f0;
+	--frame-btn-ink: #1d3a28;
+	--title-bg: #dbe8d9;
+	--title-text: #1d3a28;
+	--gy-metal: #6d9a7b;
+	--gy-hi: #e2ffe9;
+	--gy-work: #7cf29a;
+	--gy-alert: #ffb000;
+	--gy-steps: 0;
+	--k-default-a: #5f7a68; --k-default-b: #5f7a68; --k-default-line: #5f7a68;
+	--k-chat-a: #1f8f4e; --k-chat-b: #1f8f4e; --k-chat-line: #1f8f4e;
+	--k-terminal-a: #1a7f99; --k-terminal-b: #1a7f99; --k-terminal-line: #1a7f99;
+	--k-tasks-a: #138a68; --k-tasks-b: #138a68; --k-tasks-line: #138a68;
+	--k-file-a: #2f6fc0; --k-file-b: #2f6fc0; --k-file-line: #2f6fc0;
+	--k-plan-a: #b87800; --k-plan-b: #b87800; --k-plan-line: #b87800;
+	--k-settings-a: #5f7a68; --k-settings-b: #5f7a68; --k-settings-line: #5f7a68;
+	--k-sessions-a: #8f7a1f; --k-sessions-b: #8f7a1f; --k-sessions-line: #8f7a1f;
+	--k-subagents-a: #138a68; --k-subagents-b: #138a68; --k-subagents-line: #138a68;
+	--k-events-a: #2f6fc0; --k-events-b: #2f6fc0; --k-events-line: #2f6fc0;
+	--k-objectives-a: #c8562a; --k-objectives-b: #c8562a; --k-objectives-line: #c8562a;
+	--k-message-a: #5f8a12; --k-message-b: #5f8a12; --k-message-line: #5f8a12;
 	color-scheme: light;
 }
 
@@ -1523,54 +1791,58 @@ button.gy-gyro {
 }
 
 /* ---------------------------------------------------------------- theme treatments */
-/* graphite: solid dark title bar, a stripe in the pane's colour, tinted halftone */
-[data-theme="graphite"] .gy-frame {
+/* graphite / carbon: solid dark title bar, a stripe in the pane's colour, tinted halftone */
+:is([data-theme="graphite"], [data-theme="carbon"]) .gy-frame {
 	border: 2px solid var(--chrome-edge);
 }
-[data-theme="graphite"] .gy-frame.focused {
+:is([data-theme="graphite"], [data-theme="carbon"]) .gy-frame.focused {
 	box-shadow: 0 0 0 2px var(--frame-b);
 }
-[data-theme="graphite"] .gy-frame-head {
+:is([data-theme="graphite"], [data-theme="carbon"]) .gy-frame-head {
 	background:
 		radial-gradient(color-mix(in srgb, var(--frame-b) 30%, transparent) 1px, transparent 1.3px) 0 0 / 4px 4px,
 		var(--title-bg);
 	box-shadow: inset 0 3px 0 var(--frame-b);
 	padding-top: 3px;
 }
-/* riso: flat spot colour with a black halftone, hard outlines and offset shadow */
-[data-theme="riso"] .gy-frame {
+/* riso / blacklight: flat spot colour with a black halftone, hard outlines and offset shadow */
+:is([data-theme="riso"], [data-theme="blacklight"]) .gy-frame {
 	border: 2px solid var(--border-strong);
 	box-shadow: none;
 }
-[data-theme="riso"] .gy-frame.focused {
-	box-shadow: 4px 4px 0 var(--border-strong);
+:is([data-theme="riso"], [data-theme="blacklight"]) .gy-frame.focused {
+	box-shadow: var(--shadow);
 }
-[data-theme="riso"] .gy-frame-head {
+:is([data-theme="riso"], [data-theme="blacklight"]) .gy-frame-head {
 	background:
 		radial-gradient(var(--halftone-head) 1px, transparent 1.3px) 0 0 / 4px 4px,
 		var(--frame-b);
 	border-bottom: 2px solid var(--border-strong);
 }
-[data-theme="riso"] .gy-frame:is([data-kind="terminal"], [data-kind="plan"], [data-kind="events"], [data-kind="graph"]) .gy-frame-head {
+:is([data-theme="riso"], [data-theme="blacklight"]) .gy-frame:is([data-kind="terminal"], [data-kind="plan"], [data-kind="events"], [data-kind="graph"]) .gy-frame-head {
 	color: #ffffff;
 }
-/* phosphor: dark bar, the pane's colour as text and rule, a glow when focused */
-[data-theme="phosphor"] .gy-frame {
+/* phosphor / greenbar: title-bg bar, the pane's colour as text and rule, a glow when focused */
+:is([data-theme="phosphor"], [data-theme="greenbar"]) .gy-frame {
 	border: 1px solid var(--border);
 	box-shadow: none;
 }
-[data-theme="phosphor"] .gy-frame.focused {
+:is([data-theme="phosphor"], [data-theme="greenbar"]) .gy-frame.focused {
 	border-color: var(--frame-b);
 	box-shadow: 0 0 22px -6px var(--frame-b);
 }
-[data-theme="phosphor"] .gy-frame-head {
+:is([data-theme="phosphor"], [data-theme="greenbar"]) .gy-frame-head {
 	background:
 		radial-gradient(color-mix(in srgb, var(--frame-b) 22%, transparent) 1px, transparent 1.3px) 0 0 / 4px 4px,
 		var(--title-bg);
 	color: var(--frame-b);
 	border-bottom: 1px solid color-mix(in srgb, var(--frame-b) 55%, transparent);
 }
-:is([data-theme="graphite"], [data-theme="riso"], [data-theme="phosphor"]) .gy-frame-title {
+/* greenbar's bar is light: deepen the pane colour so title text stays >= 4.5:1; the rule and glow keep the raw colour */
+[data-theme="greenbar"] .gy-frame-head {
+	color: color-mix(in srgb, var(--frame-b) 60%, var(--title-text));
+}
+:is([data-theme="graphite"], [data-theme="carbon"], [data-theme="riso"], [data-theme="blacklight"], [data-theme="greenbar"], [data-theme="phosphor"]) .gy-frame-title {
 	text-shadow: none;
 }
 

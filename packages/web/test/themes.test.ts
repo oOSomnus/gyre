@@ -2,22 +2,39 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildItems, newMotion, parseColor, stepMotion, targetColors, type GyroPalette, type GyroState } from "../src/lib/gyro";
-import { DEFAULT_THEME, isThemeId, THEME_ORDER, THEMES } from "../src/lib/themes";
+import { DEFAULT_THEME, isThemeId, THEME_FAMILIES, THEME_ORDER, THEMES } from "../src/lib/themes";
 
 const css = readFileSync(join(import.meta.dir, "../src/styles.css"), "utf8");
-function tokensOf(id: string): Set<string> {
+function blockOf(id: string): string {
 	const start = css.indexOf(`[data-theme="${id}"] {`);
 	expect(start).toBeGreaterThanOrEqual(0);
-	const body = css.slice(start, css.indexOf("\n}", start));
-	return new Set([...body.matchAll(/(--[a-z0-9-]+):/g)].map(m => m[1]!));
+	return css.slice(start, css.indexOf("\n}", start));
+}
+function tokensOf(id: string): Set<string> {
+	return new Set([...blockOf(id).matchAll(/(--[a-z0-9-]+):/g)].map(m => m[1]!));
 }
 
 describe("themes", () => {
 	test("registry and ids", () => {
-		expect(THEME_ORDER).toEqual(["graphite", "riso", "phosphor", "dune", "dusk"]);
+		expect(THEME_ORDER).toEqual(["graphite", "carbon", "riso", "blacklight", "greenbar", "phosphor", "dune", "dusk"]);
+		expect(new Set(THEME_ORDER).size).toBe(Object.keys(THEMES).length);
 		expect(DEFAULT_THEME).toBe("graphite");
 		for (const id of THEME_ORDER) expect(isThemeId(id)).toBe(true);
 		for (const bad of ["paper", "night", "", null, 42]) expect(isThemeId(bad)).toBe(false);
+	});
+
+	test("every family is one light and one dark theme", () => {
+		for (const family of THEME_FAMILIES) {
+			expect(THEMES[family.light].scheme).toBe("light");
+			expect(THEMES[family.dark].scheme).toBe("dark");
+			expect(THEMES[family.light].family).toBe(family.id);
+			expect(THEMES[family.dark].family).toBe(family.id);
+		}
+		for (const id of THEME_ORDER) expect(THEMES[id].id).toBe(id);
+	});
+
+	test("each theme's CSS colour-scheme matches its registry scheme", () => {
+		for (const id of THEME_ORDER) expect(blockOf(id)).toContain(`color-scheme: ${THEMES[id].scheme};`);
 	});
 
 	test("every theme defines the same CSS tokens", () => {

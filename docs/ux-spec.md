@@ -1,10 +1,10 @@
 # Gyre UX spec
 
-This spec describes Gyre's UI (layout, themes, window manager, panes and keyboard model) and which omp RPC commands, events and Gyre gateway endpoints drive each part. Fonts: Space Grotesk and JetBrains Mono, via `@fontsource`.
+Gyre's UI (themes, window manager, panes, keyboard) and the omp RPC commands, events and gateway endpoints that drive each part.
 
 ## Design language (`packages/web/src/styles.css`)
 
-- **Themes** (Settings → General, the workspace-name menu, or `Theme:` in the palette; stored in `localStorage` `gyre.theme`). Every theme defines the same token set in `styles.css`; non-CSS consumers (xterm, graph minimap, shiki/mermaid/Monaco light or dark) read `lib/themes.ts`.
+- **Themes** (Settings → General, the workspace-name menu, or `Theme:` in the palette; stored in `localStorage` `gyre.theme`). Every theme defines the same token set in `styles.css`; non-CSS consumers (xterm, graph minimap, shiki/mermaid/Monaco light or dark) read `lib/themes.tsx`. Fonts: Space Grotesk and JetBrains Mono.
 
   | Theme | Look | Title bars |
   |---|---|---|
@@ -20,7 +20,7 @@ This spec describes Gyre's UI (layout, themes, window manager, panes and keyboar
 - **Event cards**: 1px ink border, a tinted header strip with an uppercase letter-spaced mono label (USER butter, ASSISTANT parchment, THINKING lavender, tools sage/teal, COMPLETION CHOICE sky, TOOL SAFETY amber, errors coral, plan gold) and a separate bordered meta cell on the right: `view · review · fork · HH:MM:SS`.
 - **Controls**: uppercase mono buttons with a 1px border and a 2px offset shadow; red danger buttons; green pill toggles; outlined status chips; keycaps; numbered choice rows with a teal selected state and an `Alt + 1…9` legend.
 - **Top bar**: brand and New/palette on the left; a centered MODES group (MARKS Alt+W, KBD), the gyroscope (state as above; click for the palette) and badges (chats that need you, running sub-agents); the workspace name and a minimap per workspace on the right.
-- **Chat strip** (replaces the old global status bar): a dark rounded strip above each composer with cache reads, chat state, model, Marks, plan mode, objectives, sub-agents, event graph, thinking level, tok/s with a sparkline, and a context ring. Cells hide by container width.
+- **Chat strip**: a dark rounded strip above each composer with cache reads, chat state, model, Marks, plan mode, objectives, sub-agents, event graph, thinking level, tok/s with a sparkline, and a context ring. Cells hide by container width.
 
 ## Window manager (`store/app.ts`, `shell/PaneGrid.tsx`)
 
@@ -64,16 +64,16 @@ Legend: `cmd` RPC command, `evt` event frame, `ui` `extension_ui_request` method
 | Palettes (Alt+X global, Alt+C pane) | `palette/CommandPalette.tsx` | app actions, `cmd get_available_commands` |
 | TUI-only omp commands (`/clear`, `/new`, `/resume`, `/model`, `/settings`) | `chat/localCommands.ts` (composer and palette) | `cmd new_session` (`/clear` links the old session as parent), Sessions pane, model picker, Settings pane. omp's own version wins if it ever advertises one over RPC |
 | Terminal, Send to AI | `panes/TerminalPane.tsx` | `gw` PTY (`pty_open {key}`, `pty_detach`, `pty_close`) |
-| Files, sessions, settings/providers, raw events | `FilePane`, `SessionsPane`, `SettingsPane`, `EventsPane` | as in v0.1 |
-| omp setup guidance (omp missing / no provider) | `shell/OmpSetup.tsx` in dead chat panes, the empty workspace, the phone layout and Settings → Providers; TopBar "Add a provider" chip | `gw` `ompStatus` from `/api/health` and `welcome`; Re-check: `gw` `POST /api/omp/recheck`, then restarts dead chat panes |
+| Files, sessions, settings/providers, raw events | `FilePane`, `SessionsPane`, `SettingsPane`, `EventsPane` | `gw` `/api/fs/*`, `/api/sessions`; `cli` config; `cmd get_login_providers`; every `evt` |
+| omp setup reminder (omp missing / no provider; points to omp for provider setup) | `shell/OmpSetup.tsx` in dead chat panes, the empty workspace, the phone layout and Settings → Providers; TopBar "Add a provider" chip | `gw` `ompStatus` from `/api/health` and `welcome`; Re-check: `gw` `POST /api/omp/recheck`, then restarts dead chat panes |
 | Add project (folder browser) | `projects/AddProjectDialog.tsx`: path field, breadcrumbs, filterable folder list with git badges, hidden toggle, keyboard (↑↓ Enter Backspace) | `gw` `GET /api/fs/browse`, `POST /api/projects` |
 | Manage projects | Settings → Projects (also TopBar New menu and palette "Manage projects…"): rename, new chat, remove with a confirmation listing what stops | `gw` `PATCH/DELETE /api/projects/:id`, `/api/projects/:id/usage`; removal closes the project's panes in every workspace |
 
 ## Plan mode
 
-omp's built-in plan mode is wired only into its TUI (the `/plan` builtin has no RPC handler and the review overlay is TUI-only), so Gyre ships an omp extension (`packages/omp-extension`) that implements the same workflow through omp's public extension API:
+Gyre's omp extension (`packages/omp-extension`) provides plan mode over RPC, since omp's own is TUI-only (see [architecture](architecture.md#plan-mode-and-upstream)):
 
-1. `/plan [task]` (or the strip toggle) switches to the **plan**-role model, adds `submit_plan`, makes the working tree read-only (writes only under `local://`, destructive shell commands blocked) and injects plan instructions adapted from omp's `plan-mode-active.md` on every turn.
+1. `/plan [task]` (or the strip toggle) switches to the **plan**-role model, adds `submit_plan`, makes the working tree read-only (writes only under `local://`; a best-effort denylist blocks destructive shell commands) and injects plan instructions adapted from omp's `plan-mode-active.md` on every turn.
 2. The agent writes `local://<slug>-plan.md` and calls `submit_plan`. If it ends a turn without asking or submitting it is reminded (at most 3 times).
 3. A **Plan** pane opens next to the chat. With the Plannotator omp extension installed it shows Plannotator's review page (annotations, plan diff); otherwise Gyre's own card with per-section comments. The toolbar holds the execution choices: **Continue with** (any chat role) and **Context** (fresh session / compact / keep).
 4. Feedback (from Plannotator or Gyre) goes back to the agent, which revises and resubmits; earlier revisions collapse into a history list.
@@ -100,6 +100,6 @@ omp's built-in plan mode is wired only into its TUI (the `/plan` builtin has no 
 | Feature | Status |
 |---|---|
 | Hook Studio | omp hooks are files under `.omp/hooks`; edit them in a terminal or file pane |
-| Commit review ("Review N changes", Alt+R) | not built; omp's `/review` or a terminal `git diff` |
+| Commit review ("Review N changes", Alt+R) | omp's `/review` or a terminal `git diff` |
 | Embedded browser pane | omp's `browser` tool renders as a tool card |
 | Semantic indexer, objective evaluator | not planned; omp's own search tools, goals and todos cover the agent side |

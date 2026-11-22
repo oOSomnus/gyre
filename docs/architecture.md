@@ -21,7 +21,7 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
 | `packages/web` | The UI (React 19, Tailwind 4, Radix, cmdk, zustand, shiki, Monaco, xterm.js, mermaid, KaTeX, @xyflow/react). |
 | `packages/e2e` | Playwright-driven end-to-end checks against a running gateway and real omp. |
 | `apps/desktop` | Tauri shell: sidecar lifecycle, single instance, external links open in the system browser. |
-| `scripts/` | `build-desktop.ts` (web, compiled gateway sidecar, `tauri build`) and `bump-omp.ts` (upstream upgrades). |
+| `scripts/` | `build-desktop.ts` (desktop bundles), `build-release.ts` (release assets) and `bump-omp.ts` (omp upgrades). |
 
 ## Gateway
 
@@ -37,7 +37,7 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
   - Reaps idle chats (no subscribers, agent not busy) after 10 minutes.
 - **`server.ts`**: HTTP API and WebSocket.
   - Security: binds to 127.0.0.1 by default, requires a per-launch token, and rejects `Host` headers that are not loopback or listed in `GYRE_ALLOWED_HOSTS` (DNS-rebinding guard). The token is injected into the page only for loopback clients or clients holding the HttpOnly login cookie (`POST /api/login`).
-  - Endpoints added in v0.2: `/api/omp/config` (allowlisted `omp config` keys), `/api/omp/skills`, `/api/agents`, `/api/mcp`, `/api/chats/:id/{restart,kill,plan-prefs}`, `/api/projects/:id/restart-chats`, `/api/ptys`, `/api/fs/stat`, `/api/kv/ui.*`, `/api/remote`.
+  - Other endpoints include `/api/omp/config` (allowlisted `omp config` keys), `/api/omp/skills`, `/api/agents`, `/api/mcp`, `/api/chats/:id/{restart,kill,plan-prefs}`, `/api/projects/:id/restart-chats`, `/api/ptys`, `/api/fs/stat`, `/api/kv/ui.*`, `/api/remote`.
   - `PATCH /api/omp/config` edits one `{key, name, value}` assignment in `modelRoles` or `task.agentModelOverrides`; `null` removes it. The gateway serializes config mutations and merges against the latest saved map.
   - Workspace saves compare revisions and return `409` on conflict. Deleted workspace IDs remain tombstoned; a new workspace must use a new ID.
   - `/api/kv/ui.*` GET returns an `ETag` (a hash of the stored JSON, or `"absent"`). A PUT with `If-Match` writes only if the record still has that version, atomically in one sqlite transaction, and returns `412` otherwise. Agent Studio's draft cleanup uses it so a draft saved while publishing is never overwritten.
@@ -80,42 +80,42 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
 1. `scripts/build-desktop.ts` builds the web UI and compiles the gateway with `bun build --compile`.
 2. It places the binary as the Tauri sidecar `binaries/gyre-gateway-<triple>`. The web build ships as the `web/` resource and the omp extension as `omp-extension/` (passed to the gateway as `GYRE_OMP_EXTENSION`).
 3. At launch the shell starts the sidecar with `GYRE_PORT=0` and `GYRE_EXIT_ON_STDIN_CLOSE=1`, reads `GYRE_READY {url, token}`, and opens `url/#token=…`.
-4. On exit it closes the sidecar's stdin. The gateway then stops its omp children and exits; it is killed after 6 s if it doesn't.
+4. On exit it closes the sidecar's stdin. The gateway then stops its omp children and exits; it is killed after 10 s if it doesn't.
 
-omp is **not** bundled. The gateway finds it on `PATH`, at `OMP_PATH`, or in common install locations (`~/.bun/bin`, `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`).
+omp is **not** bundled. Desktop launchers often start apps without the user's shell `PATH`, so the gateway (`omp-path.ts`) looks for omp at `OMP_PATH`, on `PATH`, then in `~/.bun/bin`, `~/.local/bin`, `/usr/local/bin` and `/opt/homebrew/bin`. omp is a Bun script (`#!/usr/bin/env bun`), so the gateway also puts bun's folder on `PATH` before spawning it.
 
 ## Releases and the installer
 
-- `scripts/build-release.ts` builds the web UI once and cross-compiles the gateway (`bun build --compile --target=bun-<os>-<arch>`) for linux/darwin × x64/arm64. Each target becomes `gyre-web-<os>-<arch>.tar.gz` with `gyre/{gyre-gateway, web/, omp-extension/src/}`, the layout `main.ts` resolves next to its own binary. It also writes `gyre-manifest.json` (`{version, ompVersion}`, the omp version pinned in `packages/gateway/package.json`), `gyre-icon.png` and `SHA256SUMS`.
-- `.github/workflows/release.yml` runs on `v*` tags. It builds the web tarballs and, on ubuntu-22.04, the `.deb` and AppImage (version stamped from the tag), renamed to stable names `gyre-desktop-linux-x64.{deb,AppImage}`. It then publishes everything plus `install.sh` with fresh checksums. Stable names let the installer use `releases/latest/download/<asset>`.
-- `install.sh` (repo root) is the guided installer. It reads answers from `/dev/tty`, so it works under `curl | bash`, and falls back to flags and recommended defaults without a terminal. It verifies every download against `SHA256SUMS`, installs the web version to `~/.local/share/gyre` with a `~/.local/bin/gyre` launcher (`gyre-gateway --open`), and the desktop app as a `.deb` (apt) or AppImage with a desktop entry. It offers to install omp (the manifest's version, via Bun), Plannotator (`omp plugin install @plannotator/pi-extension`), and a first provider (`omp login`, or an API key piped to `omp auth import -` on stdin). `GYRE_RELEASE_BASE=file://…` points it at a local `dist/release` for testing.
+- `scripts/build-release.ts` builds the web UI once and cross-compiles the gateway (`bun build --compile --target=bun-<os>-<arch>`) for linux/darwin × x64/arm64. Each target becomes `gyre-web-<os>-<arch>.tar.gz` containing `gyre/{gyre-gateway, web/, omp-extension/src/}`, the layout `main.ts` expects next to its binary. It also writes `gyre-manifest.json` (`{version, ompVersion}`, the omp version pinned in `packages/gateway/package.json`), `gyre-icon.png` and `SHA256SUMS`.
+- `.github/workflows/release.yml` runs on `v*` tags. It builds the web tarballs and, on ubuntu-22.04, the `.deb` and AppImage (version from the tag) as `gyre-desktop-linux-x64.{deb,AppImage}`, then publishes them with `install.sh` and fresh checksums. Stable asset names let the installer download from `releases/latest/download/<asset>`.
+- `install.sh` (repo root) reads answers from `/dev/tty`, so it works under `curl | bash`, and uses flags and recommended defaults without a terminal. It verifies every download against `SHA256SUMS` and installs one version: the web tarball, or the desktop `.deb`/AppImage. Either way `~/.local/bin/gyre` starts it (`gyre-gateway --open`, or the desktop binary in the background). It installs omp with Bun (the manifest's version) and adds bun's folder to its own `PATH`, because omp needs `bun` to run and Bun's installer only edits shell rc files. It only checks for a model provider (`omp models --json`) and points to omp for setup. `GYRE_RELEASE_BASE=file://…` points it at a local `dist/release`.
 
 ## Tracking omp upstream
 
-Gyre's goal is to get every omp feature (tools, slash commands, skills, MCP, sessions) without maintaining a fork. The rules below keep upgrades cheap.
+Gyre aims to expose every omp feature without maintaining a fork. These rules keep upgrades cheap.
 
 ### Rules
 
 1. **Never fork or patch omp.** Gyre runs the user's installed `omp` binary unmodified, in `--mode rpc-ui`.
 2. **Pin and match.** `packages/gateway/package.json` and `packages/omp-extension/package.json` pin `@oh-my-pi/pi-coding-agent` to an exact version. It should match the installed `omp --version`; `scripts/bump-omp.ts` updates both and checks this.
-3. **Customize through omp's extension points.** Use extensions, custom tools, hooks, skills and MCP. If Gyre needs new behaviour from omp, propose it upstream rather than patching it locally. Gyre's one extension (`packages/omp-extension`, loaded with `omp -e`) adds plan mode over RPC; see below.
-7. **Write omp settings through omp.** Settings changes go through `omp config set` (validated by omp's registry, picked up live by its config watcher), and only allowlisted keys (`omp-cli.ts`). File-backed config that omp has no command for (agent `.md` files, `mcp.json`) is edited in omp's documented locations and formats.
-4. **Pass through, don't reinterpret.**
+3. **Customize through omp's extension points.** Use extensions, custom tools, hooks, skills and MCP. If Gyre needs new behaviour from omp, propose it upstream rather than patching it locally. Gyre's one extension (`packages/omp-extension`, loaded with `omp -e`) adds plan mode over RPC.
+4. **Write omp settings through omp.** Settings changes go through `omp config set` (validated by omp's registry, picked up live by its config watcher), and only allowlisted keys (`omp-cli.ts`). File-backed config that omp has no command for (agent `.md` files, `mcp.json`) is edited in omp's documented locations and formats.
+5. **Pass through, don't reinterpret.**
    - The gateway forwards any command and any frame.
    - The UI renders unknown tools generically, shows unknown message roles as collapsible cards, and logs every frame in the Events pane.
    - New upstream tools, commands and events therefore appear without Gyre changes.
-5. **Discover rather than hard-code.**
+6. **Discover rather than hard-code.**
    - Slash commands come from `get_available_commands` and `available_commands_update`.
    - Models come from `get_model_picker`, and thinking levels from `get_state.thinkingLevels`.
    - Login providers come from `get_login_providers`.
-6. **Only filter events for performance.** If `set_event_filter` is ever used, the Events pane must still be able to show everything.
+7. **Only filter events for performance.** If `set_event_filter` is ever used, the Events pane must still be able to show everything.
 
 ### Coupling points (what can break on upgrade)
 
 | Coupling | Where | Guarded by |
 |---|---|---|
 | RPC framing (ready frame, v2 negotiation, `rpc_chunk`) | `omp-process.ts` uses omp's exported `RpcFrameDecoder` | `test/contract.test.ts`, `test/gateway.test.ts` |
-| `get_state` / `get_session_stats` field names | `StatusBar.tsx`, `store/chats.ts` | contract test asserts the fields exist |
+| `get_state` / `get_session_stats` field names | `store/chats.ts`, `ChatStrip.tsx` | contract test asserts the fields exist |
 | `get_available_commands`, `get_model_picker` shapes | Composer, palette, model picker | contract tests |
 | Local slash commands (`agentInvoked: false` plus `command_output`) | Composer | contract test |
 | `extension_ui_request` methods and response shapes | `DialogCard.tsx` | e2e (`/pick-color`, `/confirm-demo` via a demo extension) |
@@ -136,13 +136,13 @@ omp's built-in plan mode is TUI/ACP-only today (no RPC command, state or approva
 ### Upgrade procedure
 
 ```bash
-omp update                      # or reinstall omp at the new version
-bun scripts/bump-omp.ts         # pins gateway + extension to the installed version, runs typecheck, extension tests, gateway tests + contract
-bun packages/e2e/run.ts   # optional UI check (see packages/e2e/run.ts header)
+omp update                 # or reinstall omp at the new version
+bun scripts/bump-omp.ts    # pin gateway + extension to the installed omp; runs typecheck and tests
+bun packages/e2e/run.ts    # optional UI check (see its header)
 ```
 
-CI (`.github/workflows/ci.yml`) runs the suite against both the pinned version and the latest omp release every day. Upstream drift shows up as a red "latest" job before users hit it.
+CI (`.github/workflows/ci.yml`) runs the tests against the pinned and the latest omp on pushes to main, pull requests and daily, so upstream drift shows up as a red "latest" job before users hit it.
 
 ### Plan mode shell policy
 
-Gyre simulates omp’s native plan workflow over RPC without modifying omp. Planning and review prompts prohibit state-changing shell commands; the shell remains available, and its denylist is a best-effort guard rather than a sandbox. Dedicated file-tool writes are restricted to session-local plan artifacts. Approval checks the submitted content, applies the selected execution role and fresh/compact/keep context choice, and preserves the approved plan in a fresh session’s local artifacts.
+While planning, the prompts forbid state-changing shell commands, but the shell stays available and its denylist is a best-effort guard, not a sandbox. File-tool writes are limited to session-local plan files. On approval the extension checks the submitted plan, applies the chosen role and context (fresh, compact or keep); a fresh session gets the approved plan in its local files.

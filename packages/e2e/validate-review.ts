@@ -61,19 +61,21 @@ try {
 	let holdModels = false;
 	let heldModels: { reqId: string } | undefined;
 	const closedPtyKeys: string[] = [];
+	const closedChats: string[] = [];
 	const send = (message: ServerMessage) => socket.send(JSON.stringify(message));
-	const info = () => ({ chatId: "chat", projectId: registered.id, cwd: project, status: "ready" as const, generation: "one", sessionPath: currentSession });
+	const info = (chatId = "chat") => ({ chatId, projectId: registered.id, cwd: project, status: "ready" as const, generation: "one", sessionPath: currentSession });
 	const result = (message: { reqId: string }, data: unknown) => send({ t: "result", reqId: message.reqId, ok: true, data });
 	await page.routeWebSocket("**/ws", route => {
 		socket = route;
 		route.onMessage(raw => {
 			const message = JSON.parse(String(raw)) as ClientMessage;
 			if (message.t === "hello") send({ t: "welcome", version: "0.2.0", ompVersion: "19.1.0" });
-			if (message.t === "subscribe") send({ t: "chat_replay", chat: info() });
+			if (message.t === "subscribe") send({ t: "chat_replay", chat: info(message.chatId) });
 			if (message.t === "open_chat") {
-				send({ t: "chat_replay", chat: info() });
-				result(message, info());
+				send({ t: "chat_replay", chat: info(message.chatId) });
+				result(message, info(message.chatId));
 			}
+			if (message.t === "close_chat") closedChats.push(message.chatId);
 			if (message.t === "ui_response") answers.push(message);
 			if (message.t === "pty_close_key") closedPtyKeys.push(message.key);
 			if (message.t === "pty_open") {
@@ -442,6 +444,10 @@ try {
 			if (route.request().method() === "PUT" && failCleanup) { failCleanup = false; return route.fulfill({ status: 503, json: { error: "draft store unavailable" } }); }
 			return route.continue();
 		});
+		// A saved draft, so publishing has something to clean up (and the injected failure is reached).
+		gateway.store.setKv("ui.agentDrafts", {
+			"new:user": { name: "published", description: "New agent", scope: "user", model: "", thinking: "", tools: null, spawns: "", instructions: "", savedAt: 1 },
+		});
 		await page.evaluate(projectId => (window as any).__gyre.useApp.getState().addPane({ id: "publish-review", kind: "studio", projectId }), otherProject.id);
 		const pane = page.locator('[data-pane="publish-review"]');
 		await pane.getByRole("button", { name: "New agent", exact: true }).last().click();
@@ -471,6 +477,21 @@ try {
 		await page.route("**/api/kv/ui.agentDrafts", async route => {
 			if (route.request().method() === "PUT") { waiting = true; await gate; await route.fulfill({ json: {} }); return; }
 			return route.continue();
+		});
+		// agent-A has a saved draft, so its publication ends with a (gated) cleanup write.
+		gateway.store.setKv("ui.agentDrafts", {
+			[`project:${registered.id}:agent-A`]: {
+				name: "agent-A",
+				description: "agent-A",
+				scope: "project",
+				model: "",
+				thinking: "",
+				tools: null,
+				spawns: "",
+				instructions: "prompt",
+				previousName: "agent-A",
+				savedAt: 1,
+			},
 		});
 		await page.evaluate(projectId => (window as any).__gyre.useApp.getState().addPane({ id: "late-publish", kind: "studio", projectId }), registered.id);
 		const pane = page.locator('[data-pane="late-publish"]');
@@ -570,6 +591,23 @@ try {
 		await removed;
 		await Bun.sleep(600);
 		assert(!gateway.store.listWorkspaces().some(ws => ws.id === id), "deleted workspace was recreated");
+	});
+	await step("a closed chat stays closed and stops counting as needing you", async () => {
+		const badge = () => page.locator('[data-jump="needs-you"] .gy-badge').textContent();
+		const before = Number(await badge());
+		await page.evaluate(projectId => (window as any).__gyre.useApp.getState().addPane({ id: "closing-chat", kind: "chat", projectId }), registered.id);
+		await page.waitForFunction(() => (window as any).__gyre.useChats.getState().chats["closing-chat"]?.info.status === "ready");
+		const dialog = (id: string) => ({ t: "frame", chatId: "closing-chat", frame: { type: "extension_ui_request", id, method: "confirm", title: "Still there?", message: "" } }) as const;
+		send(dialog("closing-dialog"));
+		await page.waitForFunction(n => document.querySelector('[data-jump="needs-you"] .gy-badge')?.textContent === String(n), before + 1);
+		await page.locator('[data-pane="closing-chat"] [data-jump="close"]').click();
+		await until(() => closedChats.includes("closing-chat"));
+		// What the gateway sends after close_chat stops omp: the exit broadcast, and a straggling frame.
+		send({ t: "chat", chat: { ...info("closing-chat"), status: "exited" } });
+		send(dialog("late-dialog"));
+		await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 150)));
+		assert(!(await page.evaluate(() => "closing-chat" in (window as any).__gyre.useChats.getState().chats)), "a closed chat was brought back by a late message");
+		assert(Number(await badge()) === before, "a closed chat still counts as needing you");
 	});
 
 	assert(errors.length === 0, errors.join("; "));

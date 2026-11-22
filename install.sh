@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Gyre installer: a guided setup for the Gyre web (browser) version and/or the
-# desktop app, plus the omp coding agent, the optional Plannotator plan-review
-# plugin, and omp's first model provider.
+# Gyre installer: installs the Gyre web (browser) version or the desktop app,
+# the omp coding agent and the optional Plannotator plan-review plugin, and
+# checks that omp has a model provider.
 #
 #   curl -fsSL https://raw.githubusercontent.com/oOSomnus/gyre/main/install.sh | bash
 #
@@ -9,7 +9,7 @@
 #   curl -fsSL …/install.sh | bash -s -- --web --with-plannotator --yes
 #
 # Flags:
-#   --web | --desktop | --both    what to install (default: ask; web if not interactive)
+#   --web | --desktop             what to install (default: ask; web if not interactive)
 #   --install-omp | --no-omp      install omp if it is missing, or skip the omp step
 #   --with-plannotator | --no-plannotator
 #   --version vX.Y.Z              a specific release (default: latest)
@@ -117,7 +117,7 @@ Gyre installer
   curl -fsSL https://raw.githubusercontent.com/oOSomnus/gyre/main/install.sh | bash
   curl -fsSL …/install.sh | bash -s -- [flags]
 
-  --web | --desktop | --both              what to install (default: ask)
+  --web | --desktop                       what to install (default: ask)
   --install-omp | --no-omp                install omp if missing, or skip that step
   --with-plannotator | --no-plannotator   install the Plannotator plan-review plugin, or not
   --version vX.Y.Z                        a specific release (default: latest)
@@ -132,7 +132,6 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 		--web) WHAT=web ;;
 		--desktop) WHAT=desktop ;;
-		--both) WHAT=both ;;
 		--install-omp) OMP_CHOICE=install ;;
 		--no-omp) OMP_CHOICE=skip ;;
 		--with-plannotator) PLANNOTATOR_CHOICE=install ;;
@@ -182,6 +181,7 @@ verify() { # file name-in-SHA256SUMS
 	[ "$(sha256 "$1")" = "$expected" ] || die "checksum mismatch for $2 (download corrupted?)"
 }
 
+BUN_HOME="${BUN_INSTALL:-$HOME/.bun}"
 OMP=""
 find_omp() {
 	OMP=""
@@ -189,9 +189,25 @@ find_omp() {
 		OMP="$(command -v omp)"
 		return 0
 	fi
-	for candidate in "$HOME/.bun/bin/omp" "$HOME/.local/bin/omp" /usr/local/bin/omp /opt/homebrew/bin/omp; do
+	for candidate in "$BUN_HOME/bin/omp" "$HOME/.local/bin/omp" /usr/local/bin/omp /opt/homebrew/bin/omp; do
 		if [ -x "$candidate" ]; then
 			OMP="$candidate"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# omp is a Bun script (#!/usr/bin/env bun), so bun must be on PATH whenever omp
+# runs. Bun's installer only edits shell rc files, so add its folder here.
+BUN_DIR_ADDED=""
+ensure_bun_on_path() {
+	have bun && return 0
+	local dir
+	for dir in "$BUN_HOME/bin" ${OMP:+"$(dirname "$OMP")"}; do
+		if [ -x "$dir/bun" ]; then
+			export PATH="$dir:$PATH"
+			BUN_DIR_ADDED="$dir"
 			return 0
 		fi
 	done
@@ -258,10 +274,9 @@ step "What to install"
 if [ -z "$WHAT" ]; then
 	if [ "$DESKTOP_OK" = 1 ]; then
 		choose "Which version of Gyre?" 1 \
-			"Web: runs a local server, opens in your browser (also reachable from your phone)" \
-			"Desktop app: a native window (.deb or AppImage)" \
-			"Both"
-		case "$CHOICE" in 1) WHAT=web ;; 2) WHAT=desktop ;; 3) WHAT=both ;; esac
+			"Web: a local server that opens Gyre in your browser" \
+			"Desktop app: a native window (.deb or AppImage)"
+		case "$CHOICE" in 1) WHAT=web ;; 2) WHAT=desktop ;; esac
 	else
 		WHAT=web
 		note "The desktop app is built for Linux x64 only; installing the web version."
@@ -284,8 +299,17 @@ ok "Gyre $GYRE_VERSION (tested with omp $OMP_VERSION)"
 # ------------------------------------------------------------------ 2. install Gyre
 
 step "Installing Gyre"
-INSTALLED_WEB=0
-INSTALLED_DESKTOP=""
+# write_launcher BODY: the `gyre` command, which starts the installed version.
+write_launcher() {
+	mkdir -p "$BIN_DIR"
+	printf '#!/bin/sh\n# Gyre launcher (installed by install.sh).\n%s\n' "$1" >"$BIN_DIR/gyre"
+	chmod +x "$BIN_DIR/gyre"
+	ok "Launcher → $BIN_DIR/gyre"
+	if ! on_path "$BIN_DIR"; then
+		warn "$BIN_DIR is not on your PATH. Add it, e.g.:"
+		cmd "echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc   # or ~/.zshrc"
+	fi
+}
 
 install_web() {
 	local asset="gyre-web-$OS-$ARCH.tar.gz"
@@ -299,25 +323,15 @@ install_web() {
 	mv "$TMP/unpack/gyre" "$INSTALL_DIR.new"
 	rm -rf "$INSTALL_DIR"
 	mv "$INSTALL_DIR.new" "$INSTALL_DIR"
-	cat >"$BIN_DIR/gyre" <<EOF
-#!/bin/sh
-# Gyre launcher (installed by install.sh). \`gyre --no-open\` skips opening the browser.
-open=--open
-if [ "\${1:-}" = "--no-open" ]; then open=; shift; fi
-exec "$INSTALL_DIR/gyre-gateway" \$open "\$@"
-EOF
-	chmod +x "$BIN_DIR/gyre"
 	ok "Web version → $INSTALL_DIR"
-	ok "Launcher    → $BIN_DIR/gyre"
-	if ! on_path "$BIN_DIR"; then
-		warn "$BIN_DIR is not on your PATH. Add it, e.g.:"
-		cmd "echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc   # or ~/.zshrc"
-	fi
-	INSTALLED_WEB=1
+	write_launcher "# \`gyre --no-open\` prints the URL instead of opening the browser.
+open=--open
+if [ \"\${1:-}\" = \"--no-open\" ]; then open=; shift; fi
+exec \"$INSTALL_DIR/gyre-gateway\" \$open \"\$@\""
 }
 
 install_desktop() {
-	local how=2
+	local how=2 app
 	if have apt-get && have dpkg; then
 		choose "How should the desktop app be installed?" 1 \
 			"System package (.deb, uses sudo apt; adds Gyre to your app menu)" \
@@ -333,8 +347,8 @@ install_desktop() {
 		verify "$TMP/$asset" "$asset"
 		note "Installing with apt (you may be asked for your password)"
 		sudo apt-get install -y "$TMP/$asset" </dev/tty
-		INSTALLED_DESKTOP=deb
-		ok "Desktop app installed (.deb): launch \"Gyre\" from your app menu"
+		app=/usr/bin/gyre-desktop
+		ok "Desktop app installed (.deb)"
 	else
 		local asset="gyre-desktop-linux-x64.AppImage"
 		note "Downloading $asset"
@@ -354,8 +368,8 @@ Terminal=false
 Categories=Development;
 EOF
 		have update-desktop-database && update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
-		INSTALLED_DESKTOP=appimage
-		ok "Desktop app → $BIN_DIR/Gyre.AppImage (app menu entry added)"
+		app="$BIN_DIR/Gyre.AppImage"
+		ok "Desktop app → $app (app menu entry added)"
 		if ! ldconfig -p 2>/dev/null | grep -q 'libfuse.so.2'; then
 			warn "AppImages need FUSE 2. If Gyre does not start, install it (Ubuntu/Debian):"
 			cmd "sudo apt install libfuse2   # Ubuntu 24.04+: libfuse2t64"
@@ -365,15 +379,14 @@ EOF
 			cmd "sudo apt install libwebkit2gtk-4.1-0"
 		fi
 	fi
+	write_launcher "# Starts the desktop app in the background; its output goes to ~/.gyre/desktop.log.
+mkdir -p \"\$HOME/.gyre\"
+nohup \"$app\" \"\$@\" >\"\$HOME/.gyre/desktop.log\" 2>&1 &"
 }
 
 case "$WHAT" in
 	web) install_web ;;
 	desktop) install_desktop ;;
-	both)
-		install_web
-		install_desktop
-		;;
 esac
 
 # ------------------------------------------------------------------ 3. omp
@@ -385,12 +398,32 @@ manual_omp() {
 	cmd "bun install -g $OMP_PKG@$OMP_VERSION"
 	note "More options: https://omp.sh"
 }
+
+# check_omp: 0 if $OMP runs (sets OMP_HAVE to its version). Otherwise warns,
+# shows the error and clears OMP, so later steps skip it instead of failing.
+OMP_HAVE=""
+check_omp() {
+	local out
+	ensure_bun_on_path || true
+	if out="$("$OMP" --version 2>&1)"; then
+		OMP_HAVE="$(printf '%s\n' "$out" | head -n 1 | sed 's#^omp/##')"
+		return 0
+	fi
+	warn "omp at $OMP does not run:"
+	printf '%s\n' "$out" | sed 's/^/      /'
+	OMP=""
+	return 1
+}
+
 if find_omp; then
-	have_version="$("$OMP" --version 2>/dev/null | sed 's#^omp/##' || true)"
-	ok "omp $have_version found at $OMP"
-	if [ -n "$OMP_VERSION" ] && [ -n "$have_version" ] && [ "$have_version" != "$OMP_VERSION" ]; then
-		note "This Gyre release is tested with omp $OMP_VERSION. To match it:"
-		cmd "bun install -g $OMP_PKG@$OMP_VERSION"
+	if check_omp; then
+		ok "omp $OMP_HAVE found at $OMP"
+		if [ -n "$OMP_VERSION" ] && [ "$OMP_HAVE" != "$OMP_VERSION" ]; then
+			note "This Gyre release is tested with omp $OMP_VERSION. To match it:"
+			cmd "bun install -g $OMP_PKG@$OMP_VERSION"
+		fi
+	else
+		manual_omp
 	fi
 elif [ "$OMP_CHOICE" = skip ]; then
 	warn "omp is not installed (skipped with --no-omp). Gyre needs it to run chats."
@@ -401,17 +434,22 @@ else
 	if [ "$OMP_CHOICE" != install ]; then ask_yn "Install omp $OMP_VERSION now (via Bun)?" y || install_it=0; fi
 	if [ "$install_it" = 1 ]; then
 		BUN="$(command -v bun || true)"
-		[ -n "$BUN" ] || { [ -x "$HOME/.bun/bin/bun" ] && BUN="$HOME/.bun/bin/bun"; } || true
+		if [ -z "$BUN" ] && [ -x "$BUN_HOME/bin/bun" ]; then BUN="$BUN_HOME/bin/bun"; fi
 		if [ -z "$BUN" ]; then
 			say "  omp is installed with Bun (https://bun.sh), which is not installed either."
 			if ask_yn "Install Bun now (runs Bun's official installer)?" y; then
 				curl -fsSL https://bun.sh/install | bash
-				BUN="$HOME/.bun/bin/bun"
+				BUN="$BUN_HOME/bin/bun"
 			fi
 		fi
 		if [ -n "$BUN" ] && [ -x "$BUN" ]; then
+			ensure_bun_on_path || true
 			"$BUN" install -g "$OMP_PKG@$OMP_VERSION"
-			if find_omp; then ok "omp installed at $OMP"; else warn "omp installed, but not found on PATH; open a new terminal (Bun adds ~/.bun/bin to PATH)."; fi
+			if ! find_omp; then
+				warn "omp was installed but not found. Open a new terminal and run: omp --version"
+			elif check_omp; then
+				ok "omp $OMP_HAVE installed at $OMP"
+			fi
 		else
 			warn "Skipped: Bun is required to install omp."
 			manual_omp
@@ -437,8 +475,8 @@ elif [ "$PLANNOTATOR_CHOICE" = skip ]; then
 	note "Skipped (--no-plannotator)."
 	manual_plannotator
 else
-	say "  Plannotator adds a visual review page for plans: annotate, comment and approve"
-	say "  them inside Gyre. Without it, Gyre uses its own simpler review card."
+	say "  Plannotator adds a review page for plans where you annotate, comment and approve."
+	say "  Without it, Gyre uses its own simpler review card."
 	install_it=1
 	if [ "$PLANNOTATOR_CHOICE" != install ]; then ask_yn "Install Plannotator (recommended)?" y || install_it=0; fi
 	if [ "$install_it" = 1 ]; then
@@ -453,78 +491,31 @@ fi
 
 # ------------------------------------------------------------------ 5. provider
 
-step "Your first model provider"
-provider_help() {
-	note "Gyre's chats need omp to have at least one model provider. Any of:"
-	note " • Sign in with a subscription (Claude, ChatGPT/Codex, Copilot, …):"
-	cmd "omp login"
-	note " • Store an API key with omp (works for the desktop app too), e.g. Anthropic:"
-	cmd "read -rsp 'API key: ' KEY && printf '{\"version\":1,\"credentials\":[{\"provider\":\"anthropic\",\"credential\":{\"type\":\"api_key\",\"key\":\"%s\"}}]}' \"\$KEY\" | omp auth import -"
-	note " • Or export ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / OPENROUTER_API_KEY before starting Gyre,"
-	note "   or add a local/custom endpoint in ~/.omp/agent/models.yml (see the README)."
-	note "Gyre also shows these steps until a provider is configured."
-}
-
-store_api_key() {
-	local provider key escaped
-	choose "Which provider is the key for?" 1 "Anthropic" "OpenAI" "Google Gemini" "OpenRouter" "Other (type the omp provider id)"
-	case "$CHOICE" in
-		1) provider=anthropic ;;
-		2) provider=openai ;;
-		3) provider=google ;;
-		4) provider=openrouter ;;
-		5)
-			printf '    provider id: ' >/dev/tty
-			IFS= read -r provider </dev/tty || provider=""
-			;;
-	esac
-	[ -n "$provider" ] || return 1
-	printf '    API key for %s (input hidden): ' "$provider" >/dev/tty
-	IFS= read -rs key </dev/tty || key=""
-	printf '\n' >/dev/tty
-	[ -n "$key" ] || return 1
-	escaped="$(printf '%s' "$key" | sed 's/\\/\\\\/g; s/"/\\"/g')"
-	# The key goes to omp on stdin: never on the command line or in shell history.
-	printf '{"version":1,"credentials":[{"provider":"%s","credential":{"type":"api_key","key":"%s"}}]}' "$provider" "$escaped" | "$OMP" auth import - >/dev/null
-	key="" escaped=""
-}
-
+# Gyre does not set up providers: omp owns that, so only check and point there.
+step "Model provider"
 if [ -z "$OMP" ]; then
-	note "Install omp first; then configure a provider."
-	provider_help
+	note "Needs omp; skipped."
 elif has_models; then
-	ok "omp already has a model provider"
-elif [ "$INTERACTIVE" = 0 ] || [ "$ASSUME_YES" = 1 ]; then
-	warn "omp has no model provider yet."
-	provider_help
+	ok "omp has a model provider"
 else
-	say "  omp has no model provider yet, so Gyre cannot start chats. Set one up now?"
-	attempts=0
-	while ! has_models && [ "$attempts" -lt 3 ]; do
-		attempts=$((attempts + 1))
-		choose "How do you want to connect a model?" 1 \
-			"Sign in with a subscription account (runs \`omp login\`)" \
-			"Paste an API key (stored by omp)" \
-			"Later: show me the commands"
-		case "$CHOICE" in
-			1) "$OMP" login </dev/tty || warn "omp login did not finish." ;;
-			2) store_api_key || warn "No key stored." ;;
-			3) break ;;
-		esac
-		if has_models; then ok "Provider configured: omp lists models now"; elif [ "$CHOICE" != 3 ]; then warn "omp still lists no models."; fi
-	done
-	has_models || provider_help
+	warn "omp has no model provider yet, so Gyre cannot start chats."
+	note "Set one up in omp first, e.g. sign in with:"
+	cmd "omp login"
+	note "API keys and other options: https://github.com/can1357/oh-my-pi#readme"
 fi
 
 # ------------------------------------------------------------------ summary
 
 printf '\n%s  ◎ Done%s\n' "$B$GRN" "$R"
-if [ "$INSTALLED_WEB" = 1 ]; then
-	say "  ${B}Web:${R} run ${B}gyre${R} — it starts the local server and opens Gyre in your browser."
-	note "  (${B}gyre --no-open${R}${D} prints the URL instead; Ctrl-C stops the server.)"
-fi
-case "$INSTALLED_DESKTOP" in
-	deb) say "  ${B}Desktop:${R} open \"Gyre\" from your app menu." ;;
-	appimage) say "  ${B}Desktop:${R} open \"Gyre\" from your app menu, or run $BIN_DIR/Gyre.AppImage" ;;
+case "$WHAT" in
+	web)
+		say "  Run ${B}gyre${R} to start the local server and open Gyre in your browser."
+		note "${B}gyre --no-open${R}${D} prints the URL instead. Ctrl-C stops the server."
+		;;
+	desktop) say "  Run ${B}gyre${R}, or open Gyre from your app menu." ;;
 esac
+if [ -n "$BUN_DIR_ADDED" ]; then
+	note "$BUN_DIR_ADDED (bun, omp) was not on your PATH. If a new terminal can't find omp, add it:"
+	cmd "echo 'export PATH=\"$BUN_DIR_ADDED:\$PATH\"' >> ~/.bashrc   # or ~/.zshrc"
+fi
 note "Data lives in ~/.gyre. Uninstall: curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash -s -- --uninstall"

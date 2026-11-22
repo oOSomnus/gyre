@@ -9,6 +9,7 @@ import { Check, ClipboardList, ExternalLink, History, Loader2, MessageSquareWarn
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../chat/Markdown";
 import { api, gateway } from "../lib/gateway";
+import { sameSiteReviewUrl } from "../lib/plannotatorUrl";
 import { useRoles } from "../lib/roles";
 import { useChats } from "../store/chats";
 
@@ -142,6 +143,8 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 
 	const reviewing = plan?.phase === "reviewing";
 	const showIframe = reviewing && plan?.reviewUrl && !useNative;
+	// Same loopback host as this page, so Plannotator's settings cookies persist across reviews.
+	const reviewUrl = plan?.reviewUrl ? sameSiteReviewUrl(plan.reviewUrl, window.location.hostname) : undefined;
 	const chatRoles = roles.filter(r => r.section === "chat");
 
 	return (
@@ -269,7 +272,7 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 				) : showIframe ? (
 					<iframe
 						title="Plannotator plan review"
-						src={plan.reviewUrl}
+						src={reviewUrl}
 						className="h-full w-full border-0"
 						style={{ background: "#fff", pointerEvents: savingPrefs || !prefsLoaded ? "none" : "auto" }}
 						data-testid="plannotator-frame"
@@ -314,7 +317,7 @@ export function PlanPane({ pane }: { pane: PaneSpec }) {
 							<button type="button" className="gy-btn ghost" onClick={() => setUseNative(n => !n)}>
 								{useNative ? "Use Plannotator" : "Use Gyre review"}
 							</button>
-							<a className="gy-icon-btn" href={plan.reviewUrl} target="_blank" rel="noreferrer" title="Open Plannotator in the browser">
+							<a className="gy-icon-btn" href={reviewUrl} target="_blank" rel="noreferrer" title="Open Plannotator in the browser">
 								<ExternalLink size={14} />
 							</a>
 						</>

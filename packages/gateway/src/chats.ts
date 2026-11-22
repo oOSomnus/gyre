@@ -205,7 +205,9 @@ export class ChatManager {
 	async restart(chatId: string): Promise<Chat | undefined> {
 		const chat = this.chats.get(chatId);
 		if (!chat) return undefined;
-				const state = await chat.process.call<{ sessionFile?: string }>({ type: "get_state" }).catch(() => undefined);
+		const state = await chat.process.call<{ sessionFile?: string }>({ type: "get_state" }).catch(() => undefined);
+		// Closed or replaced while reading state: never reopen or touch the replacement.
+		if (this.chats.get(chatId) !== chat) return this.chats.get(chatId);
 		if (state) chat.info.sessionPath = state.sessionFile;
 		const { projectId, cwd, sessionPath } = chat.info;
 		await this.close(chatId);

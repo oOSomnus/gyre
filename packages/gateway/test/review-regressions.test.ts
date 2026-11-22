@@ -388,6 +388,25 @@ test("concurrent browser assignment patches merge against the latest saved map",
 	}
 });
 
+test("restart leaves a chat closed while its state was being read", async () => {
+	const manager = new ChatManager({ ompPath: fake, idleReapMs: 0 });
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	try {
+		const chat = await manager.open({ chatId: "closed-during-restart", projectId: "p", cwd: project });
+		const call = spyOn(chat.process, "call").mockImplementation(async <T>() => { await gate; return { sessionFile: "/tmp/active.jsonl" } as T; });
+		const restarting = manager.restart(chat.info.chatId);
+		await manager.close(chat.info.chatId);
+		release();
+		expect(await restarting).toBeUndefined();
+		call.mockRestore();
+		expect(manager.get(chat.info.chatId)).toBeUndefined();
+	} finally {
+		release();
+		await manager.closeAll();
+	}
+});
+
 test("restart transfers subscribers arriving during the state refresh", async () => {
 	const manager = new ChatManager({ ompPath: fake, idleReapMs: 0 });
 	const late = { send() {}, connected: true };
@@ -434,7 +453,12 @@ test("a superseded PTY attachment cannot detach its replacement on the same sock
 		const inventory = await (await request("/api/ptys")).json();
 		expect(inventory.find((p: { ptyId: string }) => p.ptyId === next.ptyId)?.attached).toBe(1);
 		socket.send(JSON.stringify({ t: "pty_detach", ...next }));
-		await Bun.sleep(30);
+		const attachedCount = async () => ((await (await request("/api/ptys")).json()) as Array<{ ptyId: string; attached: number }>).find(p => p.ptyId === next.ptyId)?.attached;
+		const deadline = Date.now() + 3000;
+		while ((await attachedCount()) !== 0) {
+			if (Date.now() > deadline) throw new Error("PTY still attached after detach");
+			await Bun.sleep(10);
+		}
 		const detached = await (await request("/api/ptys")).json();
 		expect(detached.find((p: { ptyId: string }) => p.ptyId === next.ptyId)?.attached).toBe(0);
 		socket.send(JSON.stringify({ t: "pty_close", ptyId: next.ptyId }));

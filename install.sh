@@ -377,7 +377,7 @@ exec \"$INSTALL_DIR/gyre-gateway\" \$open \"\$@\""
 }
 
 install_desktop() {
-	local how=2 how_flag app
+	local how=2 how_flag app install_failed=0
 	if [ -n "$DESKTOP_HOW" ]; then
 		how="$DESKTOP_HOW"
 	elif have apt-get && have dpkg; then
@@ -397,8 +397,25 @@ install_desktop() {
 		note "Downloading $asset"
 		download "$BASE/$asset" "$TMP/$asset"
 		verify "$TMP/$asset" "$asset"
-		note "Installing with apt (you may be asked for your password)"
-		sudo apt-get install -y "$TMP/$asset" </dev/tty
+		# Like the method question, non-interactive and --yes runs never prompt for a
+		# sudo password: `sudo -n` still works with passwordless or cached sudo.
+		local sudo=(sudo) apt_opts=(-y)
+		if [ "$INTERACTIVE" = 0 ] || [ "$ASSUME_YES" = 1 ]; then
+			sudo=(sudo -n)
+			note "Installing with apt (needs passwordless or cached sudo)"
+		else
+			note "Installing with apt (you may be asked for your password)"
+		fi
+		# An explicit --version may be older than the installed package.
+		[ "$VERSION" = latest ] || apt_opts+=(--allow-downgrades)
+		if [ "$INTERACTIVE" = 1 ]; then
+			"${sudo[@]}" apt-get install "${apt_opts[@]}" "$TMP/$asset" </dev/tty || install_failed=1
+		else
+			"${sudo[@]}" apt-get install "${apt_opts[@]}" "$TMP/$asset" || install_failed=1
+		fi
+		if [ "${install_failed:-0}" = 1 ]; then
+			die "apt could not install $asset. If sudo needs a password, run this in a terminal without --yes, or use --appimage"
+		fi
 		app=/usr/bin/gyre-desktop
 		ok "Desktop app installed (.deb)"
 	else
@@ -474,11 +491,15 @@ if find_omp; then
 		if [ -n "$OMP_VERSION" ] && [ "$OMP_HAVE" != "$OMP_VERSION" ]; then
 			if [ "$UPDATE" = 1 ] && [ "$OMP_CHOICE" != skip ] && have bun &&
 				ask_yn "Update omp $OMP_HAVE to $OMP_VERSION (the version this release is tested with)?" y; then
-				if bun install -g "$OMP_PKG@$OMP_VERSION" && check_omp; then
-					ok "omp $OMP_HAVE installed at $OMP"
-				else
+				if ! { bun install -g "$OMP_PKG@$OMP_VERSION" && check_omp; }; then
 					warn "omp could not be updated. To try again:"
 					cmd "bun install -g $OMP_PKG@$OMP_VERSION"
+				elif [ "$OMP_HAVE" = "$OMP_VERSION" ]; then
+					ok "omp $OMP_HAVE installed at $OMP"
+				else
+					warn "Bun installed omp $OMP_VERSION, but $OMP still reports $OMP_HAVE: another omp comes first on your PATH."
+					note "Remove that copy, or put Bun's global bin folder first on your PATH, e.g.:"
+					cmd "export PATH=\"\$(bun pm bin -g):\$PATH\"   # add to ~/.bashrc or ~/.zshrc"
 				fi
 			else
 				note "This Gyre release is tested with omp $OMP_VERSION. To match it:"

@@ -2,7 +2,7 @@
  * Per-chat state, built by folding omp frames. Unknown frames are kept in the
  * raw log (Events pane) so new upstream events are visible without code changes.
  */
-import { type ChatInfo, type OmpFrame, PLAN_WIDGET_KEY, type PlanState } from "@gyre/protocol";
+import { type ChatInfo, type OmpFrame, PLAN_WIDGET_KEY, type PlanState, uiRequestKind } from "@gyre/protocol";
 import { create } from "zustand";
 import { gateway } from "../lib/gateway";
 import { openChatPane } from "./app";
@@ -78,7 +78,6 @@ export interface ChatState {
 }
 
 const MAX_FRAMES = 600;
-const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor", "ask", "form"]);
 const REFRESH_ON = new Set([
 	"agent_end",
 	"session_settled",
@@ -211,9 +210,10 @@ export function applyFrame(chat: ChatState, frame: OmpFrame): ChatState {
 		case "extension_ui_request": {
 			const request = frame as unknown as UiRequest;
 			const method = request.method;
-			if (DIALOG_METHODS.has(method)) {
+			const kind = uiRequestKind(method);
+			if (kind === "dialog") {
 				if (!next.pendingUi.some(existing => existing.id === request.id)) next.pendingUi = [...next.pendingUi, request];
-			} else if (method === "cancel") {
+			} else if (kind === "cancel") {
 				next.pendingUi = next.pendingUi.filter(existing => existing.id !== f.targetId);
 			} else if (method === "notify") {
 				next.items = [
@@ -468,8 +468,22 @@ export async function loadCommands(chatId: string): Promise<void> {
 	useChats.getState().patch(chatId, { commands });
 }
 
-/** Called once at startup: route gateway messages into the store. */
-export function wireChatStore(): void {
+/** Drop every piece of client state for a chat (after an explicit close). */
+export function forgetChat(chatId: string): void {
+	clearTimeout(refreshTimers.get(chatId));
+	refreshTimers.delete(chatId);
+	turnRevisions.delete(chatId);
+	historyEpochs.delete(chatId);
+	sessionTransitions.delete(chatId);
+	useChats.getState().remove(chatId);
+}
+
+/**
+ * Called once at startup: route gateway messages into the store. `accepts`
+ * (the chat lifecycle) drops messages for chats this client is not attached to,
+ * so a closed chat's exit broadcast cannot bring it back.
+ */
+export function wireChatStore({ accepts }: { accepts(chatId: string): boolean }): void {
 	// A newly submitted plan (or a new revision) opens the review pane next to its chat.
 	useChats.subscribe((state, prev) => {
 		for (const [chatId, chat] of Object.entries(state.chats)) {
@@ -482,6 +496,7 @@ export function wireChatStore(): void {
 	gateway.on(message => {
 		const store = useChats.getState();
 		if (message.t === "chat" || message.t === "chat_replay") {
+			if (!accepts(message.chat.chatId)) return;
 			const old = store.chats[message.chat.chatId];
 			const replaced = old?.info.generation !== message.chat.generation;
 			const previous = store.chats[message.chat.chatId]?.info.status;
@@ -495,6 +510,7 @@ export function wireChatStore(): void {
 				refreshState(message.chat.chatId, 0);
 			}
 		} else if (message.t === "frame") {
+			if (!accepts(message.chatId)) return;
 			const buffered = sessionTransitions.get(message.chatId);
 			if (buffered) {
 				buffered.push(message.frame);

@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ServerMessage } from "@gyre/protocol";
-import { ChatManager, type Subscriber } from "../src/chats";
+import { type ServerMessage, uiRequestKind } from "@gyre/protocol";
+import { Chat, ChatManager, type Subscriber } from "../src/chats";
 import { configKeyAllowed, OmpCli } from "../src/omp-cli";
 import { OmpCommandError, OmpProcess } from "../src/omp-process";
 import { type Gateway, startGateway } from "../src/server";
@@ -83,6 +83,44 @@ describe("ChatManager", () => {
 		await manager.closeAll();
 	});
 
+	test("replays exactly what a late subscriber needs: sticky presentation, open and unknown dialogs", () => {
+		const chat = new Chat({ chatId: "c", projectId: "p", cwd: tmp, status: "ready" }, {} as OmpProcess);
+		const ui = (method: string, extra: Record<string, unknown> = {}) => ({ type: "extension_ui_request", id: `${method}-${Math.random()}`, method, ...extra });
+		const frames = [
+			ui("setStatus", { statusKey: "lint", statusText: "old" }),
+			ui("setStatus", { statusKey: "lint", statusText: "new" }),
+			ui("setWidget", { widgetKey: "w", widgetLines: ["x"] }),
+			ui("setTitle", { title: "T" }),
+			ui("notify", { message: "one-shot" }),
+			ui("open_url", { url: "https://example.com" }),
+			{ ...ui("select", { options: ["a"] }), id: "keep" },
+			{ ...ui("confirm"), id: "withdrawn" },
+			ui("cancel", { targetId: "withdrawn" }),
+			// A method omp may add later: it might be waiting for an answer, so it is kept.
+			{ ...ui("pick_file"), id: "future" },
+		];
+		for (const frame of frames) chat.trackFrame(frame);
+
+		const late = collector();
+		chat.replayTo(late.subscriber);
+		expect(late.messages[0]).toMatchObject({ t: "chat_replay" });
+		const replayed = late.frames();
+		expect(replayed.filter(f => f.method === "setStatus").map(f => f.statusText)).toEqual(["new"]);
+		expect(replayed.some(f => f.method === "setWidget")).toBe(true);
+		expect(replayed.some(f => f.method === "setTitle")).toBe(true);
+		expect(replayed.some(f => f.method === "notify" || f.method === "open_url" || f.method === "cancel")).toBe(false);
+		expect(replayed.filter(f => uiRequestKind(String(f.method)) === "dialog").map(f => f.id)).toEqual(["keep", "future"]);
+	});
+
+	test("a chat whose socket left while it was opening is reaped, not leaked", async () => {
+		const manager = new ChatManager({ ompPath: FAKE_OMP, idleReapMs: 50 });
+		const gone: Subscriber = { connected: false, send: () => {} };
+		const chat = await manager.open({ projectId: "p1", cwd: tmp, subscriber: gone });
+		expect(chat.subscribers.size).toBe(0);
+		await until(() => manager.get(chat.info.chatId) === undefined);
+		await manager.closeAll();
+	});
+
 	test("reports a failed start without throwing", async () => {
 		const manager = new ChatManager({ ompPath: join(tmp, "missing-omp") });
 		const chat = await manager.open({ projectId: "p1", cwd: tmp });
@@ -159,6 +197,38 @@ describe("HTTP + WebSocket gateway", () => {
 		const failed = messages.find(m => m.t === "result" && m.reqId === "r2");
 		expect(failed && failed.t === "result" && !failed.ok && failed.code).toBe("unknown_command");
 		ws.close();
+	});
+
+	test("websocket: closing a chat while it is still opening stops its process; a newer open keeps it", async () => {
+		const registered = await (await fetch(`${gateway.url}/api/projects`, { method: "POST", headers: authed, body: JSON.stringify({ path: project }) })).json();
+		const ws = new WebSocket(`ws://127.0.0.1:${gateway.port}/ws`);
+		const messages: ServerMessage[] = [];
+		ws.onmessage = e => messages.push(JSON.parse(String(e.data)));
+		await new Promise(resolve => (ws.onopen = resolve));
+		ws.send(JSON.stringify({ t: "hello", token: "tok" }));
+		await until(() => messages.some(m => m.t === "welcome"));
+		const resultOf = async (reqId: string) => {
+			await until(() => messages.some(m => m.t === "result" && m.reqId === reqId));
+			return messages.find(m => m.t === "result" && m.reqId === reqId) as Extract<ServerMessage, { t: "result" }>;
+		};
+
+		// Closed before the open finished: nothing may keep running.
+		ws.send(JSON.stringify({ t: "open_chat", reqId: "c1", projectId: registered.id, chatId: "cancel-me" }));
+		ws.send(JSON.stringify({ t: "close_chat", chatId: "cancel-me" }));
+		expect((await resultOf("c1")).ok).toBe(false);
+		expect(gateway.chats.get("cancel-me")).toBeUndefined();
+
+		// Closed, then opened again: the older open's cancellation must not stop the newer one.
+		ws.send(JSON.stringify({ t: "open_chat", reqId: "c2", projectId: registered.id, chatId: "reopen-me" }));
+		ws.send(JSON.stringify({ t: "close_chat", chatId: "reopen-me" }));
+		ws.send(JSON.stringify({ t: "open_chat", reqId: "c3", projectId: registered.id, chatId: "reopen-me" }));
+		await resultOf("c2");
+		expect((await resultOf("c3")).ok).toBe(true);
+		await until(() => gateway.chats.get("reopen-me")?.info.status === "ready");
+		await Bun.sleep(100);
+		expect(gateway.chats.get("reopen-me")?.info.status).toBe("ready");
+		ws.close();
+		await gateway.chats.close("reopen-me");
 	});
 });
 

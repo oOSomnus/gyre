@@ -64,6 +64,13 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 	return (await apiWithEtag<T>(path, init)).body;
 }
 
+/** A request whose connection closed before the gateway answered it. */
+export class ConnectionLostError extends GatewayError {
+	constructor() {
+		super("connection lost");
+	}
+}
+
 type Listener = (message: ServerMessage) => void;
 export type ConnectionState = "connecting" | "open" | "closed" | "unauthorized";
 
@@ -75,7 +82,7 @@ class GatewayClient {
 	#queue: ClientMessage[] = [];
 	#nextId = 0;
 	#retry = 0;
-	#subscribed = new Set<string>();
+	#welcomeListeners = new Set<() => void>();
 	state: ConnectionState = "connecting";
 	ompVersion: string | null = null;
 
@@ -97,7 +104,7 @@ class GatewayClient {
 				this.ompVersion = message.ompVersion;
 				this.#setState("open");
 				// Re-attach to chats after a reconnect (gateway keeps the omp processes alive).
-				for (const chatId of this.#subscribed) this.#sendRaw({ t: "subscribe", chatId });
+				for (const listener of this.#welcomeListeners) listener();
 				for (const queued of this.#queue.splice(0)) this.#sendRaw(queued);
 			} else if (message.t === "error" && message.message === "unauthorized") {
 				this.#setState("unauthorized");
@@ -121,7 +128,7 @@ class GatewayClient {
 		ws.onclose = () => {
 			if (this.state === "unauthorized") return;
 			this.#setState("closed");
-			for (const pending of this.#pending.values()) pending.reject(new GatewayError("connection lost"));
+			for (const pending of this.#pending.values()) pending.reject(new ConnectionLostError());
 			const rejected = new Set(this.#pending.keys());
 			this.#queue = this.#queue.filter(message => !("reqId" in message && rejected.has(message.reqId)));
 			this.#pending.clear();
@@ -133,6 +140,12 @@ class GatewayClient {
 	on(listener: Listener): () => void {
 		this.#listeners.add(listener);
 		return () => this.#listeners.delete(listener);
+	}
+
+	/** Called on every (re)connect, before queued messages are flushed. */
+	onWelcome(listener: () => void): () => void {
+		this.#welcomeListeners.add(listener);
+		return () => this.#welcomeListeners.delete(listener);
 	}
 
 	onState(listener: (state: ConnectionState) => void): () => void {
@@ -163,15 +176,16 @@ class GatewayClient {
 	}
 
 	openChat(projectId: string, opts: { chatId?: string; sessionPath?: string } = {}) {
-		return this.request<import("@gyre/protocol").ChatInfo>(reqId => ({ t: "open_chat", reqId, projectId, ...opts })).then(info => {
-			this.#subscribed.add(info.chatId);
-			return info;
-		});
+		return this.request<import("@gyre/protocol").ChatInfo>(reqId => ({ t: "open_chat", reqId, projectId, ...opts }));
 	}
 
 	closeChat(chatId: string): void {
-		this.#subscribed.delete(chatId);
 		this.send({ t: "close_chat", chatId });
+	}
+
+	/** Re-attach this connection to a running chat (the gateway replays its pending state). */
+	subscribeChat(chatId: string): void {
+		this.send({ t: "subscribe", chatId });
 	}
 
 	rpc<T = unknown>(chatId: string, command: OmpCommand, timeoutMs?: number): Promise<T> {

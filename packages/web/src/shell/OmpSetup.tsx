@@ -5,10 +5,9 @@
  */
 import { AlertTriangle, Check, Copy, Loader2, RotateCw, SquareTerminal } from "lucide-react";
 import { useState } from "react";
-import { ensureChat } from "../chat/ChatPane";
 import { needsSetup, useOmpStatus } from "../lib/ompStatus";
 import { useApp } from "../store/app";
-import { useChats } from "../store/chats";
+import { restartExitedChats } from "../store/chat-lifecycle";
 
 export function CopyCommand({ command, multiline = false }: { command: string; multiline?: boolean }) {
 	const [copied, setCopied] = useState(false);
@@ -47,12 +46,7 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
 
 /** Restart chat panes that died while omp was not set up. */
 function restartDeadChats() {
-	const chats = useChats.getState().chats;
-	for (const ws of useApp.getState().workspaces) {
-		for (const pane of Object.values(ws.panes)) {
-			if (pane.kind === "chat" && (!chats[pane.id] || chats[pane.id]?.info.status === "exited")) ensureChat(pane, true);
-		}
-	}
+	restartExitedChats(useApp.getState().workspaces.flatMap(ws => Object.values(ws.panes)));
 }
 
 export function RecheckButton() {

@@ -2,7 +2,7 @@
  * Renders omp `extension_ui_request` dialogs as transcript cards, answerable by
  * mouse or keyboard (Alt+1..9 picks options of the newest dialog).
  */
-import type { OmpUiResponse } from "@gyre/protocol";
+import { isKnownUiMethod, type OmpUiResponse } from "@gyre/protocol";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { gateway } from "../lib/gateway";
 import type { AskQuestion, UiRequest } from "../lib/omp";
@@ -68,8 +68,19 @@ export function DialogCard({ chatId, request, active }: { chatId: string; reques
 		window.addEventListener("keydown", handler, true);
 		return () => window.removeEventListener("keydown", handler, true);
 	}, [active, request.method]);
+	// A method this Gyre version does not render yet: show what omp sent and let the user dismiss it.
+	const unknown = !isKnownUiMethod(request.method);
 	const title =
-		request.title ?? (request.method === "confirm" ? "Confirm" : request.method === "ask" ? "Questions" : request.method === "form" ? "Form" : "Choose");
+		request.title ??
+		(unknown
+			? `omp sent a "${request.method}" request this version of Gyre cannot answer.`
+			: request.method === "confirm"
+				? "Confirm"
+				: request.method === "ask"
+					? "Questions"
+					: request.method === "form"
+						? "Form"
+						: "Choose");
 	// omp's tool approval prompts arrive as selects whose options end with "Deny".
 	const safety = request.method === "select" && (request.options ?? []).some(o => o === "Deny") && (request.options ?? []).some(o => /^Approve/.test(o));
 	const kind = safety
@@ -103,6 +114,7 @@ export function DialogCard({ chatId, request, active }: { chatId: string; reques
 				)}
 				{request.method === "ask" && <AskBody request={request} onSubmit={answers => respond({ answers })} />}
 				{request.method === "form" && <FormBody request={request} onSubmit={data => respond({ data })} onCancel={cancel} />}
+				{unknown && <pre className="gy-pre max-h-60 overflow-auto">{JSON.stringify(request, null, 2)}</pre>}
 				{optionCount > 0 && (
 					<div className="flex items-center gap-1.5 pt-1 font-mono text-[11px]" style={{ color: "var(--muted)" }}>
 						<span className="gy-kbd">Alt</span>+<span className="gy-kbd">1</span>…<span className="gy-kbd">{Math.min(9, optionCount)}</span>

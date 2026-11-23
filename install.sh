@@ -28,6 +28,8 @@ set -euo pipefail
 
 REPO="oOSomnus/gyre"
 INSTALL_DIR="${GYRE_INSTALL_DIR:-$HOME/.local/share/gyre}"
+# No trailing slash, so "$INSTALL_DIR.new" / ".old" are siblings, not entries inside it ("/" stays "/").
+while [ "$INSTALL_DIR" != / ] && [ "${INSTALL_DIR%/}" != "$INSTALL_DIR" ]; do INSTALL_DIR="${INSTALL_DIR%/}"; done
 BIN_DIR="${GYRE_BIN_DIR:-$HOME/.local/bin}"
 APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
@@ -200,6 +202,67 @@ verify() { # file name-in-SHA256SUMS
 	[ "$(sha256 "$1")" = "$expected" ] || die "checksum mismatch for $2 (download corrupted?)"
 }
 
+# publish_file SRC DEST [MODE]: replace DEST atomically (a temp file in DEST's folder,
+# then a rename), so DEST is always the complete old or new file and a running copy
+# keeps working. Returns non-zero, leaving DEST untouched, instead of exiting.
+publish_file() {
+	local src="$1" dest="$2" mode="${3:-644}" tmp
+	tmp="$(mktemp "$(dirname "$dest")/.$(basename "$dest").XXXXXX" 2>/dev/null)" || return 1
+	if cp "$src" "$tmp" && chmod "$mode" "$tmp" && mv -f "$tmp" "$dest"; then return 0; fi
+	rm -f "$tmp"
+	return 1
+}
+
+# The version the current launcher records (empty when there is none).
+launcher_version() {
+	[ -f "$BIN_DIR/gyre" ] || return 0
+	sed -n "s/^GYRE_VERSION='\(.*\)'\$/\1/p" "$BIN_DIR/gyre" | head -n 1
+}
+
+# keep_backup PATH: before PATH is replaced, keep the release the launcher records as
+# PATH.old, tagged with that version in PATH.old.version (written first, so a backup is
+# never untagged). Directories move aside; files are hard-linked (or copied).
+keep_backup() {
+	local path="$1"
+	rm -rf "$path.old"
+	launcher_version >"$path.old.version" || return 1
+	if [ -d "$path" ]; then
+		mv "$path" "$path.old" || return 1
+	elif [ -e "$path" ]; then
+		{ ln -f "$path" "$path.old" 2>/dev/null || cp -p "$path" "$path.old"; } || return 1
+	fi
+}
+
+# restore_backup PATH: put the backup back (or remove PATH if there was none).
+restore_backup() {
+	local path="$1"
+	rm -rf "$path"
+	if [ -e "$path.old" ]; then mv "$path.old" "$path"; fi
+	rm -f "$path.old.version"
+}
+
+# drop_backup PATH: the new launcher is published; the backup is no longer recorded anywhere.
+drop_backup() {
+	rm -rf "$1.old" "$1.old.version"
+}
+
+# recover_backup PATH: a run that stopped mid-replacement left PATH.old. While the launcher
+# still records the backup's version, the launcher was not republished, so the backup is
+# the release it describes: put it back. Otherwise the launcher moved on: drop the backup.
+recover_backup() {
+	local path="$1"
+	if [ -e "$path.old" ]; then
+		if [ -f "$path.old.version" ]; then
+			if [ "$(cat "$path.old.version")" = "$(launcher_version)" ]; then restore_backup "$path"; else drop_backup "$path"; fi
+		elif [ ! -e "$path" ]; then
+			restore_backup "$path"
+		else
+			drop_backup "$path"
+		fi
+	fi
+	rm -f "$path.old.version"
+}
+
 BUN_HOME="${BUN_INSTALL:-$HOME/.bun}"
 OMP=""
 find_omp() {
@@ -326,12 +389,19 @@ fi
 # ------------------------------------------------------------------ 2. install Gyre
 
 step "Installing Gyre"
+# Replacing a release is one job: verify → stage → replace → publish the launcher.
+# The launcher records the installed version and mode, so it is published last, and
+# if publishing it fails the previous release is put back: the launcher and the
+# release it starts always agree. (.deb installs go through apt, which this script
+# cannot roll back; their launcher is only written after apt succeeds.)
+
 # write_launcher MODE_FLAGS BODY: the `gyre` command, which starts the installed
 # version. `gyre update [flags]` re-runs the latest installer with MODE_FLAGS, so an
 # update replaces this install in place without asking what to install again.
+# Returns non-zero, keeping the old launcher, when the new one cannot be published.
 write_launcher() {
-	mkdir -p "$BIN_DIR"
-	cat >"$BIN_DIR/gyre" <<LAUNCHER
+	mkdir -p "$BIN_DIR" 2>/dev/null || return 1
+	cat >"$TMP/gyre-launcher" <<LAUNCHER || return 1
 #!/bin/sh
 # Gyre launcher (installed by install.sh).
 GYRE_VERSION='$GYRE_VERSION'
@@ -349,7 +419,7 @@ if [ "\${1:-}" = update ]; then
 fi
 $2
 LAUNCHER
-	chmod +x "$BIN_DIR/gyre"
+	publish_file "$TMP/gyre-launcher" "$BIN_DIR/gyre" 755 || return 1
 	ok "Launcher → $BIN_DIR/gyre"
 	if ! on_path "$BIN_DIR"; then
 		warn "$BIN_DIR is not on your PATH. Add it, e.g.:"
@@ -362,18 +432,37 @@ install_web() {
 	note "Downloading $asset"
 	download "$BASE/$asset" "$TMP/$asset"
 	verify "$TMP/$asset" "$asset"
-	mkdir -p "$TMP/unpack" "$(dirname "$INSTALL_DIR")" "$BIN_DIR"
+	mkdir -p "$TMP/unpack" "$(dirname "$INSTALL_DIR")"
 	tar -xzf "$TMP/$asset" -C "$TMP/unpack"
 	[ -x "$TMP/unpack/gyre/gyre-gateway" ] || die "$asset does not contain gyre/gyre-gateway"
+	# An earlier run that stopped mid-replacement: first get back to the release the launcher records.
+	recover_backup "$INSTALL_DIR"
+	# Stage next to the install, so the swap is two renames on one filesystem.
 	rm -rf "$INSTALL_DIR.new"
-	mv "$TMP/unpack/gyre" "$INSTALL_DIR.new"
-	rm -rf "$INSTALL_DIR"
-	mv "$INSTALL_DIR.new" "$INSTALL_DIR"
-	ok "Web version → $INSTALL_DIR"
-	write_launcher --web "# \`gyre --no-open\` prints the URL instead of opening the browser.
+	mv "$TMP/unpack/gyre" "$INSTALL_DIR.new" || die "could not stage the new release in $INSTALL_DIR.new"
+	if ! keep_backup "$INSTALL_DIR"; then
+		rm -rf "$INSTALL_DIR.new" "$INSTALL_DIR.old.version"
+		die "could not move the current install aside ($INSTALL_DIR); nothing was changed"
+	fi
+	if ! mv "$INSTALL_DIR.new" "$INSTALL_DIR"; then
+		restore_web
+		die "could not move the new release into $INSTALL_DIR; kept the previous install"
+	fi
+	if ! write_launcher --web "# \`gyre --no-open\` prints the URL instead of opening the browser.
 open=--open
 if [ \"\${1:-}\" = \"--no-open\" ]; then open=; shift; fi
-exec \"$INSTALL_DIR/gyre-gateway\" \$open \"\$@\""
+exec \"$INSTALL_DIR/gyre-gateway\" \$open \"\$@\""; then
+		restore_web
+		die "could not write the launcher $BIN_DIR/gyre; kept the previous install"
+	fi
+	drop_backup "$INSTALL_DIR"
+	ok "Web version → $INSTALL_DIR"
+}
+
+# Undo a web swap: drop the new release and put the previous one (if any) back.
+restore_web() {
+	rm -rf "$INSTALL_DIR.new"
+	restore_backup "$INSTALL_DIR"
 }
 
 install_desktop() {
@@ -425,9 +514,15 @@ install_desktop() {
 		download "$BASE/$asset" "$TMP/$asset"
 		verify "$TMP/$asset" "$asset"
 		mkdir -p "$BIN_DIR" "$APPS_DIR" "$ICONS_DIR"
-		install -m 755 "$TMP/$asset" "$BIN_DIR/Gyre.AppImage"
-		if download "$BASE/gyre-icon.png" "$TMP/gyre-icon.png" 2>/dev/null; then cp "$TMP/gyre-icon.png" "$ICONS_DIR/gyre.png"; fi
-		cat >"$APPS_DIR/gyre.desktop" <<EOF
+		app="$BIN_DIR/Gyre.AppImage"
+		# An earlier run that stopped mid-replacement: first get back to the AppImage the launcher records.
+		recover_backup "$app"
+		# Keep the current AppImage until the launcher is published (a hard link costs no space).
+		keep_backup "$app" || { rm -f "$app.old" "$app.old.version"; die "could not back up $app; nothing was changed"; }
+		# Replaced by a rename, so a running Gyre keeps its file (no "text file busy").
+		publish_file "$TMP/$asset" "$app" 755 || { restore_backup "$app"; die "could not write $app; kept the previous AppImage"; }
+		if download "$BASE/gyre-icon.png" "$TMP/gyre-icon.png" 2>/dev/null; then publish_file "$TMP/gyre-icon.png" "$ICONS_DIR/gyre.png" || true; fi
+		cat >"$TMP/gyre.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Gyre
@@ -437,8 +532,8 @@ Icon=gyre
 Terminal=false
 Categories=Development;
 EOF
+		publish_file "$TMP/gyre.desktop" "$APPS_DIR/gyre.desktop" || warn "could not add the app menu entry $APPS_DIR/gyre.desktop"
 		have update-desktop-database && update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
-		app="$BIN_DIR/Gyre.AppImage"
 		ok "Desktop app → $app (app menu entry added)"
 		if ! ldconfig -p 2>/dev/null | grep -q 'libfuse.so.2'; then
 			warn "AppImages need FUSE 2. If Gyre does not start, install it (Ubuntu/Debian):"
@@ -449,9 +544,15 @@ EOF
 			cmd "sudo apt install libwebkit2gtk-4.1-0"
 		fi
 	fi
-	write_launcher "--desktop $how_flag" "# Starts the desktop app in the background; its output goes to ~/.gyre/desktop.log.
+	if ! write_launcher "--desktop $how_flag" "# Starts the desktop app in the background; its output goes to ~/.gyre/desktop.log.
 mkdir -p \"\$HOME/.gyre\"
-nohup \"$app\" \"\$@\" >\"\$HOME/.gyre/desktop.log\" 2>&1 &"
+nohup \"$app\" \"\$@\" >\"\$HOME/.gyre/desktop.log\" 2>&1 &"; then
+		# apt already installed the .deb (it cannot be rolled back from here).
+		[ "$how" = 1 ] && die "the .deb is installed, but the launcher $BIN_DIR/gyre could not be written"
+		restore_backup "$app"
+		die "could not write the launcher $BIN_DIR/gyre; kept the previous install"
+	fi
+	[ "$how" = 1 ] || drop_backup "$app"
 }
 
 case "$WHAT" in

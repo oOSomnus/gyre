@@ -50,6 +50,13 @@ interface SocketData {
 	authed: boolean;
 	subscriber: Subscriber;
 	ptyListeners: Map<string, PtyListener & { attachmentId: string }>;
+	/** This socket's latest in-flight `open_chat` per chat id. */
+	opening: Map<string, PendingOpen>;
+}
+
+/** An in-flight open; `cancelled` when this socket closed the chat before it finished starting. */
+interface PendingOpen {
+	cancelled: boolean;
 }
 
 export interface Gateway {
@@ -556,6 +563,10 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			case "hello":
 				return;
 			case "open_chat": {
+				// A newer open for the same chat replaces the older one's claim, so cancelling the
+				// older open can never stop the process a newer attachment is using.
+				const pending: PendingOpen = { cancelled: false };
+				if (message.chatId) ws.data.opening.set(message.chatId, pending);
 				try {
 					const project = projectOr404(message.projectId);
 					await requireOmpReady();
@@ -566,9 +577,19 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 						sessionPath: message.sessionPath,
 						subscriber: ws.data.subscriber,
 					});
+					if (pending.cancelled) {
+						// close_chat arrived while this open was starting: stop what it started,
+						// unless a newer open for the same chat now owns that process.
+						const latest = !message.chatId || ws.data.opening.get(message.chatId) === pending;
+						if (latest && chats.get(chat.info.chatId) === chat) await chats.close(chat.info.chatId);
+						send({ t: "result", reqId: message.reqId, ok: false, error: "chat was closed" });
+						return;
+					}
 					send({ t: "result", reqId: message.reqId, ok: true, data: chat.info });
 				} catch (error) {
 					send({ t: "result", reqId: message.reqId, ok: false, error: errorText(error), code: error instanceof OmpSetupError ? error.code : undefined });
+				} finally {
+					if (message.chatId && ws.data.opening.get(message.chatId) === pending) ws.data.opening.delete(message.chatId);
 				}
 				return;
 			}
@@ -577,9 +598,12 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				if (chat) chats.subscribe(chat, ws.data.subscriber);
 				return;
 			}
-			case "close_chat":
+			case "close_chat": {
+				const pending = ws.data.opening.get(message.chatId);
+				if (pending) pending.cancelled = true;
 				await chats.close(message.chatId);
 				return;
+			}
 			case "rpc": {
 				const chat = chats.get(message.chatId);
 				if (!chat || !chat.process.running) {
@@ -695,7 +719,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			if (DEBUG) console.error(`[http] ${req.method} ${url.pathname} host=${hostName} upgrade=${req.headers.get("upgrade") ?? "-"}`);
 			if (!isAllowedHost(hostName)) return new Response("forbidden host", { status: 403 });
 			if (url.pathname === "/ws") {
-				const ok = srv.upgrade(req, { data: { authed: false, subscriber: { send: () => {} }, ptyListeners: new Map() } });
+				const ok = srv.upgrade(req, { data: { authed: false, subscriber: { send: () => {} }, ptyListeners: new Map(), opening: new Map() } });
 				return ok ? undefined : new Response("upgrade failed", { status: 400 });
 			}
 			// Remote login: exchange the token for an HttpOnly session cookie.

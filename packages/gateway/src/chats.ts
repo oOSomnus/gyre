@@ -2,7 +2,7 @@
  * Chat registry: one omp process per open chat, fan-out of its frames to
  * subscribed UI connections, and replay of state a reconnecting UI needs.
  */
-import type { ChatInfo, OmpFrame, ServerMessage } from "@gyre/protocol";
+import { type ChatInfo, type OmpFrame, type ServerMessage, uiRequestKind } from "@gyre/protocol";
 import { OmpProcess, type OmpProcessOptions } from "./omp-process";
 
 export interface Subscriber {
@@ -27,8 +27,6 @@ export interface ChatManagerOptions {
 
 /** Frames whose latest value a late subscriber should receive. */
 const STICKY_FRAME_TYPES = new Set(["available_commands_update", "session_info_update", "config_update"]);
-/** UI request methods that are fire-and-forget presentation updates (no response expected). */
-const PRESENTATION_METHODS = new Set(["notify", "setStatus", "setWidget", "setTitle", "set_editor_text", "open_url"]);
 
 export class Chat {
 	readonly subscribers = new Set<Subscriber>();
@@ -75,18 +73,13 @@ export class Chat {
 				break;
 			case "extension_ui_request": {
 				const method = String(frame.method);
-				const id = String(frame.id);
-				if (method === "cancel") {
-					this.pendingUi.delete(String(frame.targetId));
-				} else if (method === "setStatus") {
-					this.sticky.set(`status:${String(frame.statusKey)}`, frame);
-				} else if (method === "setWidget") {
-					this.sticky.set(`widget:${String(frame.widgetKey)}`, frame);
-				} else if (method === "setTitle") {
-					this.sticky.set("title", frame);
-				} else if (!PRESENTATION_METHODS.has(method)) {
-					this.pendingUi.set(id, frame);
-				}
+				const kind = uiRequestKind(method);
+				if (kind === "dialog") this.pendingUi.set(String(frame.id), frame);
+				else if (kind === "cancel") this.pendingUi.delete(String(frame.targetId));
+				// Presentation state a late subscriber needs; one-shot updates (notify, open_url, …) are not replayed.
+				else if (method === "setStatus") this.sticky.set(`status:${String(frame.statusKey)}`, frame);
+				else if (method === "setWidget") this.sticky.set(`widget:${String(frame.widgetKey)}`, frame);
+				else if (method === "setTitle") this.sticky.set("title", frame);
 				break;
 			}
 			default:
@@ -186,7 +179,12 @@ export class ChatManager {
 			clearTimeout(chat.reapTimer);
 			chat.reapTimer = null;
 		}
-		if (subscriber.connected === false) return;
+		if (subscriber.connected === false) {
+			// The socket left while this chat was opening: reap it like any unwatched chat,
+			// so a reload can still reattach in time but the process cannot leak.
+			if (chat.subscribers.size === 0) this.#scheduleReap(chat);
+			return;
+		}
 		chat.subscribers.add(subscriber);
 		chat.info = { ...chat.info, subscribers: chat.subscribers.size };
 		chat.replayTo(subscriber);

@@ -9,6 +9,7 @@ import { gateway } from "../lib/gateway";
 import type { AgentMessage } from "../lib/omp";
 import { textOf } from "../lib/omp";
 import { openChatPane, paneIdsInOrder, useApp } from "./app";
+import { attachChat, closeChat } from "./chat-lifecycle";
 import { loadHistory, resetTranscript, useChats } from "./chats";
 
 // ---------------------------------------------------------------- registries
@@ -24,7 +25,7 @@ export const snapshots = new Map<string, { text: string; role: string; model?: s
 // ---------------------------------------------------------------- pane lifecycle
 
 export function closePaneResources(pane: PaneSpec): void {
-	if (pane.kind === "chat") gateway.closeChat(pane.id);
+	if (pane.kind === "chat") closeChat(pane.id);
 	if (pane.kind === "terminal") {
 		terminalCloser.get(pane.id)?.();
 		if (pane.projectId) gateway.send({ t: "pty_close_key", key: pane.id, projectId: pane.projectId });
@@ -105,8 +106,8 @@ export async function forkAtMessage(chatId: string, message: AgentMessage): Prom
 	const source = app.workspaces.flatMap(ws => Object.values(ws.panes)).find(p => p.id === chatId);
 	const paneId = app.addPane({ kind: "chat", projectId: source?.projectId, sessionPath, title: undefined }, { nextTo: chatId, direction: "row" });
 	try {
-		const info = await gateway.openChat(source?.projectId ?? chat.info.projectId, { chatId: paneId, sessionPath });
-		useChats.getState().setInfo(info);
+		// Shares the open with the new pane's own attach.
+		await attachChat({ chatId: paneId, projectId: source?.projectId ?? chat.info.projectId, sessionPath });
 		await gateway.rpc(paneId, { type: "fork", entryId: entry.id }, 120_000);
 		resetTranscript(paneId);
 		await loadHistory(paneId);

@@ -92,7 +92,15 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 	const [agents, setAgents] = useState<AgentFile[]>([]);
 	const [selected, setSelected] = useState<string | null>(null);
 	const [draft, setDraft] = useState<Draft>(EMPTY);
+	/** Cache of the shared draft record (draft chips, contents to load). */
 	const [drafts, setDrafts] = useState<Drafts>({});
+	/**
+	 * The stored version the editor's contents are based on, which saves and publish cleanup
+	 * use as their conflict base. It changes only when this editor loads, saves or explicitly
+	 * adopts a draft, never because the shared cache was refreshed for another reason.
+	 */
+	const editorBase = useRef<{ key: string; savedAt: number | undefined } | null>(null);
+	const baseFor = (key: string) => (editorBase.current?.key === key ? editorBase.current.savedAt : undefined);
 	const overrides = useRoutingStore(s => s.assignments);
 	const [tools, setTools] = useState<ToolInfo[]>(FALLBACK_TOOLS);
 	const [message, setMessage] = useState<string | null>(null);
@@ -143,6 +151,7 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 		const key = agent ? keyOf(agent.scope, agent.name) : drafts[`new:project:${projectId}`] ? `new:project:${projectId}` : "new:user";
 		setSelected(key);
 		setDraft(drafts[key] ?? (agent ? draftFrom(agent) : { ...EMPTY }));
+		editorBase.current = { key, savedAt: drafts[key]?.savedAt };
 		setMessage(null);
 	};
 
@@ -155,13 +164,17 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 		const epoch = editorEpoch.current;
 		const key = draftKey();
 		try {
-			const { drafts: next } = await draftStore.save(key, draft, drafts[key]?.savedAt);
+			const { saved, drafts: next } = await draftStore.save(key, draft, baseFor(key));
 			setDrafts(next);
-			if (epoch === editorEpoch.current) setMessage("Draft saved (not yet visible to omp).");
+			if (epoch !== editorEpoch.current) return;
+			editorBase.current = { key, savedAt: saved.savedAt };
+			setMessage("Draft saved (not yet visible to omp).");
 		} catch (error) {
-			// Adopt the newer stored version as the base, so saving again replaces it on purpose.
 			if (error instanceof DraftConflictError) setDrafts(error.drafts);
-			if (epoch === editorEpoch.current) setMessage((error as Error).message);
+			if (epoch !== editorEpoch.current) return;
+			// The user was told about the newer version: saving again replaces it on purpose.
+			if (error instanceof DraftConflictError) editorBase.current = { key, savedAt: error.drafts[key]?.savedAt };
+			setMessage((error as Error).message);
 		}
 	};
 
@@ -187,7 +200,7 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 		const epoch = editorEpoch.current;
 		const ownsEditor = () => epoch === editorEpoch.current;
 		const savedDraftKey = draftKey();
-		const publishedVersion = drafts[savedDraftKey]?.savedAt;
+		const publishedVersion = baseFor(savedDraftKey);
 		setMessage(null);
 		const frontmatter: Record<string, unknown> = {
 			description: draft.description,
@@ -217,8 +230,11 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 			});
 			// The agent file is committed even if draft cleanup subsequently fails.
 			if (ownsEditor()) {
-				setSelected(keyOf(draft.scope, draft.name));
+				const publishedKey = keyOf(draft.scope, draft.name);
+				setSelected(publishedKey);
 				setDraft(d => ({ ...d, previousName: draft.name }));
+				// The editor now shows the published file, not any stored draft of it.
+				editorBase.current = { key: publishedKey, savedAt: undefined };
 			}
 			let removed: boolean;
 			try {
@@ -361,6 +377,8 @@ function StudioProject({ projectId, setProjectId }: { projectId?: string; setPro
 											setCleanupKey(null);
 											setSelected("new:user");
 											setDraft(d => ({ ...d, previousName: undefined, scope: "user", name: `${d.name}-custom` }));
+											// A copy, not a loaded draft: saving over a stored new-agent draft reports a conflict.
+											editorBase.current = { key: "new:user", savedAt: undefined };
 										}}
 									>
 										<Copy size={11} /> Customize

@@ -111,10 +111,22 @@ test("a failed cleanup can be retried without publishing again", async () => {
 	expect(store.getKv<Drafts>(KEY)).toEqual({});
 });
 
-test("legacy `new` drafts load under `new:user`", async () => {
+test("legacy `new` drafts load under `new:user`, and publishing one does not bring it back", async () => {
 	store.setKv(KEY, { new: { ...draft("legacy"), savedAt: 5 } });
-	const drafts = await createDraftStore(client()).load();
-	expect(drafts["new:user"]?.name).toBe("legacy");
+	const drafts = createDraftStore(client());
+	const loaded = await drafts.load();
+	expect(loaded["new:user"]?.name).toBe("legacy");
+	expect(loaded.new).toBeUndefined();
+
+	expect((await drafts.removePublished("new:user", 5)).removed).toBe(true);
+	expect(store.getKv<Drafts>(KEY)).toEqual({});
+	expect(await drafts.load()).toEqual({});
+});
+
+test("an existing `new:user` draft wins over the legacy alias", async () => {
+	store.setKv(KEY, { new: { ...draft("legacy"), savedAt: 5 }, "new:user": { ...draft("current"), savedAt: 9 } });
+	const loaded = await createDraftStore(client()).load();
+	expect(loaded).toEqual({ "new:user": { ...draft("current"), savedAt: 9 } });
 });
 
 test("a record that never stops changing fails instead of looping", async () => {

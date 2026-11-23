@@ -38,10 +38,17 @@ export class DraftConflictError extends Error {
 	}
 }
 
-/** Older builds stored the user-scope new-agent draft under `new`. */
+/**
+ * Older builds stored the user-scope new-agent draft under `new`. Move it to `new:user`
+ * (keeping an existing `new:user`) and drop the alias, so the next write migrates the
+ * record and a published draft cannot come back from the alias on reload.
+ */
 function normalize(body: Drafts | null | undefined): Drafts {
 	const drafts = { ...body };
-	if (drafts.new?.scope === "user" && !drafts["new:user"]) drafts["new:user"] = drafts.new;
+	if (drafts.new?.scope === "user") {
+		drafts["new:user"] ??= drafts.new;
+		delete drafts.new;
+	}
 	return drafts;
 }
 

@@ -35,7 +35,8 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
   - Fans frames out to subscribed sockets.
   - Tracks unanswered dialogs and "sticky" presentation state (status, widgets, the latest command list) and replays them to late subscribers.
   - Which `extension_ui_request` methods await an answer is defined once, in `protocol/src/ui-requests.ts`, and used by both this replay and the web's renderer. A method Gyre does not know is treated as a dialog: it is replayed and shown with its raw payload and a dismiss action. A contract test compares the list with the pinned omp's `RpcExtensionUIRequest`.
-  - Reaps idle chats (no subscribers, agent not busy) after 10 minutes.
+  - Reaps idle chats (no subscribers, agent not busy) after 10 minutes. This includes a chat whose socket left while it was still opening.
+  - A `close_chat` that arrives while the same socket's `open_chat` for that chat is still starting stops the process that open creates, unless a newer open for the same chat has taken it over.
 - **`server.ts`**: HTTP API and WebSocket.
   - Security: binds to 127.0.0.1 by default, requires a per-launch token, and rejects `Host` headers that are not loopback or listed in `GYRE_ALLOWED_HOSTS` (DNS-rebinding guard). The token is injected into the page only for loopback clients or clients holding the HttpOnly login cookie (`POST /api/login`).
   - Other endpoints include `/api/omp/config` (allowlisted `omp config` keys), `/api/omp/skills`, `/api/agents`, `/api/mcp`, `/api/chats/:id/{restart,kill,plan-prefs}`, `/api/projects/:id/restart-chats`, `/api/ptys`, `/api/fs/stat`, `/api/kv/ui.*`, `/api/remote`.

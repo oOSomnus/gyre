@@ -1,12 +1,15 @@
 /** The app's chat lifecycle, bound to the gateway client and the chat store. */
 import type { PaneSpec } from "@gyre/protocol";
-import { gateway } from "../lib/gateway";
-import { createChatLifecycle, type ChatTarget } from "./chat-lifecycle-core";
+import { ConnectionLostError, gateway } from "../lib/gateway";
+import { ChatDisconnectedError, createChatLifecycle, type ChatTarget } from "./chat-lifecycle-core";
 import { forgetChat, useChats } from "./chats";
 
 export const chatLifecycle = createChatLifecycle(
 	{
-		open: (projectId, opts) => gateway.openChat(projectId, opts),
+		open: (projectId, opts) =>
+			gateway.openChat(projectId, opts).catch(error => {
+				throw error instanceof ConnectionLostError ? new ChatDisconnectedError() : error;
+			}),
 		close: chatId => gateway.closeChat(chatId),
 		subscribe: chatId => gateway.subscribeChat(chatId),
 		onWelcome: listener => gateway.onWelcome(listener),

@@ -11,7 +11,15 @@
  */
 import type { ChatInfo, PaneSpec } from "@gyre/protocol";
 
+/** Rejection of an open whose connection dropped before the gateway answered. */
+export class ChatDisconnectedError extends Error {
+	constructor() {
+		super("connection lost");
+	}
+}
+
 export interface ChatTransport {
+	/** Rejects with `ChatDisconnectedError` when the connection drops before the answer. */
 	open(projectId: string, opts: { chatId: string; sessionPath?: string }): Promise<ChatInfo>;
 	close(chatId: string): void;
 	subscribe(chatId: string): void;
@@ -33,7 +41,9 @@ export interface ChatTarget {
 }
 
 interface Attachment {
-	phase: "opening" | "attached" | "failed";
+	/** `interrupted`: the open lost its connection, so it is retried on the next welcome. */
+	phase: "opening" | "attached" | "failed" | "interrupted";
+	target: ChatTarget;
 	opening?: Promise<ChatInfo>;
 }
 
@@ -42,8 +52,13 @@ export function createChatLifecycle(transport: ChatTransport, sink: ChatSink) {
 
 	transport.onWelcome(() => {
 		// Re-attach after a reconnect; the gateway keeps omp processes alive.
-		// Chats still opening are subscribed by their open request.
-		for (const [chatId, attachment] of attachments) if (attachment.phase === "attached") transport.subscribe(chatId);
+		// Chats still opening are subscribed by their open request; chats that failed in
+		// the gateway (e.g. omp not set up) stay failed until restarted explicitly.
+		for (const [chatId, attachment] of attachments) {
+			if (attachment.phase === "attached") transport.subscribe(chatId);
+			// The open never got an answer: send it again (it attaches to the process if one started).
+			else if (attachment.phase === "interrupted") void attach(attachment.target, { force: true }).catch(() => undefined);
+		}
 	});
 
 	function attach(target: ChatTarget, opts: { force?: boolean } = {}): Promise<ChatInfo> {
@@ -53,8 +68,9 @@ export function createChatLifecycle(transport: ChatTransport, sink: ChatSink) {
 		const status = sink.current(chatId)?.status;
 		if (!opts.force && existing && (status === "ready" || status === "starting")) return Promise.resolve(sink.current(chatId)!);
 
-		const attachment: Attachment = existing ?? { phase: "opening" };
+		const attachment: Attachment = existing ?? { phase: "opening", target };
 		attachment.phase = "opening";
+		attachment.target = target;
 		attachments.set(chatId, attachment);
 		const owns = () => attachments.get(chatId) === attachment;
 		const opening = transport.open(target.projectId, { chatId, sessionPath: target.sessionPath }).then(
@@ -72,7 +88,10 @@ export function createChatLifecycle(transport: ChatTransport, sink: ChatSink) {
 			},
 			(error: unknown) => {
 				attachment.opening = undefined;
-				if (owns()) {
+				if (owns() && error instanceof ChatDisconnectedError) {
+					// Keep what the store shows; the next welcome retries this open.
+					attachment.phase = "interrupted";
+				} else if (owns()) {
 					attachment.phase = "failed";
 					sink.setInfo({
 						chatId,

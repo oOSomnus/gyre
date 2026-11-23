@@ -64,6 +64,13 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 	return (await apiWithEtag<T>(path, init)).body;
 }
 
+/** A request whose connection closed before the gateway answered it. */
+export class ConnectionLostError extends GatewayError {
+	constructor() {
+		super("connection lost");
+	}
+}
+
 type Listener = (message: ServerMessage) => void;
 export type ConnectionState = "connecting" | "open" | "closed" | "unauthorized";
 
@@ -121,7 +128,7 @@ class GatewayClient {
 		ws.onclose = () => {
 			if (this.state === "unauthorized") return;
 			this.#setState("closed");
-			for (const pending of this.#pending.values()) pending.reject(new GatewayError("connection lost"));
+			for (const pending of this.#pending.values()) pending.reject(new ConnectionLostError());
 			const rejected = new Set(this.#pending.keys());
 			this.#queue = this.#queue.filter(message => !("reqId" in message && rejected.has(message.reqId)));
 			this.#pending.clear();

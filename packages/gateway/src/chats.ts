@@ -179,7 +179,12 @@ export class ChatManager {
 			clearTimeout(chat.reapTimer);
 			chat.reapTimer = null;
 		}
-		if (subscriber.connected === false) return;
+		if (subscriber.connected === false) {
+			// The socket left while this chat was opening: reap it like any unwatched chat,
+			// so a reload can still reattach in time but the process cannot leak.
+			if (chat.subscribers.size === 0) this.#scheduleReap(chat);
+			return;
+		}
 		chat.subscribers.add(subscriber);
 		chat.info = { ...chat.info, subscribers: chat.subscribers.size };
 		chat.replayTo(subscriber);

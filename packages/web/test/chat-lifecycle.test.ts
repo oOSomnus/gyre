@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ChatInfo, PaneSpec } from "@gyre/protocol";
-import { createChatLifecycle } from "../src/store/chat-lifecycle-core";
+import { ChatDisconnectedError, createChatLifecycle } from "../src/store/chat-lifecycle-core";
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -95,6 +95,53 @@ test("a reconnect re-subscribes attached chats only", async () => {
 
 	h.reconnect();
 	expect(h.subscribes).toEqual(["ready"]);
+});
+
+test("a forced re-attach cut off by a dropped connection re-attaches on the next welcome", async () => {
+	const h = harness();
+	const first = h.lifecycle.attach(target("c1"));
+	h.opens[0]!.result.resolve(info("c1"));
+	await first;
+	h.store.set("c1", info("c1", "exited"));
+
+	// Restart, but the socket drops before the gateway answers.
+	const restart = h.lifecycle.attach(target("c1"), { force: true });
+	h.opens[1]!.result.reject(new ChatDisconnectedError());
+	await expect(restart).rejects.toThrow("connection lost");
+	// Not reported as a failure, and still attached for gateway messages.
+	expect(h.store.get("c1")?.error).toBeUndefined();
+	expect(h.lifecycle.accepts("c1")).toBe(true);
+
+	h.reconnect();
+	expect(h.opens.map(o => o.chatId)).toEqual(["c1", "c1", "c1"]);
+	h.opens[2]!.result.resolve(info("c1"));
+	await Bun.sleep(0);
+	expect(h.store.get("c1")?.status).toBe("ready");
+	// Attached again: later reconnects subscribe instead of reopening.
+	h.reconnect();
+	expect(h.subscribes).toEqual(["c1"]);
+	expect(h.opens).toHaveLength(3);
+});
+
+test("a chat the gateway failed to start stays failed across reconnects", async () => {
+	const h = harness();
+	const open = h.lifecycle.attach(target("c1"));
+	h.opens[0]!.result.reject(new Error("omp is not installed"));
+	await open.catch(() => undefined);
+	h.reconnect();
+	expect(h.opens).toHaveLength(1);
+	expect(h.subscribes).toEqual([]);
+	expect(h.store.get("c1")?.status).toBe("exited");
+});
+
+test("an interrupted open closed before the reconnect is not retried", async () => {
+	const h = harness();
+	const open = h.lifecycle.attach(target("c1"));
+	h.opens[0]!.result.reject(new ChatDisconnectedError());
+	await open.catch(() => undefined);
+	h.lifecycle.close("c1");
+	h.reconnect();
+	expect(h.opens).toHaveLength(1);
 });
 
 test("closing forgets the chat and ignores its late exit broadcast", async () => {

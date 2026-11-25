@@ -24,7 +24,7 @@ The installer asks a few questions:
 
 Downloads come from the latest [GitHub release](https://github.com/oOSomnus/gyre/releases) and are checked against its `SHA256SUMS`.
 
-Then run `gyre`. For the web version it starts the server and fills the terminal with a status console: the URL to open and the server's status on a coloured bar, its log underneath (PgUp/PgDn scroll, `o` opens the browser, `u` shows the whole URL, `c` copies it, `q` or Ctrl-C stops the server). It never opens a browser on its own; `gyre --open` does. When the output or the error stream is piped, or with `--plain`, it prints plain log lines instead. For the desktop app it opens the window; the app menu works too.
+Then run `gyre`. For the web version it starts the server and fills the terminal with a status console: the URL to open and the server's status on a coloured bar, its log underneath (PgUp/PgDn scroll, `o` opens the browser, `u` shows the whole URL, `c` copies it, `q` or Ctrl-C stops the server). It never opens a browser on its own; `gyre --open` does. When the output or the error stream is piped, when it runs as a background job (`gyre &`), or with `--plain`, it prints plain log lines instead. For the desktop app it opens the window; the app menu works too.
 
 **Options.** Pass flags after `bash -s --`, e.g. `curl -fsSL …/install.sh | bash -s -- --web --with-plannotator --yes`:
 

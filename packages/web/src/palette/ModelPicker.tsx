@@ -70,8 +70,12 @@ export function ModelPicker() {
 			setQuery("");
 			setAssigning(null);
 		}
-		setEfforts({});
 	}, [chatId]);
+
+	// An effort picked in a row belongs to one pass through the model view: a new "Change…"
+	// (or leaving one) starts from the role's own effort again.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: resets on these changes only
+	useEffect(() => setEfforts({}), [chatId, view, assigning]);
 
 	// Each view starts with an empty search; leaving the model view ends a "Change…".
 	// biome-ignore lint/correctness/useExhaustiveDependencies: runs on view changes only

@@ -8,7 +8,7 @@ import { CheckCircle2, Copy, FolderGit2, KeyRound, Loader2, LogOut, MessagesSqua
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { api, gateway, token } from "../lib/gateway";
 import type { ModelPickerRow } from "../lib/omp";
-import { ROLE_EFFORTS, roleSelector, selectorEffort, typedRoleSelector } from "../lib/role-selector";
+import { ROLE_EFFORTS, roleSelector, selectorEffort, selectorModel, typedRoleSelector } from "../lib/role-selector";
 import { useRoles, useRolesStore } from "../lib/roles";
 import { useRoutingStore } from "../lib/config-map";
 import { SHORTCUT_HELP } from "../shell/shortcuts";
@@ -421,7 +421,8 @@ function ModelSearch({
 	const [query, setQuery] = useState("");
 	const [rows, setRows] = useState<ModelPickerRow[]>([]);
 	const [thinking, setThinking] = useState(() => selectorEffort(initial));
-	const [manual, setManual] = useState(initial ?? "");
+	// The prefilled selector shows its model only; its effort is in the effort select, so changing that takes effect.
+	const [manual, setManual] = useState(() => selectorModel(initial) || (initial ?? ""));
 	useEffect(() => {
 		if (!chatId) return;
 		const timer = setTimeout(() => {

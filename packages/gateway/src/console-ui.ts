@@ -8,6 +8,7 @@
  * to the oldest line, o opens the UI in a browser, u shows the whole URL,
  * c copies it (OSC 52), q or Ctrl+C stops Gyre.
  */
+import { readFileSync } from "node:fs";
 import { format } from "node:util";
 import type { GatewayStatus } from "./server";
 
@@ -382,12 +383,37 @@ export interface ConsoleUi {
 	close(): void;
 }
 
-/** Whether `gyre` should take over the terminal: an interactive terminal, not a sidecar or a pipe. */
-export function wantsConsoleUi(env: Record<string, string | undefined> = process.env, argv: string[] = process.argv): boolean {
+/**
+ * Whether this process's group owns its terminal (`gyre`, not `gyre &`). A background job
+ * that set raw mode or read keys would be stopped by the shell. True when it can't tell.
+ */
+export function inForeground(): boolean {
+	try {
+		if (process.platform === "linux") {
+			// /proc/self/stat: "pid (comm) state ppid pgrp session tty_nr tpgid …"; comm may hold spaces.
+			const stat = readFileSync("/proc/self/stat", "utf8");
+			const [, , pgrp, , , tpgid] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+			return Number(tpgid) <= 0 || pgrp === tpgid;
+		}
+		if (process.platform === "darwin" || process.platform.endsWith("bsd")) {
+			const ps = Bun.spawnSync(["ps", "-o", "pgid=", "-o", "tpgid=", "-p", String(process.pid)], { stderr: "ignore" });
+			const [pgrp, tpgid] = ps.stdout.toString().trim().split(/\s+/);
+			return !pgrp || !tpgid || Number(tpgid) <= 0 || pgrp === tpgid;
+		}
+	} catch {}
+	return true;
+}
+
+/** Whether `gyre` should take over the terminal: an interactive terminal, not a sidecar, a pipe or a background job. */
+export function wantsConsoleUi(
+	env: Record<string, string | undefined> = process.env,
+	argv: string[] = process.argv,
+	foreground: () => boolean = inForeground,
+): boolean {
 	// stderr too: the console captures it, so a redirected stderr must keep getting the log.
 	if (!process.stdout.isTTY || !process.stdin.isTTY || !process.stderr.isTTY) return false;
 	if (env.GYRE_EXIT_ON_STDIN_CLOSE === "1" || env.GYRE_PLAIN === "1" || argv.includes("--plain")) return false;
-	return env.TERM !== "dumb";
+	return env.TERM !== "dumb" && foreground();
 }
 
 /**

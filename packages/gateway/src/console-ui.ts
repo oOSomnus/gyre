@@ -5,7 +5,8 @@
  * scripts, CI) keep plain line output, so nothing that parses stdout changes.
  *
  * Keys: PgUp/PgDn/↑/↓ scroll the log, End/G follows it again, Home/g jumps
- * to the oldest line, o opens the UI in a browser, q or Ctrl+C stops Gyre.
+ * to the oldest line, o opens the UI in a browser, u shows the whole URL,
+ * c copies it (OSC 52), q or Ctrl+C stops Gyre.
  */
 import { format } from "node:util";
 import type { GatewayStatus } from "./server";
@@ -32,6 +33,17 @@ export interface ConsoleView {
 	scroll: number;
 	/** A transient note shown in the status bar (e.g. "Opening browser…"). */
 	note?: string;
+	/** `logs` already wrapped for `cols` (see WrappedLog); wrapped here when absent. */
+	wrapped?: readonly LogRow[];
+	/** Show the whole URL in place of the log. */
+	reveal?: boolean;
+}
+
+export interface LogRow {
+	level: LogLevel;
+	/** Set on a line's first row. */
+	time?: string;
+	text: string;
 }
 
 const ESC = "\x1b[";
@@ -133,9 +145,9 @@ function plural(n: number, one: string, many = `${one}s`): string {
 }
 
 /** Every log line wrapped to the log area's width, oldest first. */
-export function logRows(logs: readonly LogLine[], cols: number): Array<{ level: LogLevel; time?: string; text: string }> {
+export function logRows(logs: readonly LogLine[], cols: number): LogRow[] {
 	const width = Math.max(1, cols - TIME_WIDTH);
-	const out: Array<{ level: LogLevel; time?: string; text: string }> = [];
+	const out: LogRow[] = [];
 	for (const line of logs) {
 		wrap(line.text, width).forEach((text, i) => {
 			out.push({ level: line.level, time: i === 0 ? clock(line.at) : undefined, text });
@@ -147,6 +159,58 @@ export function logRows(logs: readonly LogLine[], cols: number): Array<{ level: 
 /** The largest useful scroll offset for this many wrapped rows. */
 export function maxScroll(rowCount: number, rows: number): number {
 	return Math.max(0, rowCount - Math.max(1, rows - HEADER_ROWS));
+}
+
+/**
+ * The log and its rows wrapped for one terminal width, kept in step as lines are added
+ * and dropped, so a redraw or a key press does not re-wrap the whole log.
+ */
+export class WrappedLog {
+	readonly lines: LogLine[] = [];
+	rows: Array<LogRow & { entry: number }> = [];
+	/** Lines dropped from the front: lines[i] is entry `dropped + i`. */
+	#dropped = 0;
+
+	constructor(
+		public cols: number,
+		readonly limit = MAX_LOG_LINES,
+	) {}
+
+	#wrap(line: LogLine, entry: number): Array<LogRow & { entry: number }> {
+		return logRows([line], this.cols).map(row => ({ ...row, entry }));
+	}
+
+	/** Add a line, dropping the oldest past the limit. Returns how many rows the new line takes. */
+	push(line: LogLine): number {
+		const added = this.#wrap(line, this.#dropped + this.lines.length);
+		this.lines.push(line);
+		for (const row of added) this.rows.push(row);
+		if (this.lines.length > this.limit) {
+			const drop = this.lines.length - this.limit;
+			this.lines.splice(0, drop);
+			this.#dropped += drop;
+			const keep = this.rows.findIndex(row => row.entry >= this.#dropped);
+			this.rows.splice(0, keep < 0 ? this.rows.length : keep);
+		}
+		return added.length;
+	}
+
+	/**
+	 * Re-wrap for a new width. `scroll` is rows up from the newest in a view `area` rows
+	 * tall: while scrolled back, the line at the top of the view stays at the top; 0
+	 * (following the log) stays 0. Returns the scroll for the new width.
+	 */
+	resize(cols: number, scroll: number, area: number): number {
+		if (cols === this.cols) return scroll;
+		const top = scroll > 0 ? this.rows[Math.max(0, this.rows.length - scroll - area)]?.entry : undefined;
+		this.cols = cols;
+		this.rows = this.lines.flatMap((line, i) => this.#wrap(line, this.#dropped + i));
+		if (top === undefined) return 0;
+		const limit = Math.max(0, this.rows.length - area);
+		const index = this.rows.findIndex(row => row.entry === top);
+		// Stay scrolled back (not following) even when the anchored line now fits at the bottom.
+		return Math.min(limit, Math.max(Math.min(1, limit), this.rows.length - index - area));
+	}
 }
 
 /** Two status rows on a coloured background, each exactly `cols` wide. */
@@ -176,14 +240,18 @@ export function renderHeader(view: ConsoleView): string[] {
 	}
 
 	// Row 2: what the gateway is doing, then key hints (dropped when there is no room).
+	// The version comes from omp's output: keep it to one printable line.
+	const ompVersion = status.ompVersion ? sanitize(status.ompVersion).replace(/\s+/g, " ").trim() : "";
 	const facts = [
-		status.ompVersion ? `omp ${status.ompVersion}` : "omp —",
+		ompVersion ? `omp ${ompVersion}` : "omp —",
 		status.busy > 0 ? `${plural(status.chats, "chat")} (${status.busy} working)` : plural(status.chats, "chat"),
 		plural(status.clients, "browser"),
 		plural(status.terminals, "terminal"),
 		`up ${uptime(view.now - view.startedAt)}`,
 	].join(" · ");
-	const hints = view.note ?? (view.scroll > 0 ? `↑ ${view.scroll} · End: follow log · q quit` : "o open · PgUp/PgDn scroll · q quit");
+	const hints =
+		view.note ??
+		(view.reveal ? "any key: back · c copy" : view.scroll > 0 ? `↑ ${view.scroll} · End: follow log · q quit` : "o open · u URL · c copy · PgUp/PgDn · q quit");
 	// Hints win over facts (they say how to get back to the live log); facts get the rest.
 	const factsRoom = cols - width(hints) - 3;
 	const line2 = factsRoom >= 24 ? `${pad(` ${facts}`, factsRoom)}  ${hints} ` : pad(` ${facts}`, cols);
@@ -197,7 +265,14 @@ export function renderFrame(view: ConsoleView): string {
 	const rows = Math.max(HEADER_ROWS + 1, view.rows);
 	const header = renderHeader({ ...view, cols });
 	const area = rows - HEADER_ROWS;
-	const all = logRows(view.logs, cols);
+	if (view.reveal) {
+		// The whole URL, wrapped (the status bar shortens it), for reading or selecting.
+		const intro = truncate("The full URL, sign-in token included. c copies it; any other key goes back.", cols);
+		const body = [`${ESC}2m${intro}${ESC}22m`, "", ...wrap(view.url, cols)];
+		const lines = [...header, ...Array.from({ length: area }, (_, i) => body[i] ?? "")];
+		return `${ESC}H${lines.map(line => `${ESC}2K${line}`).join("\r\n")}`;
+	}
+	const all = view.wrapped ?? logRows(view.logs, cols);
 	const scroll = Math.min(view.scroll, maxScroll(all.length, rows));
 	const end = all.length - scroll;
 	const visible = all.slice(Math.max(0, end - area), end);
@@ -221,10 +296,18 @@ export function levelOf(text: string, fallback: LogLevel): LogLevel {
 	return fallback;
 }
 
-export type ConsoleKey = "quit" | "open" | "up" | "down" | "pageUp" | "pageDown" | "top" | "bottom" | "redraw";
+export type ConsoleKey = "quit" | "open" | "copy" | "reveal" | "up" | "down" | "pageUp" | "pageDown" | "top" | "bottom" | "redraw";
 
 /** Keys in one chunk of raw terminal input. */
 export function parseKeys(input: string): ConsoleKey[] {
+	return parseKeyChunk(input).keys;
+}
+
+/**
+ * Keys in one chunk of raw terminal input, and `rest`: an escape sequence cut off at
+ * the end of the chunk, to put in front of the next one.
+ */
+export function parseKeyChunk(input: string): { keys: ConsoleKey[]; rest: string } {
 	const keys: ConsoleKey[] = [];
 	const table: Array<[string, ConsoleKey]> = [
 		["\x1b[5~", "pageUp"],
@@ -246,6 +329,10 @@ export function parseKeys(input: string): ConsoleKey[] {
 		["Q", "quit"],
 		["o", "open"],
 		["O", "open"],
+		["c", "copy"],
+		["C", "copy"],
+		["u", "reveal"],
+		["U", "reveal"],
 		["k", "up"],
 		["j", "down"],
 		["g", "top"],
@@ -261,15 +348,19 @@ export function parseKeys(input: string): ConsoleKey[] {
 			i += hit[0].length;
 			continue;
 		}
-		// Skip an unknown escape sequence whole rather than reading its letters as keys.
+		// Skip an unknown escape sequence, or an Alt+key, whole rather than reading its letters as keys.
 		if (input[i] === "\x1b") {
-			const match = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O.)?/.exec(input.slice(i));
+			const tail = input.slice(i);
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: escape sequences.
+			if (/^\x1b(?:\[[0-?]*[ -/]*|O)?$/.test(tail)) return { keys, rest: tail };
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: escape sequences.
+			const match = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O[ -~]|[ -~])?/.exec(tail);
 			i += match?.[0].length || 1;
 			continue;
 		}
 		i += 1;
 	}
-	return keys;
+	return { keys, rest: "" };
 }
 
 export interface ConsoleUiOptions {
@@ -293,7 +384,8 @@ export interface ConsoleUi {
 
 /** Whether `gyre` should take over the terminal: an interactive terminal, not a sidecar or a pipe. */
 export function wantsConsoleUi(env: Record<string, string | undefined> = process.env, argv: string[] = process.argv): boolean {
-	if (!process.stdout.isTTY || !process.stdin.isTTY) return false;
+	// stderr too: the console captures it, so a redirected stderr must keep getting the log.
+	if (!process.stdout.isTTY || !process.stdin.isTTY || !process.stderr.isTTY) return false;
 	if (env.GYRE_EXIT_ON_STDIN_CLOSE === "1" || env.GYRE_PLAIN === "1" || argv.includes("--plain")) return false;
 	return env.TERM !== "dumb";
 }
@@ -307,8 +399,11 @@ export function startConsoleUi(options: ConsoleUiOptions): ConsoleUi {
 	const write = out.write.bind(out) as (chunk: string) => boolean;
 	const errWrite = process.stderr.write.bind(process.stderr);
 	const saved = { log: console.log, info: console.info, debug: console.debug, warn: console.warn, error: console.error };
-	const logs: LogLine[] = [];
 	let scroll = 0;
+	let reveal = false;
+	/** An escape sequence split across input chunks. */
+	let carry = "";
+	let carryTimer: ReturnType<typeof setTimeout> | undefined;
 	let note: string | undefined;
 	let noteTimer: ReturnType<typeof setTimeout> | undefined;
 	let phase: ConsoleView["phase"] = "running";
@@ -316,26 +411,40 @@ export function startConsoleUi(options: ConsoleUiOptions): ConsoleUi {
 	let pending: ReturnType<typeof setTimeout> | undefined;
 	const startedAt = Date.now();
 
-	const size = () => ({ cols: out.columns || 80, rows: out.rows || 24 });
+	// renderFrame's own minimums, so the wrapped rows match what it draws.
+	const size = () => ({ cols: Math.max(20, out.columns || 80), rows: Math.max(HEADER_ROWS + 1, out.rows || 24) });
+	const log = new WrappedLog(size().cols);
+	/** Re-wrap the log after a width change, keeping the reader's place. */
+	const fit = () => {
+		const { cols, rows } = size();
+		scroll = log.resize(cols, scroll, rows - HEADER_ROWS);
+		scroll = Math.min(scroll, maxScroll(log.rows.length, rows));
+		return { cols, rows };
+	};
 	const draw = () => {
 		pending = undefined;
 		if (closed) return;
-		const { cols, rows } = size();
-		scroll = Math.min(scroll, maxScroll(logRows(logs, cols).length, rows));
-		write(renderFrame({ cols, rows, url: options.url, phase, status: options.status(), startedAt, now: Date.now(), logs, scroll, note }));
+		const { cols, rows } = fit();
+		const view = { cols, rows, url: options.url, phase, status: options.status(), startedAt, now: Date.now(), scroll, note, reveal };
+		write(renderFrame({ ...view, logs: log.lines, wrapped: log.rows }));
 	};
 	const schedule = () => {
 		if (!pending && !closed) pending = setTimeout(draw, 16);
+	};
+	const setNote = (text: string | undefined) => {
+		note = text;
+		if (noteTimer) clearTimeout(noteTimer);
+		if (text) noteTimer = setTimeout(() => ((note = undefined), schedule()), 4000);
+		schedule();
 	};
 
 	const push = (level: LogLevel, raw: string) => {
 		for (const part of sanitize(raw.replace(/\r\n?/g, "\n")).split("\n")) {
 			if (!part.trim()) continue;
-			logs.push({ at: Date.now(), level: levelOf(part, level), text: part });
+			const added = log.push({ at: Date.now(), level: levelOf(part, level), text: part });
 			// Keep the reader's place while they look back.
-			if (scroll > 0) scroll += wrap(part, Math.max(1, size().cols - TIME_WIDTH)).length;
+			if (scroll > 0) scroll += added;
 		}
-		if (logs.length > MAX_LOG_LINES) logs.splice(0, logs.length - MAX_LOG_LINES);
 		schedule();
 	};
 
@@ -360,17 +469,52 @@ export function startConsoleUi(options: ConsoleUiOptions): ConsoleUi {
 
 	for (const line of options.initial ?? []) push(line.level, line.text);
 
+	const copyUrl = () => {
+		// OSC 52: the terminal puts the text on the clipboard (where it supports it).
+		write(`\x1b]52;c;${Buffer.from(options.url).toString("base64")}\x07`);
+		setNote("URL copied (OSC 52)");
+	};
+
 	const onKeys = (data: Buffer | string) => {
-		const { cols, rows } = size();
+		const text = carry + (typeof data === "string" ? data : data.toString("utf8"));
+		const { keys, rest } = parseKeyChunk(text);
+		carry = rest;
+		if (carryTimer) clearTimeout(carryTimer);
+		// A lone Esc (or a sequence that never completes) must not swallow the next key.
+		carryTimer = rest
+			? setTimeout(() => {
+					// Esc on its own goes back from the URL view.
+					if (reveal && carry === "\x1b") {
+						reveal = false;
+						schedule();
+					}
+					carry = "";
+				}, 50)
+			: undefined;
+		if (reveal) {
+			// Any key goes back to the log; c copies; Ctrl+C still stops Gyre (q only goes back).
+			if (text.includes("\x03")) options.onQuit();
+			else if (keys.includes("copy")) copyUrl();
+			else if (text !== rest) reveal = false;
+			schedule();
+			return;
+		}
+		const { rows } = fit();
 		const page = Math.max(1, rows - HEADER_ROWS - 1);
-		const limit = maxScroll(logRows(logs, cols).length, rows);
-		for (const key of parseKeys(typeof data === "string" ? data : data.toString("utf8"))) {
+		const limit = maxScroll(log.rows.length, rows);
+		for (const key of keys) {
 			switch (key) {
 				case "quit":
 					options.onQuit();
 					break;
 				case "open":
 					options.onOpen();
+					break;
+				case "copy":
+					copyUrl();
+					break;
+				case "reveal":
+					reveal = true;
 					break;
 				case "up":
 					scroll = Math.min(limit, scroll + 1);
@@ -403,6 +547,7 @@ export function startConsoleUi(options: ConsoleUiOptions): ConsoleUi {
 		closed = true;
 		if (pending) clearTimeout(pending);
 		if (noteTimer) clearTimeout(noteTimer);
+		if (carryTimer) clearTimeout(carryTimer);
 		clearInterval(tick);
 		out.off("resize", onResize);
 		process.stdin.off("data", onKeys);
@@ -415,7 +560,7 @@ export function startConsoleUi(options: ConsoleUiOptions): ConsoleUi {
 		process.stderr.write = errWrite;
 		// Leave the alternate screen, show the cursor, re-enable wrapping.
 		write(`${ESC}?7h${ESC}?25h${ESC}?1049l`);
-		const tail = logs.slice(-15);
+		const tail = log.lines.slice(-15);
 		if (tail.length) write(`${tail.map(line => `${clock(line.at)}  ${line.text}`).join("\n")}\n`);
 	};
 	const onResize = () => {
@@ -439,12 +584,7 @@ export function startConsoleUi(options: ConsoleUiOptions): ConsoleUi {
 
 	return {
 		log: push,
-		note(text) {
-			note = text;
-			if (noteTimer) clearTimeout(noteTimer);
-			if (text) noteTimer = setTimeout(() => ((note = undefined), schedule()), 4000);
-			schedule();
-		},
+		note: setNote,
 		setStopping() {
 			phase = "stopping";
 			draw();

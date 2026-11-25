@@ -3,6 +3,7 @@
  * subscribed UI connections, and replay of state a reconnecting UI needs.
  */
 import { type ChatInfo, type OmpFrame, type ServerMessage, uiRequestKind } from "@gyre/protocol";
+import { sanitize } from "./console-ui";
 import { OmpProcess, type OmpProcessOptions } from "./omp-process";
 
 export interface Subscriber {
@@ -134,7 +135,8 @@ export class ChatManager {
 				this.options.onExit?.(code, stderrTail);
 				// close() removes the chat first and logs its own line.
 				if (!this.stopping && chat.info.status === "ready" && this.chats.get(chatId) === chat) {
-					const reason = code === 0 ? "" : `: ${stderrTail.trim().split("\n").at(-1) ?? ""}`;
+					// Plain mode prints this line as is: strip escape sequences and controls like the console does.
+					const reason = code === 0 ? "" : `: ${sanitize(stderrTail).trim().split("\n").at(-1) ?? ""}`;
 					this.options.log?.(`Chat ${chatId.slice(0, 8)} exited (code ${code ?? "?"})${reason}`);
 				}
 				chat.busy = false;

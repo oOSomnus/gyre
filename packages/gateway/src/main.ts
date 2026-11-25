@@ -15,7 +15,7 @@
  *   GYRE_PLAIN     "1" prints plain log lines even in a terminal (same as --plain)
  *
  * Flags:
- *   --open   also open the UI in the default browser (never done otherwise)
+ *   --open   also open the UI in the default browser (never done otherwise; `o` in the console)
  *   --plain  no full-screen console
  *
  * In an interactive terminal the gateway shows a full-screen console: the URL
@@ -82,11 +82,15 @@ const gateway = await startGateway({
 const openUrl = `${gateway.url}/#token=${encodeURIComponent(token)}`;
 const openBrowser = () => {
 	const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+	const failed = () => log(`Could not open a browser with ${opener}; open the Gyre URL yourself${ui ? " (u shows it, c copies it)" : ""}.`, "error");
 	try {
-		Bun.spawn([opener, openUrl], { stdout: "ignore", stderr: "ignore" }).unref();
+		const child = Bun.spawn([opener, openUrl], { stdout: "ignore", stderr: "ignore" });
+		child.unref();
 		ui?.note("Opening the browser…");
+		// explorer.exe exits 1 even when it opened the URL, so only other openers' exit codes mean anything.
+		if (opener !== "explorer") void child.exited.then(code => code !== 0 && failed(), failed);
 	} catch {
-		log(`Could not run ${opener}; open the URL above in a browser.`, "error");
+		failed();
 	}
 };
 

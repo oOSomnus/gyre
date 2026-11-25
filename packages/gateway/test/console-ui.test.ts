@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type ConsoleView, HEADER_ROWS, levelOf, parseKeys, renderFrame, renderHeader, sanitize, truncate, uptime, wrap } from "../src/console-ui";
+import { type ConsoleView, HEADER_ROWS, levelOf, logRows, parseKeyChunk, parseKeys, renderFrame, renderHeader, sanitize, truncate, uptime, WrappedLog, wrap } from "../src/console-ui";
 
 const STATUS = { version: "1.2.3", ompVersion: "19.1.0", ompStatus: "ok" as const, clients: 1, chats: 2, busy: 1, terminals: 0 };
 
@@ -56,13 +56,18 @@ describe("status bar", () => {
 		expect(plain(row1 ?? "")).toContain("● ready");
 		expect(plain(row1 ?? "")).toContain("v1.2.3");
 		expect(plain(row2 ?? "")).toContain("omp 19.1.0 · 2 chats (1 working) · 1 browser · 0 terminals · up 1m 5s");
-		expect(plain(row2 ?? "")).toContain("o open · PgUp/PgDn scroll · q quit");
+		expect(plain(row2 ?? "")).toContain("o open · u URL · c copy · PgUp/PgDn · q quit");
 		for (const row of [row1, row2]) expect(Bun.stringWidth(plain(row ?? ""))).toBe(120);
 	});
 	test("reports omp problems and shutdown", () => {
 		expect(plain(renderHeader(view({ status: { ...STATUS, ompStatus: "missing", ompVersion: null } }))[0] ?? "")).toContain("omp not installed");
 		expect(plain(renderHeader(view({ status: { ...STATUS, ompStatus: "no-models" } }))[0] ?? "")).toContain("no model provider");
 		expect(plain(renderHeader(view({ phase: "stopping" }))[0] ?? "")).toContain("stopping…");
+	});
+	test("an odd omp version string is drawn as one printable line", () => {
+		const row2 = renderHeader(view({ cols: 120, status: { ...STATUS, ompVersion: "  19.1.0\n\x1b[31mwarning: x\r\n" } }))[1] ?? "";
+		expect(plain(row2)).toContain("omp 19.1.0 warning: x · 2 chats");
+		expect(Bun.stringWidth(plain(row2))).toBe(120);
 	});
 	test("narrow terminals shorten the URL, then drop the version and hints, never overflow", () => {
 		for (const cols of [20, 40, 60, 80, 100]) {
@@ -92,6 +97,19 @@ describe("frame", () => {
 		expect(rows.slice(HEADER_ROWS).filter(r => r.includes("x"))).toHaveLength(2);
 		expect(screen(renderFrame(view()))).toHaveLength(10);
 	});
+	test("the URL view shows the whole token URL, wrapped, in place of the log", () => {
+		const url = `http://127.0.0.1:7341/#token=${"t".repeat(60)}`;
+		const rows = screen(renderFrame(view({ cols: 30, url, reveal: true, logs })));
+		expect(rows).toHaveLength(10);
+		expect(rows.slice(HEADER_ROWS + 2, HEADER_ROWS + 5).join("")).toBe(url);
+		expect(rows.join("\n")).not.toContain("line ");
+		for (const row of rows) expect(Bun.stringWidth(row)).toBeLessThanOrEqual(30);
+		expect(screen(renderFrame(view({ url, reveal: true })))[1]).toContain("any key: back · c copy");
+	});
+	test("pre-wrapped rows are drawn as given", () => {
+		const wrapped = logRows([{ at: 0, level: "info", text: "cached" }], 100);
+		expect(screen(renderFrame(view({ logs: [], wrapped })))[HEADER_ROWS]).toContain("cached");
+	});
 	test("errors are red", () => {
 		expect(renderFrame(view({ logs: [{ at: 0, level: "error", text: "boom" }] }))).toContain("\x1b[31mboom");
 	});
@@ -106,5 +124,44 @@ describe("keys", () => {
 		expect(parseKeys("o")).toEqual(["open"]);
 		expect(parseKeys("\x1b[1;5Cq")).toEqual(["quit"]);
 		expect(parseKeys("x")).toEqual([]);
+		expect(parseKeys("c")).toEqual(["copy"]);
+		expect(parseKeys("u")).toEqual(["reveal"]);
+	});
+	test("an Alt+key is one input, not Esc and then a command", () => {
+		expect(parseKeys("\x1bq")).toEqual([]);
+		expect(parseKeys("\x1bqq")).toEqual(["quit"]);
+		expect(parseKeys("\x1b\x03")).toEqual(["quit"]);
+	});
+	test("an escape sequence split across chunks is kept for the next chunk", () => {
+		expect(parseKeyChunk("q\x1b[5")).toEqual({ keys: ["quit"], rest: "\x1b[5" });
+		expect(parseKeyChunk("\x1b[5" + "~")).toEqual({ keys: ["pageUp"], rest: "" });
+		expect(parseKeyChunk("\x1b")).toEqual({ keys: [], rest: "\x1b" });
+		expect(parseKeyChunk("\x1bO")).toEqual({ keys: [], rest: "\x1bO" });
+	});
+});
+
+describe("wrapped log", () => {
+	const line = (i: number, text = `${i}`.padEnd(30, ".")) => ({ at: 0, level: "info" as const, text });
+
+	test("keeps its rows in step with lines added and dropped", () => {
+		const log = new WrappedLog(40, 3);
+		expect(log.push(line(0))).toBe(1);
+		expect(log.push(line(1, "x".repeat(70)))).toBe(3);
+		log.push(line(2));
+		log.push(line(3));
+		expect(log.lines.map(l => l.text[0])).toEqual(["x", "2", "3"]);
+		expect(log.rows.map(r => r.text)).toEqual(logRows(log.lines, 40).map(r => r.text));
+	});
+	test("a width change re-wraps and keeps the line at the top of the view there", () => {
+		const log = new WrappedLog(40);
+		for (let i = 0; i < 20; i++) log.push(line(i));
+		// 20 one-row lines, a 5-row view scrolled up 10: line 5 is at the top.
+		expect(log.rows[log.rows.length - 10 - 5]?.text.startsWith("5.")).toBe(true);
+		const scroll = log.resize(25, 10, 5);
+		expect(log.rows).toHaveLength(40);
+		expect(log.rows[log.rows.length - scroll - 5]).toMatchObject({ entry: 5, time: expect.any(String) });
+		// Following the log stays following; an unchanged width keeps the offset.
+		expect(log.resize(40, 0, 5)).toBe(0);
+		expect(log.resize(40, 7, 5)).toBe(7);
 	});
 });

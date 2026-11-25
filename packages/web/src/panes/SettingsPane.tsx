@@ -8,7 +8,7 @@ import { CheckCircle2, Copy, FolderGit2, KeyRound, Loader2, LogOut, MessagesSqua
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { api, gateway, token } from "../lib/gateway";
 import type { ModelPickerRow } from "../lib/omp";
-import { ROLE_EFFORTS, roleSelector, selectorEffort } from "../lib/role-selector";
+import { ROLE_EFFORTS, roleSelector, selectorEffort, typedRoleSelector } from "../lib/role-selector";
 import { useRoles, useRolesStore } from "../lib/roles";
 import { useRoutingStore } from "../lib/config-map";
 import { SHORTCUT_HELP } from "../shell/shortcuts";
@@ -433,8 +433,7 @@ function ModelSearch({
 		return () => clearTimeout(timer);
 	}, [chatId, query]);
 	const pick = (selector: string) => onPick(roleSelector(selector, thinking));
-	// A typed selector that names its own effort, or a fallback list, is saved as typed.
-	const pickManual = (selector: string) => onPick(selectorEffort(selector) || selector.includes(",") ? selector : roleSelector(selector, thinking));
+	const pickManual = (selector: string) => onPick(typedRoleSelector(selector, thinking));
 	return (
 		<div className="border-y px-3 py-2" style={{ borderColor: "var(--border-strong)", background: "var(--panel)" }}>
 			<div className="mb-2 flex items-center gap-2">

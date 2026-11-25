@@ -44,6 +44,8 @@ export interface GatewayConfig {
 	allowedHosts?: string[];
 	/** Override the omp CLI wrapper (tests). */
 	ompCli?: OmpCli;
+	/** Lifecycle log lines (omp checks, browser connections, chat starts and exits). */
+	log?: (line: string) => void;
 }
 
 interface SocketData {
@@ -59,9 +61,23 @@ interface PendingOpen {
 	cancelled: boolean;
 }
 
+/** A snapshot of what the gateway is doing, for the console's status bar. */
+export interface GatewayStatus {
+	version: string;
+	ompVersion: string | null;
+	ompStatus: OmpStatus;
+	/** Authenticated browser connections. */
+	clients: number;
+	/** Running chats (omp processes) and how many of them are working. */
+	chats: number;
+	busy: number;
+	terminals: number;
+}
+
 export interface Gateway {
 	port: number;
 	url: string;
+	status(): GatewayStatus;
 	stop(): Promise<void>;
 	chats: ChatManager;
 	store: Store;
@@ -121,6 +137,8 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 		void work.finally(() => inFlight.delete(work)).catch(() => {});
 		return work;
 	};
+	const log = config.log ?? (() => {});
+	let clients = 0;
 	mkdirSync(config.dataDir, { recursive: true });
 	const store = new Store(join(config.dataDir, "gyre.db"));
 	const planPrefsDir = join(config.dataDir, "plan-prefs");
@@ -132,6 +150,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 		idleReapMs: config.idleReapMs,
 		createProcess: config.createProcess,
 		extensions: config.extensions,
+		log,
 		envFor: chatId => ({
 			GYRE_PLAN_PREFS: planPrefsPath(chatId),
 			// The extension reads role selectors (model + effort) through the same omp.
@@ -153,6 +172,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 	const checkOmp = async (): Promise<OmpStatus> => {
 		ompVersion = await detectOmpVersion(config.ompPath);
 		ompStatus = await detectOmpStatus(ompCli, ompVersion);
+		log(ompVersion === null ? "omp not found: install omp, then use Re-check in Gyre" : `omp ${ompVersion}: ${ompStatus === "ok" ? "ready" : ompStatus}`);
 		return ompStatus;
 	};
 	// Listing models takes seconds; do not hold up startup for it.
@@ -553,6 +573,8 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 		if (!ws.data.authed) {
 			if (message.t === "hello" && message.token === config.token) {
 				ws.data.authed = true;
+				clients += 1;
+				log(`Browser connected (${clients} open)`);
 				send({ t: "welcome", version: GATEWAY_VERSION, ompVersion, ompStatus });
 			} else {
 				send({ t: "error", message: "unauthorized" });
@@ -763,6 +785,10 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			},
 			close(ws, code) {
 				if (DEBUG) console.error(`[ws] close ${code}`);
+				if (ws.data.authed) {
+					clients -= 1;
+					if (!stopping) log(`Browser disconnected (${clients} open)`);
+				}
 				ws.data.subscriber.connected = false;
 				chats.unsubscribeAll(ws.data.subscriber);
 				// Terminals keep running for the pane to reattach; just stop streaming to this socket.
@@ -778,6 +804,18 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 		url: `http://${config.host.includes(":") ? `[${config.host}]` : config.host}:${port}`,
 		chats,
 		store,
+		status: () => {
+			const running = [...chats.chats.values()].filter(chat => chat.info.status !== "exited");
+			return {
+				version: GATEWAY_VERSION,
+				ompVersion,
+				ompStatus,
+				clients,
+				chats: running.length,
+				busy: running.filter(chat => chat.busy).length,
+				terminals: ptys.ptys.size,
+			};
+		},
 		stop() {
 			if (stopPromise) return stopPromise;
 			stopping = true;

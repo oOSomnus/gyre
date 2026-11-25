@@ -24,7 +24,7 @@ The installer asks a few questions:
 
 Downloads come from the latest [GitHub release](https://github.com/oOSomnus/gyre/releases) and are checked against its `SHA256SUMS`.
 
-Then run `gyre`. For the web version it starts the server and opens your browser (`gyre --no-open` prints the URL instead; Ctrl-C stops the server). For the desktop app it opens the window; the app menu works too.
+Then run `gyre`. For the web version it starts the server and fills the terminal with a status console: the URL to open and the server's status on a coloured bar, its log underneath (PgUp/PgDn scroll, `o` opens the browser, `q` or Ctrl-C stops the server). It never opens a browser on its own; `gyre --open` does. When the output is piped, or with `--plain`, it prints plain log lines instead. For the desktop app it opens the window; the app menu works too.
 
 **Options.** Pass flags after `bash -s --`, e.g. `curl -fsSL …/install.sh | bash -s -- --web --with-plannotator --yes`:
 
@@ -80,7 +80,7 @@ A project is a folder on the machine running Gyre; its chats, terminals and file
 ## Remote access
 
 ```bash
-GYRE_HOST=0.0.0.0 GYRE_ALLOWED_HOSTS=my-laptop.tailnet.ts.net GYRE_TOKEN='replace-with-a-long-secret' gyre --no-open
+GYRE_HOST=0.0.0.0 GYRE_ALLOWED_HOSTS=my-laptop.tailnet.ts.net GYRE_TOKEN='replace-with-a-long-secret' gyre
 ```
 
 Open `http://my-laptop.tailnet.ts.net:7341/#token=<secret>` once on the other device; a 30-day cookie remembers it. SSH port forwarding needs none of these settings.
@@ -94,7 +94,7 @@ Requirements: omp with a model provider, Bun ≥ 1.4.4 (this repo pins 1.4.5), a
 ```bash
 bun install
 bun run --cwd packages/web build
-bun packages/gateway/src/main.ts      # prints the URL; add --open to open it
+bun packages/gateway/src/main.ts      # status console with the URL; --open also opens it, --plain for plain logs
 ```
 
 UI with hot reload:

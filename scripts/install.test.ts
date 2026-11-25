@@ -122,6 +122,15 @@ describe.skipIf(!supported)("install.sh", () => {
 		expect(leftovers()).toEqual([]);
 	});
 
+	test("the launcher never opens the browser unless asked", () => {
+		startFrom(v1);
+		const gyre = (...args: string[]) => Bun.spawnSync([launcher, ...args], { env: { PATH: "/usr/bin:/bin", HOME: home } }).stdout.toString().trim();
+		expect(gyre()).toBe("gateway 0.1.0");
+		expect(gyre("--no-open")).toBe("gateway 0.1.0");
+		expect(gyre("--open")).toBe("gateway 0.1.0 --open");
+		expect(gyre("--plain", "x")).toBe("gateway 0.1.0 --plain x");
+	});
+
 	test("`gyre update` replaces the release and the launcher together", () => {
 		startFrom(v1);
 		const result = update(v2);

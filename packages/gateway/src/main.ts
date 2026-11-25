@@ -12,13 +12,22 @@
  *   GYRE_OMP_ARGS  extra omp CLI args, space-separated (e.g. "--no-session" for tests)
  *   GYRE_OMP_EXTENSION  Gyre's omp extension (plan mode); "0" disables it
  *   GYRE_ALLOWED_HOSTS  extra Host names accepted for remote access, comma-separated ("*" = any)
+ *   GYRE_PLAIN     "1" prints plain log lines even in a terminal (same as --plain)
  *
- * Prints one line `GYRE_READY {"url":...,"port":...,"token":...}` on stdout
- * once listening, for the desktop shell to pick up.
+ * Flags:
+ *   --open   also open the UI in the default browser (never done otherwise; `o` in the console)
+ *   --plain  no full-screen console
+ *
+ * In an interactive terminal the gateway shows a full-screen console: the URL
+ * and status on a coloured bar, the log underneath (see console-ui.ts).
+ * Otherwise (the desktop sidecar, pipes) it prints one line
+ * `GYRE_READY {"url":...,"port":...,"token":...}` on stdout once listening,
+ * for the desktop shell to pick up, and plain log lines on stderr.
  */
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { type ConsoleUi, type LogLevel, startConsoleUi, wantsConsoleUi } from "./console-ui";
 import { pathWithBun, resolveOmp } from "./omp-path";
 import { startGateway } from "./server";
 
@@ -46,6 +55,15 @@ const ompPath = resolveOmp();
 // Every omp spawn inherits process.env, so this lets omp find bun.
 const path = pathWithBun(process.env, ompPath);
 if (path) process.env.PATH = path;
+const fullScreen = wantsConsoleUi();
+let ui: ConsoleUi | undefined;
+/** Lines logged while the gateway starts, shown once the console is up. */
+const early: Array<{ level: LogLevel; text: string }> = [];
+const log = (text: string, level: LogLevel = "info") => {
+	if (ui) ui.log(level, text);
+	else if (fullScreen) early.push({ level, text });
+	else console.error(text);
+};
 const gateway = await startGateway({
 	host: process.env.GYRE_HOST ?? "127.0.0.1",
 	port: Number(process.env.GYRE_PORT ?? 7341),
@@ -58,28 +76,48 @@ const gateway = await startGateway({
 	allowedHosts: process.env.GYRE_ALLOWED_HOSTS?.split(",")
 		.map(h => h.trim())
 		.filter(Boolean),
+	log,
 });
 
-console.log(`GYRE_READY ${JSON.stringify({ url: gateway.url, port: gateway.port, token })}`);
-console.error(`Gyre gateway listening on ${gateway.url}`);
 const openUrl = `${gateway.url}/#token=${encodeURIComponent(token)}`;
-console.error(`Open Gyre: ${openUrl}`);
-// `gyre --open` (the installed launcher's default) opens the UI in the default browser.
-if (process.argv.includes("--open") || process.env.GYRE_OPEN === "1") {
+const openBrowser = () => {
 	const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+	const failed = () => log(`Could not open a browser with ${opener}; open the Gyre URL yourself${ui ? " (u shows it, c copies it)" : ""}.`, "error");
 	try {
-		Bun.spawn([opener, openUrl], { stdout: "ignore", stderr: "ignore" }).unref();
+		const child = Bun.spawn([opener, openUrl], { stdout: "ignore", stderr: "ignore" });
+		child.unref();
+		ui?.note("Opening the browser…");
+		// explorer.exe exits 1 even when it opened the URL, so only other openers' exit codes mean anything.
+		if (opener !== "explorer") void child.exited.then(code => code !== 0 && failed(), failed);
 	} catch {
-		console.error(`Could not run ${opener}; open the URL above in a browser.`);
+		failed();
 	}
+};
+
+if (fullScreen) {
+	ui = startConsoleUi({
+		url: openUrl,
+		status: () => gateway.status(),
+		onQuit: () => void shutdown(),
+		onOpen: openBrowser,
+		initial: [{ level: "info", text: `Gyre gateway listening on ${gateway.url}` }, ...early],
+	});
+} else {
+	console.log(`GYRE_READY ${JSON.stringify({ url: gateway.url, port: gateway.port, token })}`);
+	console.error(`Gyre gateway listening on ${gateway.url}`);
+	console.error(`Open Gyre: ${openUrl}`);
 }
-if (!extension) console.error("Gyre omp extension not found: plan mode is unavailable");
+// The browser opens only when asked: `gyre --open`, or `o` in the console.
+if (process.argv.includes("--open")) openBrowser();
+if (!extension) log("Gyre omp extension not found: plan mode is unavailable", "warn");
 
 let stopping = false;
 const shutdown = async () => {
 	if (stopping) return;
 	stopping = true;
+	ui?.setStopping();
 	await gateway.stop();
+	ui?.close();
 	process.exit(0);
 };
 process.on("SIGINT", shutdown);

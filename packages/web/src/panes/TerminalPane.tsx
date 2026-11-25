@@ -117,7 +117,9 @@ export function TerminalPane({ pane, focused }: { pane: PaneSpec; focused: boole
 
 	return (
 		<div className="relative h-full p-1" style={{ background: THEMES[theme].xterm.background }}>
-			<div ref={host} className="h-full w-full" />
+			{/* xterm types into a zero-size helper textarea that marks skip; the host is the mark
+			    target instead, and activating it (or clicking anywhere in it) focuses the shell. */}
+			<div ref={host} className="h-full w-full" data-jump="terminal" aria-label="Terminal input" onClick={() => termRef.current?.focus()} />
 			{selection.trim() && (
 				<button
 					type="button"

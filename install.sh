@@ -360,7 +360,7 @@ step "What to install"
 if [ -z "$WHAT" ]; then
 	if [ "$DESKTOP_OK" = 1 ]; then
 		choose "Which version of Gyre?" 1 \
-			"Web: a local server that opens Gyre in your browser" \
+			"Web: a local server you open in your browser" \
 			"Desktop app: a native window (.deb or AppImage)"
 		case "$CHOICE" in 1) WHAT=web ;; 2) WHAT=desktop ;; esac
 	else
@@ -448,10 +448,10 @@ install_web() {
 		restore_web
 		die "could not move the new release into $INSTALL_DIR; kept the previous install"
 	fi
-	if ! write_launcher --web "# \`gyre --no-open\` prints the URL instead of opening the browser.
-open=--open
-if [ \"\${1:-}\" = \"--no-open\" ]; then open=; shift; fi
-exec \"$INSTALL_DIR/gyre-gateway\" \$open \"\$@\""; then
+	if ! write_launcher --web "# Shows the URL and status; \`gyre --open\` also opens the browser.
+# --no-open is accepted for older scripts (the browser never opens unless asked).
+if [ \"\${1:-}\" = \"--no-open\" ]; then shift; fi
+exec \"$INSTALL_DIR/gyre-gateway\" \"\$@\""; then
 		restore_web
 		die "could not write the launcher $BIN_DIR/gyre; kept the previous install"
 	fi
@@ -705,8 +705,8 @@ else
 fi
 [ "$UPDATE" = 1 ] || case "$WHAT" in
 	web)
-		say "  Run ${B}gyre${R} to start the local server and open Gyre in your browser."
-		note "${B}gyre --no-open${R}${D} prints the URL instead. Ctrl-C stops the server."
+		say "  Run ${B}gyre${R} to start the local server; it shows the URL to open in your browser."
+		note "${B}gyre --open${R}${D} also opens the browser. q or Ctrl-C stops the server."
 		;;
 	desktop) say "  Run ${B}gyre${R}, or open Gyre from your app menu." ;;
 esac

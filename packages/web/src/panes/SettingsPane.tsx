@@ -8,6 +8,7 @@ import { CheckCircle2, Copy, FolderGit2, KeyRound, Loader2, LogOut, MessagesSqua
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { api, gateway, token } from "../lib/gateway";
 import type { ModelPickerRow } from "../lib/omp";
+import { ROLE_EFFORTS, roleSelector, selectorEffort, selectorModel, typedRoleSelector } from "../lib/role-selector";
 import { useRoles, useRolesStore } from "../lib/roles";
 import { useRoutingStore } from "../lib/config-map";
 import { SHORTCUT_HELP } from "../shell/shortcuts";
@@ -405,11 +406,23 @@ function Providers() {
 
 // ---------------------------------------------------------------- roles
 
-function ModelSearch({ chatId, onPick, onClose }: { chatId: string | null; onPick: (selector: string) => void; onClose: () => void }) {
+function ModelSearch({
+	chatId,
+	initial,
+	onPick,
+	onClose,
+}: {
+	chatId: string | null;
+	/** The role's current selector: its effort carries over to a newly picked model. */
+	initial?: string;
+	onPick: (selector: string) => void;
+	onClose: () => void;
+}) {
 	const [query, setQuery] = useState("");
 	const [rows, setRows] = useState<ModelPickerRow[]>([]);
-	const [thinking, setThinking] = useState("");
-	const [manual, setManual] = useState("");
+	const [thinking, setThinking] = useState(() => selectorEffort(initial));
+	// The prefilled selector shows its model only; its effort is in the effort select, so changing that takes effect.
+	const [manual, setManual] = useState(() => selectorModel(initial) || (initial ?? ""));
 	useEffect(() => {
 		if (!chatId) return;
 		const timer = setTimeout(() => {
@@ -420,7 +433,8 @@ function ModelSearch({ chatId, onPick, onClose }: { chatId: string | null; onPic
 		}, 120);
 		return () => clearTimeout(timer);
 	}, [chatId, query]);
-	const pick = (selector: string) => onPick(thinking ? `${selector}:${thinking}` : selector);
+	const pick = (selector: string) => onPick(roleSelector(selector, thinking));
+	const pickManual = (selector: string) => onPick(typedRoleSelector(selector, thinking));
 	return (
 		<div className="border-y px-3 py-2" style={{ borderColor: "var(--border-strong)", background: "var(--panel)" }}>
 			<div className="mb-2 flex items-center gap-2">
@@ -431,10 +445,10 @@ function ModelSearch({ chatId, onPick, onClose }: { chatId: string | null; onPic
 					value={query}
 					onChange={e => setQuery(e.target.value)}
 				/>
-				<select className="gy-input" value={thinking} onChange={e => setThinking(e.target.value)} title="Thinking level for this role">
-					{["", "off", "minimal", "low", "medium", "high", "xhigh", "max"].map(t => (
+				<select className="gy-input" value={thinking} onChange={e => setThinking(e.target.value)} title="Effort saved with this role's model" aria-label="Role effort">
+					{["", ...ROLE_EFFORTS].map(t => (
 						<option key={t} value={t}>
-							{t || "thinking: default"}
+							{t ? `effort: ${t}` : "effort: inherit"}
 						</option>
 					))}
 				</select>
@@ -463,7 +477,7 @@ function ModelSearch({ chatId, onPick, onClose }: { chatId: string | null; onPic
 				className="mt-2 flex gap-2"
 				onSubmit={e => {
 					e.preventDefault();
-					if (manual.trim()) pick(manual.trim());
+					if (manual.trim()) pickManual(manual.trim());
 				}}
 			>
 				<input
@@ -523,7 +537,9 @@ function Roles() {
 					</button>
 				)}
 			</div>
-			{editing === role.id && <ModelSearch chatId={chatId} onPick={selector => void save(role.id, selector)} onClose={() => setEditing(null)} />}
+			{editing === role.id && (
+					<ModelSearch chatId={chatId} initial={assignments[role.id]} onPick={selector => void save(role.id, selector)} onClose={() => setEditing(null)} />
+				)}
 		</div>
 	);
 	return (
@@ -582,7 +598,7 @@ function Roles() {
 				</button>
 			</form>
 			{editing && !roles.some(r => r.id === editing) && (
-				<ModelSearch chatId={chatId} onPick={selector => void save(editing, selector)} onClose={() => setEditing(null)} />
+				<ModelSearch chatId={chatId} initial={assignments[editing]} onPick={selector => void save(editing, selector)} onClose={() => setEditing(null)} />
 			)}
 			<Head>Storage</Head>
 			<div className="gy-row">

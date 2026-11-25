@@ -3,6 +3,7 @@
  * subscribed UI connections, and replay of state a reconnecting UI needs.
  */
 import { type ChatInfo, type OmpFrame, type ServerMessage, uiRequestKind } from "@gyre/protocol";
+import { sanitize } from "./console-ui";
 import { OmpProcess, type OmpProcessOptions } from "./omp-process";
 
 export interface Subscriber {
@@ -23,6 +24,8 @@ export interface ChatManagerOptions {
 	envFor?: (chatId: string) => Record<string, string | undefined>;
 	/** Called when a chat's omp process exits, with its stderr tail. */
 	onExit?: (code: number | null, stderrTail: string) => void;
+	/** Lifecycle log lines. */
+	log?: (line: string) => void;
 }
 
 /** Frames whose latest value a late subscriber should receive. */
@@ -130,6 +133,12 @@ export class ChatManager {
 			},
 			onExit: (code, stderrTail) => {
 				this.options.onExit?.(code, stderrTail);
+				// close() removes the chat first and logs its own line.
+				if (!this.stopping && chat.info.status === "ready" && this.chats.get(chatId) === chat) {
+					// Plain mode prints this line as is: strip escape sequences and controls like the console does.
+					const reason = code === 0 ? "" : `: ${sanitize(stderrTail).trim().split("\n").at(-1) ?? ""}`;
+					this.options.log?.(`Chat ${chatId.slice(0, 8)} exited (code ${code ?? "?"})${reason}`);
+				}
 				chat.busy = false;
 				chat.pendingUi.clear();
 				chat.setInfo({
@@ -167,8 +176,10 @@ export class ChatManager {
 			const state = await process.call<{ sessionFile?: string }>({ type: "get_state" }).catch(() => undefined);
 			if (!process.running || this.stopping) throw new Error("omp exited during initialization");
 			chat.setInfo({ status: "ready", sessionPath: state?.sessionFile ?? params.sessionPath, error: undefined });
+			this.options.log?.(`Chat ${chatId.slice(0, 8)} started in ${params.cwd}`);
 		} catch (error) {
 			chat.setInfo({ status: "exited", error: error instanceof Error ? error.message : String(error) });
+			if (!this.stopping) this.options.log?.(`Chat ${chatId.slice(0, 8)} failed to start: ${error instanceof Error ? error.message : String(error)}`);
 			await process.stop().catch(() => undefined);
 		}
 		return chat;
@@ -225,6 +236,7 @@ export class ChatManager {
 		if (!chat) return;
 		this.chats.delete(chatId);
 		if (chat.reapTimer) clearTimeout(chat.reapTimer);
+		if (!this.stopping && chat.info.status !== "exited") this.options.log?.(`Chat ${chatId.slice(0, 8)} stopped`);
 		await chat.process.stop();
 	}
 

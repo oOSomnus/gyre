@@ -155,9 +155,11 @@ export function TopBar() {
 	};
 
 	return (
-		<header className="gy-topbar relative flex h-[52px] shrink-0 items-center gap-2 px-3">
+		// Three columns, the outer two always equal, so the gyroscope sits at the exact centre
+		// whatever the side controls hold.
+		<header className="gy-topbar relative grid h-[52px] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-3">
 			{/* left */}
-			<div className="flex min-w-0 flex-1 items-center gap-2">
+			<div className="flex min-w-0 items-center gap-2">
 				<span className="hidden font-mono text-[12px] font-semibold tracking-[0.2em] uppercase md:inline" style={{ color: "var(--chrome-text)" }}>
 					Gyre
 				</span>
@@ -174,11 +176,7 @@ export function TopBar() {
 						{conn}
 					</span>
 				)}
-			</div>
-
-			{/* center */}
-			<div className="flex items-center gap-2">
-				<div className="gy-chrome-group hidden sm:inline-flex">
+				<div className="gy-chrome-group ml-auto hidden shrink-0 sm:inline-flex">
 					<span className="flex items-center px-2 font-mono text-[9.5px] tracking-widest uppercase" style={{ color: "var(--chrome-muted)" }}>
 						modes
 					</span>
@@ -189,92 +187,96 @@ export function TopBar() {
 						<span className="gy-led" /> Kbd
 					</button>
 				</div>
-				<Gyroscope
-					state={waiting > 0 ? "needs" : busy ? "working" : "idle"}
-					size={40}
-					className="mx-2"
-					title={waiting > 0 ? `${waiting} chat(s) need you · open the palette` : busy ? "Agents are working · open the palette" : "Gyre · open the palette"}
-					onClick={() => openPalette()}
-				/>
-				<button type="button" className="gy-chrome-icon" title={waiting ? `${waiting} chat(s) need you` : "Nothing needs you"} onClick={jumpToWaiting} data-jump="needs-you">
+			</div>
+
+			{/* center */}
+			<Gyroscope
+				state={waiting > 0 ? "needs" : busy ? "working" : "idle"}
+				size={40}
+				className="mx-2"
+				title={waiting > 0 ? `${waiting} chat(s) need you · open the palette` : busy ? "Agents are working · open the palette" : "Gyre · open the palette"}
+				onClick={() => openPalette()}
+			/>
+
+			{/* right */}
+			<div className="flex min-w-0 items-center gap-2">
+				<button type="button" className="gy-chrome-icon shrink-0" title={waiting ? `${waiting} chat(s) need you` : "Nothing needs you"} onClick={jumpToWaiting} data-jump="needs-you">
 					<Bell size={14} />
 					<span className={`gy-badge ${waiting ? "hot" : ""}`}>
 						{waiting}
 					</span>
 				</button>
-				<button type="button" className="gy-chrome-icon" title={`${subagents} sub-agent(s) running`} onClick={() => app.addPane({ kind: "tasks" })} data-jump="tasks">
+				<button type="button" className="gy-chrome-icon shrink-0" title={`${subagents} sub-agent(s) running`} onClick={() => app.addPane({ kind: "tasks" })} data-jump="tasks">
 					<Bot size={14} />
 					<span className="gy-badge">{subagents}</span>
 				</button>
-			</div>
-
-			{/* right */}
-			<div className="flex min-w-0 flex-1 items-center justify-end gap-2">
-				{editing && active ? (
-					<input
-						autoFocus
-						defaultValue={active.name}
-						className="gy-input h-7 w-28"
-						onBlur={e => {
-							renameWorkspace(active.id, e.target.value.trim() || active.name);
-							setEditing(false);
-						}}
-						onKeyDown={e => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-					/>
-				) : (
-					<Dropdown.Root>
-						<Dropdown.Trigger asChild>
-							<button type="button" className="truncate font-mono text-[12px] font-semibold tracking-[0.18em] uppercase" style={{ color: "var(--chrome-text)" }} data-jump="workspace-menu">
-								{active?.name ?? "—"}
-							</button>
-						</Dropdown.Trigger>
-						<Dropdown.Portal>
-							<Dropdown.Content sideOffset={8} align="end" className="gy-menu">
-								<Dropdown.Item className={itemCls} onSelect={() => setEditing(true)}>
-									<Pencil size={13} /> Rename workspace
-								</Dropdown.Item>
-								{active && (
-									<Dropdown.Item className={itemCls} onSelect={() => deleteWorkspace(active.id)}>
-										<Trash2 size={13} /> Delete workspace
+				<div className="ml-auto flex min-w-0 items-center justify-end gap-2">
+					{editing && active ? (
+						<input
+							autoFocus
+							defaultValue={active.name}
+							className="gy-input h-7 w-28"
+							onBlur={e => {
+								renameWorkspace(active.id, e.target.value.trim() || active.name);
+								setEditing(false);
+							}}
+							onKeyDown={e => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+						/>
+					) : (
+						<Dropdown.Root>
+							<Dropdown.Trigger asChild>
+								<button type="button" className="truncate font-mono text-[12px] font-semibold tracking-[0.18em] uppercase" style={{ color: "var(--chrome-text)" }} data-jump="workspace-menu">
+									{active?.name ?? "—"}
+								</button>
+							</Dropdown.Trigger>
+							<Dropdown.Portal>
+								<Dropdown.Content sideOffset={8} align="end" className="gy-menu">
+									<Dropdown.Item className={itemCls} onSelect={() => setEditing(true)}>
+										<Pencil size={13} /> Rename workspace
 									</Dropdown.Item>
-								)}
-								<Dropdown.Separator className="my-1 h-px" style={{ background: "var(--border-strong)" }} />
-								<Dropdown.Label className="px-2 pt-1 pb-0.5 font-mono text-[9.5px] tracking-[0.16em] uppercase" style={{ color: "var(--muted)" }}>
-									Theme
-								</Dropdown.Label>
-								<Dropdown.RadioGroup value={theme} onValueChange={value => isThemeId(value) && setTheme(value)} className="grid grid-cols-2">
-									{["Light", "Dark"].map(scheme => (
-										<span key={scheme} className="px-2 pb-0.5 pl-7 font-mono text-[9px] tracking-[0.14em] uppercase" style={{ color: "var(--muted)" }}>
-											{scheme}
-										</span>
-									))}
-									{THEME_ORDER.map(id => (
-										<Dropdown.RadioItem key={id} value={id} className={itemCls} data-testid={`menu-theme-${id}`}>
-											<span className="w-3 text-center">{theme === id ? "●" : ""}</span>
-											<span className="flex-1">{THEMES[id].label}</span>
-											<ThemeSwatch theme={THEMES[id]} height={8} />
-										</Dropdown.RadioItem>
-									))}
-								</Dropdown.RadioGroup>
-							</Dropdown.Content>
-						</Dropdown.Portal>
-					</Dropdown.Root>
-				)}
-				<div className="flex items-center gap-1.5 overflow-x-auto">
-					{workspaces.map(ws => (
-						<Minimap key={ws.id} ws={ws} active={ws.id === activeWorkspaceId} onClick={() => switchWorkspace(ws.id)} />
-					))}
+									{active && (
+										<Dropdown.Item className={itemCls} onSelect={() => deleteWorkspace(active.id)}>
+											<Trash2 size={13} /> Delete workspace
+										</Dropdown.Item>
+									)}
+									<Dropdown.Separator className="my-1 h-px" style={{ background: "var(--border-strong)" }} />
+									<Dropdown.Label className="px-2 pt-1 pb-0.5 font-mono text-[9.5px] tracking-[0.16em] uppercase" style={{ color: "var(--muted)" }}>
+										Theme
+									</Dropdown.Label>
+									<Dropdown.RadioGroup value={theme} onValueChange={value => isThemeId(value) && setTheme(value)} className="grid grid-cols-2">
+										{["Light", "Dark"].map(scheme => (
+											<span key={scheme} className="px-2 pb-0.5 pl-7 font-mono text-[9px] tracking-[0.14em] uppercase" style={{ color: "var(--muted)" }}>
+												{scheme}
+											</span>
+										))}
+										{THEME_ORDER.map(id => (
+											<Dropdown.RadioItem key={id} value={id} className={itemCls} data-testid={`menu-theme-${id}`}>
+												<span className="w-3 text-center">{theme === id ? "●" : ""}</span>
+												<span className="flex-1">{THEMES[id].label}</span>
+												<ThemeSwatch theme={THEMES[id]} height={8} />
+											</Dropdown.RadioItem>
+										))}
+									</Dropdown.RadioGroup>
+								</Dropdown.Content>
+							</Dropdown.Portal>
+						</Dropdown.Root>
+					)}
+					<div className="flex items-center gap-1.5 overflow-x-auto">
+						{workspaces.map(ws => (
+							<Minimap key={ws.id} ws={ws} active={ws.id === activeWorkspaceId} onClick={() => switchWorkspace(ws.id)} />
+						))}
+					</div>
+					<button type="button" className="gy-chrome-icon" title="Home (first workspace)" onClick={() => workspaces[0] && switchWorkspace(workspaces[0].id)}>
+						<Home size={14} />
+					</button>
+					<button type="button" className="gy-chrome-icon" title="New workspace" onClick={() => createWorkspace(`Space ${workspaces.length + 1}`)} data-jump="new-workspace">
+						<Plus size={14} />
+					</button>
+					<OmpSetupChip />
+					<span className="hidden font-mono text-[10px] lg:inline" style={{ color: "var(--chrome-muted)" }} title="omp version">
+						omp {gateway.ompVersion ?? "?"}
+					</span>
 				</div>
-				<button type="button" className="gy-chrome-icon" title="Home (first workspace)" onClick={() => workspaces[0] && switchWorkspace(workspaces[0].id)}>
-					<Home size={14} />
-				</button>
-				<button type="button" className="gy-chrome-icon" title="New workspace" onClick={() => createWorkspace(`Space ${workspaces.length + 1}`)} data-jump="new-workspace">
-					<Plus size={14} />
-				</button>
-				<OmpSetupChip />
-				<span className="hidden font-mono text-[10px] lg:inline" style={{ color: "var(--chrome-muted)" }} title="omp version">
-					omp {gateway.ompVersion ?? "?"}
-				</span>
 			</div>
 		</header>
 	);

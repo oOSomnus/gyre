@@ -103,7 +103,8 @@ export interface ModelPickerRow {
 	provider: string;
 	id: string;
 	name?: string;
-	roles?: Array<{ role: string; label?: string }>;
+	/** Roles the model holds; `auto` when omp picked it because the role names no model. */
+	roles?: Array<{ role: string; label?: string; auto?: boolean }>;
 	thinking?: string[];
 	thinkingLevel?: string;
 	current?: boolean;

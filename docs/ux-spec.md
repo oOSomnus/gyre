@@ -88,7 +88,7 @@ Gyre's omp extension (`packages/omp-extension`) provides plan mode over RPC, sin
 |---|---|
 | Alt X / Ctrl K | Global palette (type `/` for omp commands) |
 | Alt C | Actions for the focused pane |
-| Alt W (or Alt J) | Marks: label everything; links/tables/images/code/files offer actions (1-9) |
+| Alt W (or Alt J) | Marks: label everything; links/tables/images/code/files offer actions (1-9); a terminal's mark focuses its input |
 | Alt M | Keyboard mode: WASD focus, Shift+WASD swap, Ctrl+WASD resize, Q/E workspaces, 1-9 jump, H hide, F float/dock, Z maximize, X close, N chat, T terminal, Esc exit |
 | Alt Z | Maximize / restore |
 | Ctrl M | Model picker |

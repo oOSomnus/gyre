@@ -134,6 +134,8 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 		extensions: config.extensions,
 		envFor: chatId => ({
 			GYRE_PLAN_PREFS: planPrefsPath(chatId),
+			// The extension reads role selectors (model + effort) through the same omp.
+			GYRE_OMP_PATH: config.ompPath,
 			// Plannotator's review page is embedded in a Gyre pane, not opened in a browser.
 			PLANNOTATOR_BROWSER: "none",
 			PLANNOTATOR_INBOX_TOOL: "0",

@@ -125,7 +125,7 @@ Gyre aims to expose every omp feature without maintaining a fork. These rules ke
 | Session listing (in-process `SessionManager.list`, deep import `@oh-my-pi/pi-coding-agent/session/session-manager`) | `sessions.ts` | contract test. The import is isolated in one file; replace it if omp adds an RPC command for listing sessions. |
 | Compile-time external `omp-legacy-pi-modules` | gateway `build` script | `bun run build` fails loudly if more virtual modules appear |
 | Tool `details` shapes (`edit` diff, `bash` exitCode, `todo` phases) | `tools/registry.tsx`, `store/chats.ts` | renderers fall back to text/JSON on unknown shapes |
-| Extension API used by plan mode: `registerCommand`, `registerTool`, `setActiveTools`, `on("context"/"tool_call"/"agent_end")`, `ctx.models.resolve("@role")`, `pi.setModel`, `ctx.compact`, command-context `newSession`, `ui.setWidget` | `packages/omp-extension/src/index.ts` | extension unit tests (mocked API), contract test (`-e` loads it, `/plan` publishes state without a model call) |
+| Extension API used by plan mode: `registerCommand`, `registerTool`, `setActiveTools`, `on("context"/"tool_call"/"agent_end")`, `ctx.models.resolve("@role")`, `pi.setModel`, `pi.setThinkingLevel`, `pi.exec` (`omp config get modelRoles --json` for a role's effort, which `resolve` drops), `ctx.compact`, command-context `newSession`, `ui.setWidget` | `packages/omp-extension/src/index.ts` | extension unit tests (mocked API), contract test (`-e` loads it, `/plan` publishes state without a model call) |
 | omp's native plan prompts (`plan-mode-active.md`, `plan-mode-approved.md`), adapted in `omp-extension/src/prompts.ts` | extension | contract test checks the native template still exists; review the diff when bumping |
 | Plannotator's public bus API (`plannotator:request` `plan-review`, `session-opened`, `review-result`, `session-closed`) | extension | extension unit tests; optional at runtime (Gyre's own review card is the fallback) |
 | `omp config get/set --json` output, `omp config path`, `omp skill list --json`, `omp agents unpack --dir` | `omp-cli.ts` | contract test (config, agent dir) |
@@ -149,5 +149,7 @@ CI (`.github/workflows/ci.yml`) runs the tests against the pinned and the latest
 ### Plan mode shell policy
 
 While planning, the prompts forbid state-changing shell commands, but the shell stays available and its denylist is a best-effort guard, not a sandbox. File-tool writes are limited to session-local plan files. On approval the extension checks the submitted plan, applies the chosen role and context (fresh, compact or keep); a fresh session gets the approved plan in its local files.
+
+A role binds a model and an effort (`provider/model:<effort>`), as in omp: entering plan mode applies the `plan` role's model and effort, approval applies the chosen role's, and the Gyre model picker saves and switches roles with their effort.
 
 A decision's follow-up prompt (feedback or the approved plan) is sent after the decision is applied and is not awaited: omp's `sendUserMessage` resolves only when the run it starts ends, and that run must be able to call `submit_plan` again.

@@ -4,6 +4,7 @@ import { Check, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { gateway } from "../lib/gateway";
 import type { ModelPickerRow } from "../lib/omp";
+import { roleSelector } from "../lib/role-selector";
 import { BUILTIN_ROLES, useRolesStore } from "../lib/roles";
 import { useApp } from "../store/app";
 import { refreshState, useChats } from "../store/chats";
@@ -21,6 +22,12 @@ export function ModelPicker() {
 	const [result, setResult] = useState<{ chatId: string; query: string; rows: ModelPickerRow[] } | null>(null);
 	const rows = result?.chatId === chatId && result?.query === query ? result.rows : null;
 	const [error, setError] = useState<string | null>(null);
+	const [reload, setReload] = useState(0);
+	/** Per-model effort picked in a row (omp's thinking slider), keyed by provider/id. */
+	const [efforts, setEfforts] = useState<Record<string, string>>({});
+	const rowKey = (row: ModelPickerRow) => `${row.provider}/${row.id}`;
+	/** The effort a row applies: a role row's own level, else the row's pick or the level the model would run at. */
+	const rowEffort = (row: ModelPickerRow) => (row.role ? row.thinkingLevel : (efforts[rowKey(row)] ?? row.thinkingLevel));
 
 	useEffect(() => {
 		if (!chatId) return;
@@ -40,19 +47,26 @@ export function ModelPicker() {
 			current = false;
 			clearTimeout(timer);
 		};
-	}, [chatId, query]);
+	}, [chatId, query, reload]);
 
 	useEffect(() => {
 		if (!chatId) {
 			setResult(null);
 			setQuery("");
 		}
+		setEfforts({});
 	}, [chatId]);
 
 	const choose = async (row: ModelPickerRow) => {
 		if (!chatId) return;
 		try {
-			await gateway.rpc(chatId, { type: "set_model", provider: row.provider, modelId: row.id, ...(row.role ? { role: row.role } : {}) }, 60_000);
+			// A role binds a model and an effort; a model row applies the effort picked in it.
+			const thinkingLevel = row.role ? row.thinkingLevel : efforts[rowKey(row)];
+			await gateway.rpc(
+				chatId,
+				{ type: "set_model", provider: row.provider, modelId: row.id, ...(row.role ? { role: row.role } : {}), ...(thinkingLevel ? { thinkingLevel } : {}) },
+				60_000,
+			);
 			refreshState(chatId, 0);
 			close();
 		} catch (e) {
@@ -64,6 +78,9 @@ export function ModelPicker() {
 		if (!chatId) return;
 		await gateway.rpc(chatId, { type: "set_thinking_level", level }).catch(e => setError((e as Error).message));
 		refreshState(chatId, 0);
+		// Rows report the level each model would run at; re-read them so unpicked rows follow the chat.
+		setResult(null);
+		setReload(n => n + 1);
 	};
 
 	const levels = state?.thinkingLevels ?? [];
@@ -72,8 +89,10 @@ export function ModelPicker() {
 	const assign = async (row: ModelPickerRow, role: string) => {
 		try {
 			if (!roles.loaded || roles.error) throw new Error(roles.error ?? "Model roles are still loading.");
-			await assignRole(role, `${row.provider}/${row.id}`);
-			setAssigned(`@${role} → ${row.provider}/${row.id}`);
+			// Saved as omp's TUI does: `provider/model:effort` (no suffix for inherit).
+			const selector = roleSelector(rowKey(row), rowEffort(row));
+			await assignRole(role, selector);
+			setAssigned(`@${role} → ${selector}`);
 		} catch (e) {
 			setError((e as Error).message);
 		}
@@ -146,6 +165,7 @@ export function ModelPicker() {
 										<span className="block truncate text-[13px]">
 											{row.role ? <span style={{ color: "var(--highlight)" }}>@{row.role} → </span> : null}
 											{row.name ?? row.id}
+											{row.role && row.thinkingLevel ? <span style={{ color: "var(--think)" }}> · {row.thinkingLevel}</span> : null}
 										</span>
 										<span className="block truncate font-mono text-[11px]" style={{ color: "var(--muted)" }}>
 											{row.provider}/{row.id}
@@ -160,6 +180,27 @@ export function ModelPicker() {
 										<span className="gy-chip" style={{ color: "var(--warn)" }}>
 											over context
 										</span>
+									)}
+									{!row.role && row.thinking && row.thinking.length > 0 && (
+										<select
+											className="gy-input h-6 text-[11px]"
+											aria-label={`Effort for ${rowKey(row)}`}
+											value={rowEffort(row) ?? ""}
+											title="Effort for this model: used when you pick it and saved with a role assignment"
+											onClick={e => e.stopPropagation()}
+											onKeyDown={e => e.stopPropagation()}
+											onChange={e => {
+												const level = e.target.value;
+												setEfforts(prev => ({ ...prev, [rowKey(row)]: level }));
+											}}
+										>
+											{rowEffort(row) === undefined && <option value="">effort</option>}
+											{row.thinking.map(level => (
+												<option key={level} value={level}>
+													{level}
+												</option>
+											))}
+										</select>
 									)}
 									{!row.role && (
 										<select
@@ -189,7 +230,7 @@ export function ModelPicker() {
 						{assigned ? (
 							<span style={{ color: "var(--ok)" }}>Saved {assigned}</span>
 						) : (
-							<span>Enter: use for this chat · “Assign to role…”: save as a role in omp · type @ to switch the chat to a role</span>
+							<span>Enter: use for this chat · “Assign to role…”: save the model and its effort as a role · type @ to switch to a role</span>
 						)}
 					</div>
 				</Dialog.Content>

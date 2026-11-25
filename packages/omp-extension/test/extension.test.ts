@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import gyrePlanMode, { isDestructiveCommand, isLocalUrl, PLAN_WIDGET_KEY, SUBMIT_TOOL, targetPaths } from "../src/index";
+import gyrePlanMode, { isDestructiveCommand, isLocalUrl, PLAN_WIDGET_KEY, roleThinking, SUBMIT_TOOL, targetPaths } from "../src/index";
 
 type Handler = (event: any, ctx: any) => any;
 
@@ -36,6 +36,9 @@ function makeHarness(opts: { plannotator?: boolean; holdSends?: boolean } = {}) 
 	const notices: string[] = [];
 	const calls: string[] = [];
 	let plannotatorRequests = 0;
+	/** omp's modelRoles, as `omp config get modelRoles --json` reports them. */
+	const roles: Record<string, unknown> = {};
+	const execCalls: string[][] = [];
 	/** Like omp, a held sendUserMessage resolves only when the run it started ends. */
 	const heldSends: Array<() => void> = [];
 
@@ -104,6 +107,10 @@ function makeHarness(opts: { plannotator?: boolean; holdSends?: boolean } = {}) 
 			userMessages.push(text);
 			if (opts.holdSends) await new Promise<void>(resolve => heldSends.push(resolve));
 		},
+		exec: async (command: string, args: string[]) => {
+			execCalls.push([command, ...args]);
+			return { stdout: JSON.stringify({ key: "modelRoles", value: roles }), stderr: "", code: 0, killed: false };
+		},
 		sendMessage: (message: any) => customMessages.push(message),
 	};
 
@@ -145,6 +152,8 @@ function makeHarness(opts: { plannotator?: boolean; holdSends?: boolean } = {}) 
 		customMessages,
 		notices,
 		calls,
+		roles,
+		execCalls,
 		/** End every held run. */
 		endRuns: () => {
 			for (const resolve of heldSends.splice(0)) resolve();
@@ -189,6 +198,20 @@ describe("helpers", () => {
 	});
 });
 
+describe("role effort", () => {
+	test("roleThinking takes the matched pattern's level, ignoring inherit and routing suffixes", () => {
+		expect(roleThinking("p/planner:high", { provider: "p", id: "planner" })).toBe("high");
+		expect(roleThinking("p/planner", { provider: "p", id: "planner" })).toBeUndefined();
+		expect(roleThinking("p/planner:inherit", { provider: "p", id: "planner" })).toBeUndefined();
+		expect(roleThinking("p/a:low, p/planner:xhigh", { provider: "p", id: "planner" })).toBe("xhigh");
+		expect(roleThinking(["p/a:low", "p/planner:auto"], { provider: "p", id: "planner" })).toBe("auto");
+		expect(roleThinking("openrouter/z/glm@cerebras:max", { provider: "openrouter", id: "z/glm" })).toBe("max");
+		expect(roleThinking("planner:off", { provider: "p", id: "planner" })).toBe("off");
+		expect(roleThinking("p/a:low, anthropic/opus@default:high", { provider: "anthropic", id: "opus@default" })).toBe("high");
+		expect(roleThinking(undefined, { provider: "p", id: "planner" })).toBeUndefined();
+	});
+});
+
 describe("plan mode", () => {
 	beforeEach(() => {
 		h = makeHarness();
@@ -203,6 +226,45 @@ describe("plan mode", () => {
 		expect(h.model.id).toBe("start");
 		expect(h.activeTools).not.toContain(SUBMIT_TOOL);
 		expect(h.lastState().phase).toBe("idle");
+	});
+
+	test("enter applies the plan role's effort with its model, even when the model is unchanged; cancel restores both", async () => {
+		h.roles.plan = "p/planner:high";
+		await h.commands.get("plan")?.("", h.ctx);
+		expect(h.model.id).toBe("planner");
+		expect(h.thinking).toBe("high");
+		await h.commands.get("plan")?.("", h.ctx);
+		expect(h.model.id).toBe("start");
+		expect(h.thinking).toBe("medium");
+		// The plan role uses the model already selected: only the effort changes.
+		const resolve = h.ctx.models.resolve;
+		h.ctx.models.resolve = (spec: string) => (spec === "@plan" ? { provider: "p", id: "start" } : resolve(spec));
+		h.roles.plan = "p/start:low";
+		await h.commands.get("plan")?.("", h.ctx);
+		expect(h.model.id).toBe("start");
+		expect(h.thinking).toBe("low");
+		await h.commands.get("plan")?.("", h.ctx);
+		expect(h.thinking).toBe("medium");
+	});
+
+	test("a role without an explicit effort keeps the current effort", async () => {
+		h.roles.plan = "p/planner";
+		await h.commands.get("plan")?.("", h.ctx);
+		expect(h.model.id).toBe("planner");
+		expect(h.thinking).toBe("medium");
+	});
+
+	test("approval switches to the chosen role's model and effort", async () => {
+		h.roles.plan = "p/planner:high";
+		h.roles.slow = "p/thinker:xhigh";
+		h.setPrefs({ role: "slow", context: "keep" });
+		await h.commands.get("plan")?.("", h.ctx);
+		h.writePlan("x-plan.md", "p");
+		await h.submit("local://x-plan.md");
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: h.lastState().revision }), h.ctx);
+		expect(h.model.id).toBe("thinker");
+		expect(h.thinking).toBe("xhigh");
+		expect(h.execCalls.at(-1)).toEqual(["omp", "config", "get", "modelRoles", "--json"]);
 	});
 
 	test("enter with a prompt sends it", async () => {

@@ -147,6 +147,38 @@ function modelLabel(model: unknown): string | undefined {
 	return m?.provider && m.id ? `${m.provider}/${m.id}` : undefined;
 }
 
+/** omp's configured thinking selectors (a role value's `:<level>` suffix). `inherit` means "no explicit level". */
+const THINKING_SELECTORS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]);
+
+/** The patterns of a role value: `a, b` fallback lists or an array of them. */
+function rolePatterns(value: unknown): string[] {
+	const parts = Array.isArray(value) ? value : [value];
+	return parts.flatMap(part => (typeof part === "string" ? part.split(",") : [])).map(part => part.trim()).filter(Boolean);
+}
+
+function splitThinking(pattern: string): { base: string; thinking?: string } {
+	const at = pattern.lastIndexOf(":");
+	if (at <= 0) return { base: pattern };
+	const suffix = pattern.slice(at + 1).trim().toLowerCase();
+	if (suffix === "inherit") return { base: pattern.slice(0, at) };
+	return THINKING_SELECTORS.has(suffix) ? { base: pattern.slice(0, at), thinking: suffix } : { base: pattern };
+}
+
+/**
+ * The effort a role binds to its model, as omp applies it: the `:<level>` of the
+ * configured pattern that resolved to `model` (fallback lists try each pattern in
+ * order), or of the only pattern. Undefined when the role sets no explicit level.
+ */
+export function roleThinking(value: unknown, model: { provider?: string; id?: string } | undefined): string | undefined {
+	const patterns = rolePatterns(value).map(splitThinking);
+	if (patterns.length === 0) return undefined;
+	const full = modelLabel(model);
+	const id = model?.id;
+	const names = (base: string) => [base, base.split("@")[0]?.trim() ?? base]; // with and without an `@upstream` route
+	const matched = patterns.find(p => names(p.base).some(base => base === full || base === id || (id !== undefined && base.endsWith(`/${id}`))));
+	return (matched ?? (patterns.length === 1 ? patterns[0] : undefined))?.thinking;
+}
+
 async function readPlan(ctx: ExtensionContext, planFilePath: string): Promise<string | null> {
 	const localProtocolOptions = ctx.localProtocolOptions;
 	if (localProtocolOptions) {
@@ -248,15 +280,53 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		} catch {}
 	};
 
+	/**
+	 * The role's configured value. `ctx.models.resolve` returns only the model (omp's
+	 * extension API drops the effort), so read the selector the same way Gyre's
+	 * settings do: through `omp config`, fresh each time so edits made anywhere apply.
+	 */
+	async function roleValue(ctx: ExtensionContext, role: string): Promise<unknown> {
+		if (typeof pi.exec !== "function") return undefined;
+		try {
+			const result = await pi.exec(process.env.GYRE_OMP_PATH || "omp", ["config", "get", "modelRoles", "--json"], { cwd: ctx.cwd, timeout: 15_000 });
+			if (result.code !== 0) return undefined;
+			const value = (JSON.parse(result.stdout) as { value?: Record<string, unknown> }).value;
+			return value && typeof value === "object" ? value[role] : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * Switch to a role as omp does: its model and, when the role names one, its effort.
+	 * Returns false when the role has no available model.
+	 */
+	async function applyRole(ctx: ExtensionContext, role: string, failure: (model: string) => string): Promise<boolean> {
+		const model = ctx.models.resolve(`@${role}`);
+		if (!model) return false;
+		if (modelLabel(model) !== modelLabel(ctx.models.current())) {
+			const ok = await pi.setModel(model).catch(() => false);
+			if (!ok) {
+				notify(ctx, failure(modelLabel(model) ?? role));
+				return true;
+			}
+		}
+		const thinking = roleThinking(await roleValue(ctx, role), model);
+		if (thinking) {
+			try {
+				pi.setThinkingLevel(thinking as Parameters<typeof pi.setThinkingLevel>[0]);
+			} catch (error) {
+				notify(ctx, `Could not apply the ${role} role's effort (${thinking}): ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		return true;
+	}
+
 	async function enter(ctx: ExtensionContext, prompt?: string): Promise<void> {
 		rt = { ...initial(), commandCtx: rt.commandCtx, ctx };
 		rt.saved = { model: ctx.model, thinking: pi.getThinkingLevel(), tools: pi.getActiveTools() };
-		const planModel = ctx.models.resolve("@plan");
-		if (planModel && modelLabel(planModel) !== modelLabel(ctx.model)) {
-			const ok = await pi.setModel(planModel).catch(() => false);
-			if (!ok) notify(ctx, `Plan mode: could not switch to the plan-role model ${modelLabel(planModel)}; staying on the current model.`);
-		}
-		rt.planModel = modelLabel(ctx.models.current() ?? planModel ?? ctx.model);
+		await applyRole(ctx, "plan", model => `Plan mode: could not switch to the plan-role model ${model}; staying on the current model.`);
+		rt.planModel = modelLabel(ctx.models.current() ?? ctx.model);
 		await pi.setActiveTools([...new Set([...rt.saved.tools, SUBMIT_TOOL])]);
 		rt.phase = "planning";
 		publish(ctx);
@@ -367,9 +437,11 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		const prefs = readPrefs();
 
 		await leave(ctx, false);
-		const target = ctx.models.resolve(`@${prefs.role}`) ?? (rt.saved?.model as ReturnType<typeof ctx.models.resolve>);
-		if (target && modelLabel(target) !== modelLabel(ctx.models.current())) {
-			const ok = await pi.setModel(target).catch(() => false);
+		const switched = await applyRole(ctx, prefs.role, () => `Could not switch to the ${prefs.role} role's model; continuing on the current model.`);
+		const fallback = rt.saved?.model as ReturnType<typeof ctx.models.resolve>;
+		if (!switched && fallback && modelLabel(fallback) !== modelLabel(ctx.models.current())) {
+			// No model for the role: go back to the pre-plan model (its effort was restored by leave()).
+			const ok = await pi.setModel(fallback).catch(() => false);
 			if (!ok) notify(ctx, `Could not switch to the ${prefs.role} role's model; continuing on the current model.`);
 		}
 

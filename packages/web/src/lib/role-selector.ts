@@ -25,3 +25,15 @@ export function typedRoleSelector(selector: string, effort: string | undefined):
 	if (at > 0 && selector.slice(at + 1).trim().toLowerCase() === "inherit") return selector.slice(0, at).trimEnd();
 	return roleSelector(selector, effort);
 }
+
+/**
+ * The model a single-model selector names, without its `:<effort>` or `:inherit`;
+ * "" for a fallback list or a reference to another role (`@role`).
+ */
+export function selectorModel(selector: string | undefined): string {
+	const value = selector?.trim() ?? "";
+	if (!value || value.includes(",") || value.startsWith("@")) return "";
+	const at = value.lastIndexOf(":");
+	const suffix = at > 0 ? value.slice(at + 1).trim().toLowerCase() : "";
+	return suffix === "inherit" || ROLE_EFFORTS.includes(suffix) ? value.slice(0, at).trimEnd() : value;
+}

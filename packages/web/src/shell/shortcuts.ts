@@ -13,7 +13,7 @@ export const SHORTCUT_HELP: Array<{ title: string; keys: Array<[string, string]>
 			["Alt C", "Actions for the focused pane"],
 			["Alt W", "Marks: label every link, table, image and button; type a label to act"],
 			["Alt M", "Keyboard mode (pane management, below)"],
-			["Ctrl M", "Model picker for the focused chat"],
+			["Ctrl M", "Model picker for the focused chat; again to switch between models and roles"],
 			["Alt ← ↑ → ↓", "Move focus between panes"],
 			["Alt Z", "Maximize / restore the focused pane"],
 			["Ctrl Shift Enter", "New chat beside the focused pane"],
@@ -175,6 +175,12 @@ export function installShortcuts(): () => void {
 			return;
 		}
 		if (mod && !event.shiftKey && isKey("m")) {
+			if (app.modelPickerChatId) {
+				// Already open: switch between the model view and the role view.
+				stop();
+				app.setModelPickerView(app.modelPickerView === "models" ? "roles" : "models");
+				return;
+			}
 			const chatId = focusedChatId();
 			if (chatId) {
 				stop();

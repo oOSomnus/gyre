@@ -51,6 +51,8 @@ interface AppStore {
 	paletteQuery: string;
 	paletteScope: PaletteScope;
 	modelPickerChatId: string | null;
+	/** The model picker's view: models to pick from, or each role and its model. Remembered. */
+	modelPickerView: ModelPickerView;
 	addProjectOpen: boolean;
 	loaded: boolean;
 	saveError: string | null;
@@ -94,8 +96,11 @@ interface AppStore {
 	openPalette(query?: string, scope?: PaletteScope): void;
 	closePalette(): void;
 	openModelPicker(chatId: string | null): void;
+	setModelPickerView(view: ModelPickerView): void;
 	setAddProjectOpen(open: boolean): void;
 }
+
+export type ModelPickerView = "models" | "roles";
 
 // ---------------------------------------------------------------------------
 // Layout tree helpers
@@ -302,6 +307,14 @@ async function flushWorkspace(id: string): Promise<void> {
 	return work;
 }
 
+function readModelPickerView(): ModelPickerView {
+	try {
+		return localStorage.getItem("gyre.modelPickerView") === "roles" ? "roles" : "models";
+	} catch {
+		return "models";
+	}
+}
+
 export function readTheme(): Theme {
 	try {
 		const saved = localStorage.getItem("gyre.theme");
@@ -353,6 +366,7 @@ export const useApp = create<AppStore>((set, get) => {
 		paletteQuery: "",
 		paletteScope: "global",
 		modelPickerChatId: null,
+		modelPickerView: readModelPickerView(),
 		addProjectOpen: false,
 		loaded: false,
 		saveError: null,
@@ -701,6 +715,12 @@ export const useApp = create<AppStore>((set, get) => {
 		},
 		openModelPicker(chatId) {
 			set({ modelPickerChatId: chatId });
+		},
+		setModelPickerView(view) {
+			try {
+				localStorage.setItem("gyre.modelPickerView", view);
+			} catch {}
+			set({ modelPickerView: view });
 		},
 		setAddProjectOpen(open) {
 			set({ addProjectOpen: open });

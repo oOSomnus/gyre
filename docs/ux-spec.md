@@ -58,7 +58,7 @@ Legend: `cmd` RPC command, `evt` event frame, `ui` `extension_ui_request` method
 | Plan mode + review | `panes/PlanPane.tsx`, `ChatStrip` plan toggle, `PlanBanner` | `ext` `gyre.plan` widget state, `/gyre-plan` control command, `gw` `/api/chats/:id/plan-prefs`; Plannotator review page in an iframe |
 | Agent Studio | `panes/StudioPane.tsx` | `gw` `/api/agents` (agent `.md` files), drafts in `/api/kv/ui.agentDrafts`, `cli` `task.agentModelOverrides` |
 | MCP studio | Settings → MCP servers | `gw` `/api/mcp` (omp `mcp.json`), `/mcp test` and `/mcp reauth` via `cmd prompt`, `gw` restart-chats |
-| Models & roles | Settings → Models & roles, model picker role chips | `cli` `modelRoles`, `modelRoleStorage`; `cmd get_model_picker` |
+| Models & roles | Settings → Models & roles, model picker role chips and its Roles view (each role's model and effort; Ctrl M switches views) | `cli` `modelRoles`, `modelRoleStorage`; `cmd get_model_picker` |
 | Sub-agent routing | Settings → Agent routing, Agent Studio | `cli` `task.agentModelOverrides`, agent `model: @role` |
 | Config importer | Settings → Config sources | `cli` `enabledProviders` (omp reads other tools' configs live) |
 | Skills | Settings → Skills | `cli` `omp skill list --json` |
@@ -91,7 +91,7 @@ Gyre's omp extension (`packages/omp-extension`) provides plan mode over RPC, sin
 | Alt W (or Alt J) | Marks: label everything; links/tables/images/code/files offer actions (1-9); a terminal's mark focuses its input |
 | Alt M | Keyboard mode: WASD focus, Shift+WASD swap, Ctrl+WASD resize, Q/E workspaces, 1-9 jump, H hide, F float/dock, Z maximize, X close, N chat, T terminal, Esc exit |
 | Alt Z | Maximize / restore |
-| Ctrl M | Model picker |
+| Ctrl M | Model picker; again inside it to switch between Models and Roles |
 | Alt ← ↑ → ↓ | Move focus between panes |
 | Alt 1…9 | Answer the newest dialog |
 | Alt Shift 1…9 | Switch workspace |

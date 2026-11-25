@@ -151,6 +151,6 @@ CI (`.github/workflows/ci.yml`) runs the tests against the pinned and the latest
 
 While planning, the prompts forbid state-changing shell commands, but the shell stays available and its denylist is a best-effort guard, not a sandbox. File-tool writes are limited to session-local plan files. On approval the extension checks the submitted plan, applies the chosen role and context (fresh, compact or keep); a fresh session gets the approved plan in its local files.
 
-A role binds a model and an effort (`provider/model:<effort>`), as in omp: entering plan mode applies the `plan` role's model and effort, approval applies the chosen role's, and the Gyre model picker saves and switches roles with their effort.
+A role binds a model and an effort (`provider/model:<effort>`), as in omp: entering plan mode applies the `plan` role's model and effort, approval applies the chosen role's, and the Gyre model picker saves and switches roles with their effort. Its Roles view lists every role with the model omp resolves it to (from the role chips on `get_model_picker` rows, so automatic picks show too) and its configured effort.
 
 A decision's follow-up prompt (feedback or the approved plan) is sent after the decision is applied and is not awaited: omp's `sendUserMessage` resolves only when the run it starts ends, and that run must be able to call `submit_plan` again.

@@ -11,7 +11,7 @@ interface Model {
 	id: string;
 }
 
-function makeHarness(opts: { plannotator?: boolean; holdSends?: boolean } = {}) {
+function makeHarness(opts: { plannotator?: boolean; holdSends?: boolean; throwSends?: boolean } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "gy-ext-"));
 	let sessionFile = join(dir, "session.jsonl");
 	const localDir = join(dir, "session", "local");
@@ -103,9 +103,10 @@ function makeHarness(opts: { plannotator?: boolean; holdSends?: boolean } = {}) 
 			current = model;
 			return true;
 		},
-		sendUserMessage: async (text: string) => {
+		sendUserMessage: (text: string) => {
+			if (opts.throwSends) throw new Error("agent is busy");
 			userMessages.push(text);
-			if (opts.holdSends) await new Promise<void>(resolve => heldSends.push(resolve));
+			return opts.holdSends ? new Promise<void>(resolve => heldSends.push(resolve)) : Promise.resolve();
 		},
 		exec: async (command: string, args: string[]) => {
 			execCalls.push([command, ...args]);
@@ -390,6 +391,19 @@ describe("plan mode", () => {
 		expect(again.details.ok).toBe(true);
 		expect(h.lastState()).toMatchObject({ phase: "reviewing", revision: 2 });
 		h.endRuns();
+	});
+
+	test("a send that throws synchronously is reported and resets an approved plan", async () => {
+		h.cleanup();
+		h = makeHarness({ throwSends: true });
+		h.setPrefs({ role: "default", context: "keep" });
+		await h.commands.get("plan")?.("", h.ctx);
+		h.writePlan("x-plan.md", "p");
+		await h.submit("local://x-plan.md");
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: 1 }), h.ctx);
+		await Promise.resolve();
+		expect(h.notices.at(-1)).toContain("Could not start the approved plan: agent is busy");
+		expect(h.lastState()).toMatchObject({ phase: "idle", error: "Could not start the approved plan: agent is busy" });
 	});
 
 	test("an approval whose run is still going does not block later decisions", async () => {

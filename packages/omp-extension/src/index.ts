@@ -414,7 +414,14 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		// able to call submit_plan (and the /gyre-plan command must return meanwhile).
 		if (prompt === undefined) return;
 		const approved = decision.approved;
-		void pi.sendUserMessage(prompt).catch(error => {
+		// A synchronous throw must reach the same handler as a rejection.
+		let sent: Promise<void>;
+		try {
+			sent = Promise.resolve(pi.sendUserMessage(prompt));
+		} catch (error) {
+			sent = Promise.reject(error);
+		}
+		void sent.catch(error => {
 			const message = error instanceof Error ? error.message : String(error);
 			notify(ctx, approved ? `Could not start the approved plan: ${message}` : `Could not send the plan feedback: ${message}`, "error");
 			if (approved && rt.phase === "executing" && !rt.executionStarted) {

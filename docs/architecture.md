@@ -149,3 +149,5 @@ CI (`.github/workflows/ci.yml`) runs the tests against the pinned and the latest
 ### Plan mode shell policy
 
 While planning, the prompts forbid state-changing shell commands, but the shell stays available and its denylist is a best-effort guard, not a sandbox. File-tool writes are limited to session-local plan files. On approval the extension checks the submitted plan, applies the chosen role and context (fresh, compact or keep); a fresh session gets the approved plan in its local files.
+
+A decision's follow-up prompt (feedback or the approved plan) is sent after the decision is applied and is not awaited: omp's `sendUserMessage` resolves only when the run it starts ends, and that run must be able to call `submit_plan` again.

@@ -316,6 +316,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		if (rt.phase !== "reviewing" || rt.busy) return;
 		if (decision.reviewId !== undefined && decision.reviewId !== rt.reviewId) return;
 		rt.busy = true;
+		let prompt: string | undefined;
 		try {
 			if (decision.revision !== rt.revision) throw new Error("The plan changed. Review the current revision before deciding.");
 			if (!decision.approved) {
@@ -325,10 +326,10 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 				rt.decided = false;
 				rt.reminders = 0;
 				publish(ctx);
-				await pi.sendUserMessage(planFeedbackPrompt({ revision: rt.revision, feedback: decision.feedback ?? "" }));
-				return;
+				prompt = planFeedbackPrompt({ revision: rt.revision, feedback: decision.feedback ?? "" });
+			} else {
+				prompt = await approve(ctx, decision.feedback);
 			}
-			await approve(ctx, decision.feedback);
 		} catch (error) {
 			rt.phase = "reviewing";
 			rt.error = error instanceof Error ? error.message : String(error);
@@ -338,9 +339,23 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		} finally {
 			rt.busy = false;
 		}
+		// Send only after the decision is applied and released, and don't wait for it:
+		// sendUserMessage resolves when the whole run it starts ends, and that run must be
+		// able to call submit_plan (and the /gyre-plan command must return meanwhile).
+		if (prompt === undefined) return;
+		const approved = decision.approved;
+		void pi.sendUserMessage(prompt).catch(error => {
+			const message = error instanceof Error ? error.message : String(error);
+			notify(ctx, approved ? `Could not start the approved plan: ${message}` : `Could not send the plan feedback: ${message}`, "error");
+			if (approved && rt.phase === "executing" && !rt.executionStarted) {
+				rt = { ...initial(), commandCtx: rt.commandCtx, ctx, error: `Could not start the approved plan: ${message}` };
+				publish(ctx);
+			}
+		});
 	}
 
-	async function approve(ctx: ExtensionContext, notes?: string): Promise<void> {
+	/** Apply an approval; returns the prompt that starts execution. */
+	async function approve(ctx: ExtensionContext, notes?: string): Promise<string> {
 		const planFilePath = rt.planFilePath;
 		if (!planFilePath) throw new Error("no plan was submitted");
 		// omp switches sessions before a fresh approval's setup runs, so a failed setup
@@ -390,7 +405,7 @@ export default function gyrePlanMode(pi: ExtensionAPI): void {
 		rt.reviewUrl = undefined;
 		rt.error = undefined;
 		publish(ctx);
-		await pi.sendUserMessage(planApprovedPrompt({ planFilePath, planContent: content, contextPreserved: context !== "fresh", notes }));
+		return planApprovedPrompt({ planFilePath, planContent: content, contextPreserved: context !== "fresh", notes });
 	}
 
 	// ---------------------------------------------------------------- commands

@@ -11,7 +11,7 @@ interface Model {
 	id: string;
 }
 
-function makeHarness(opts: { plannotator?: boolean } = {}) {
+function makeHarness(opts: { plannotator?: boolean; holdSends?: boolean } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "gy-ext-"));
 	let sessionFile = join(dir, "session.jsonl");
 	const localDir = join(dir, "session", "local");
@@ -36,6 +36,8 @@ function makeHarness(opts: { plannotator?: boolean } = {}) {
 	const notices: string[] = [];
 	const calls: string[] = [];
 	let plannotatorRequests = 0;
+	/** Like omp, a held sendUserMessage resolves only when the run it started ends. */
+	const heldSends: Array<() => void> = [];
 
 	const ctx: any = {
 		hasUI: true,
@@ -100,6 +102,7 @@ function makeHarness(opts: { plannotator?: boolean } = {}) {
 		},
 		sendUserMessage: async (text: string) => {
 			userMessages.push(text);
+			if (opts.holdSends) await new Promise<void>(resolve => heldSends.push(resolve));
 		},
 		sendMessage: (message: any) => customMessages.push(message),
 	};
@@ -142,6 +145,10 @@ function makeHarness(opts: { plannotator?: boolean } = {}) {
 		customMessages,
 		notices,
 		calls,
+		/** End every held run. */
+		endRuns: () => {
+			for (const resolve of heldSends.splice(0)) resolve();
+		},
 		get plannotatorRequests() {
 			return plannotatorRequests;
 		},
@@ -305,6 +312,39 @@ describe("plan mode", () => {
 		h.writePlan("x-plan.md", "v2");
 		await h.submit("local://x-plan.md");
 		expect(h.lastState().revision).toBe(2);
+	});
+
+	test("the feedback run can resubmit while its sendUserMessage is still pending", async () => {
+		h.cleanup();
+		h = makeHarness({ holdSends: true });
+		await h.commands.get("plan")?.("", h.ctx);
+		h.writePlan("x-plan.md", "v1");
+		await h.submit("local://x-plan.md");
+		// The refine command must return although the feedback run (and so sendUserMessage) has not ended.
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "refine", revision: 1, feedback: "start from main" }), h.ctx);
+		expect(h.userMessages.at(-1)).toContain("start from main");
+		h.writePlan("x-plan.md", "v2");
+		const again = await h.submit("local://x-plan.md", "T", "call-2");
+		expect(again.details.ok).toBe(true);
+		expect(h.lastState()).toMatchObject({ phase: "reviewing", revision: 2 });
+		h.endRuns();
+	});
+
+	test("an approval whose run is still going does not block later decisions", async () => {
+		h.cleanup();
+		h = makeHarness({ holdSends: true });
+		h.setPrefs({ role: "default", context: "keep" });
+		await h.commands.get("plan")?.("", h.ctx);
+		h.writePlan("x-plan.md", "p");
+		await h.submit("local://x-plan.md");
+		await h.commands.get("gyre-plan")?.(JSON.stringify({ action: "approve", revision: 1 }), h.ctx);
+		expect(h.lastState().phase).toBe("executing");
+		await h.emit("agent_start");
+		await h.emit("agent_end");
+		expect(h.lastState().phase).toBe("idle");
+		await h.commands.get("plan")?.("", h.ctx);
+		expect(h.lastState().phase).toBe("planning");
+		h.endRuns();
 	});
 
 	test("approve with role + compact: restores tools, switches role model, compacts, sends the plan", async () => {

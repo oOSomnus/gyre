@@ -113,6 +113,15 @@ export function emptySubagentTranscript(): SubagentTranscript {
 	return { items: [], toolExec: {}, toolResults: {}, busy: false, openKeys: [], live: false, seeded: false, seq: 0 };
 }
 
+/** Tool results that end in the same millisecond are told apart by their call. */
+const identity = (message: AgentMessage) =>
+	typeof message.timestamp === "number" ? `${message.role}:${message.timestamp}${message.role === "toolResult" ? `:${message.toolCallId ?? ""}` : ""}` : undefined;
+
+function findByIdentity(items: TranscriptItem[], message: AgentMessage): TranscriptItem | undefined {
+	const id = identity(message);
+	return id ? items.find(item => item.kind === "message" && identity(item.message) === id) : undefined;
+}
+
 /**
  * Apply one sub-agent session event. omp does not stamp sub-agent message
  * frames with a `messageId`, so keys follow the rule omp uses for its own
@@ -130,11 +139,19 @@ export function foldSubagentEvent(transcript: SubagentTranscript, event: Session
 		case "message_update":
 		case "message_end": {
 			if (!event.message) return t;
-			const openKeys = t.openKeys.slice();
+			let openKeys = t.openKeys.slice();
 			let key: string | undefined;
 			if (event.type === "message_start") key = undefined;
 			else if (event.type === "message_update") key = openKeys.at(-1);
-			else key = openKeys.pop();
+			else {
+				// The message may already be in the transcript, finished from the session
+				// file or still streaming: end that item instead of adding a copy.
+				const existing = findByIdentity(t.items, event.message as AgentMessage);
+				if (existing) {
+					key = existing.key;
+					openKeys = openKeys.filter(open => open !== key);
+				} else key = openKeys.pop();
+			}
 			if (!key) {
 				t = { ...t, seq: t.seq + 1 };
 				key = `s${t.seq}`;
@@ -147,36 +164,62 @@ export function foldSubagentEvent(transcript: SubagentTranscript, event: Session
 	}
 }
 
-const identity = (message: AgentMessage) => (typeof message.timestamp === "number" ? `${message.role}:${message.timestamp}` : undefined);
-
 /**
  * Merge messages read from the sub-agent's session file. A message already in
  * the transcript (same role and timestamp, e.g. received live) is not added
- * twice. New messages go before the first message still streaming, which is
- * newer than anything on disk. `reset` means the file was read from the start
- * again: finished messages are replaced by what was read.
+ * twice; if that copy is still streaming, the finished one from the file
+ * replaces it. New messages take their place in time among the live ones, and
+ * always go before a message still streaming, which is newer than anything on
+ * disk. `reset` means the file was read from the start again: finished
+ * messages are replaced by what was read.
  */
 export function mergeSubagentMessages(transcript: SubagentTranscript, messages: AgentMessage[], reset = false): SubagentTranscript {
-	const kept = reset ? transcript.items.filter(item => item.kind === "message" && item.streaming) : transcript.items;
-	const seen = new Set(kept.flatMap(item => (item.kind === "message" ? [identity(item.message)] : [])).filter(Boolean));
+	const kept = reset ? transcript.items.filter(item => item.kind === "message" && item.streaming) : transcript.items.slice();
+	let openKeys = transcript.openKeys;
+	const seen = new Map<string, number>();
+	kept.forEach((item, index) => {
+		const id = item.kind === "message" ? identity(item.message) : undefined;
+		if (id) seen.set(id, index);
+	});
 	const fresh = messages.filter(message => {
 		const id = identity(message);
 		if (!id) return true;
-		if (seen.has(id)) return false;
-		seen.add(id);
-		return true;
+		const index = seen.get(id);
+		if (index === undefined) {
+			seen.set(id, -1);
+			return true;
+		}
+		const item = kept[index];
+		if (item?.kind === "message" && item.streaming) {
+			kept[index] = { ...item, message, streaming: false };
+			openKeys = openKeys.filter(key => key !== item.key);
+		}
+		return false;
 	});
 	const added = messagesToView(fresh, index => `h${transcript.seq + index + 1}`);
-	const at = kept.findIndex(item => item.kind === "message" && item.streaming);
-	const items = at === -1 ? [...kept, ...added.items] : [...kept.slice(0, at), ...added.items, ...kept.slice(at)];
+	const items: TranscriptItem[] = [];
+	let next = 0;
+	for (const item of kept) {
+		while (next < fresh.length && goesBefore(fresh[next]!, item)) items.push(added.items[next++]!);
+		items.push(item);
+	}
+	items.push(...added.items.slice(next));
 	return {
 		...transcript,
 		items,
+		openKeys,
 		// Results are keyed by tool call, so ones kept from before a reset are harmless.
 		toolResults: { ...transcript.toolResults, ...added.toolResults },
 		seeded: true,
 		seq: transcript.seq + fresh.length,
 	};
+}
+
+/** A message read from the file goes before a streaming message, and before a live one that is newer. */
+function goesBefore(message: AgentMessage, item: TranscriptItem): boolean {
+	if (item.kind !== "message") return false;
+	if (item.streaming) return true;
+	return typeof message.timestamp === "number" && typeof item.message.timestamp === "number" && message.timestamp < item.message.timestamp;
 }
 
 /**

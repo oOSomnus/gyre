@@ -5,6 +5,7 @@ import { gateway } from "../lib/gateway";
 import { subStatus } from "../chat/SubagentCard";
 import { openChatPane, useApp } from "../store/app";
 import { type SubagentInfo, useChats } from "../store/chats";
+import { subagentLevel } from "../store/subagent-transcripts";
 
 /** Live view of task sub-agents spawned by the focused (or chosen) chat. */
 export function SubagentsPane({ pane }: { pane: PaneSpec }) {
@@ -19,7 +20,8 @@ export function SubagentsPane({ pane }: { pane: PaneSpec }) {
 		let current = true;
 		setSnapshot([]);
 		if (!chatId || chat?.info.status !== "ready") return;
-		void gateway.rpc(chatId, { type: "set_subagent_subscription", level: "progress" }).catch(() => undefined);
+		// Keep `events` while a sub-agent view of this chat is open.
+		void gateway.rpc(chatId, { type: "set_subagent_subscription", level: subagentLevel(chatId) }).catch(() => undefined);
 		const poll = () =>
 			void gateway
 				.rpc<SubagentInfo[] | { subagents?: SubagentInfo[] }>(chatId, { type: "get_subagents" })

@@ -135,7 +135,9 @@ describe("ChatManager", () => {
 
 		// The watching UI leaves: omp drops back to what the rest asked for.
 		manager.unsubscribeAll(watcher.subscriber);
-		await until(() => chat.subagentLevel() === "off");
+		expect(chat.subagentLevel()).toBe("off");
+		// omp itself got the downgrade (commands are handled in order).
+		expect(await level()).toBe("off");
 		await manager.setSubagentLevel(chat, other.subscriber, "progress");
 		expect(await level()).toBe("progress");
 

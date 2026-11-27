@@ -318,6 +318,8 @@ try {
 		await pane.screenshot({ path: join(scratch, "review-subagent.png") });
 		subEvent({ type: "tool_execution_end", toolCallId: "sub-call", toolName: "grep", result: { content: [{ type: "text", text: "src/auth.ts:42" }] } });
 		await page.waitForFunction(() => !document.querySelector('[data-pane="sub-pane"] .gy-card.tool .animate-spin'));
+		await pane.locator('.gy-card.tool button[data-jump="tool"]').first().click();
+		await pane.locator(".gy-card.tool .gy-card-body").getByText("src/auth.ts:42").waitFor();
 		const leaked = await page.evaluate(() => (window as any).__gyre.useChats.getState().chats.chat.frames.some((f: any) => f.frame.type === "subagent_event"));
 		assert(!leaked, "sub-agent events landed in the chat's frame log");
 		await page.evaluate(() => (window as any).__gyre.useApp.getState().closePane("sub-pane"));

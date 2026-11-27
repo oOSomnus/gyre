@@ -87,6 +87,45 @@ test("a reset replaces finished messages with the file and keeps the one streami
 	expect(texts(reset)).toEqual(['user:"new"', 'assistant:[{"type":"text","text":"live"}]…']);
 });
 
+test("older history read after live messages goes before them, in time order", () => {
+	const live = fold([
+		{ type: "message_end", message: assistant("live 5", 5) },
+		{ type: "message_end", message: assistant("live 9", 9) },
+	]);
+	const merged = mergeSubagentMessages(live, [user("task", 1), assistant("file 7", 7), assistant("live 9", 9), assistant("file 12", 12)]);
+	expect(texts(merged)).toEqual([
+		'user:"task"',
+		'assistant:[{"type":"text","text":"live 5"}]',
+		'assistant:[{"type":"text","text":"file 7"}]',
+		'assistant:[{"type":"text","text":"live 9"}]',
+		'assistant:[{"type":"text","text":"file 12"}]',
+	]);
+	// Live keys are kept.
+	expect(merged.items.filter(item => item.key.startsWith("s"))).toHaveLength(2);
+});
+
+test("a finished message in the file ends its partial live copy, and a late live end does not add another", () => {
+	const t = fold([{ type: "message_start", message: assistant("par", 3) }, { type: "message_update", message: assistant("parti", 3) }]);
+	const merged = mergeSubagentMessages(t, [assistant("partial done", 3)]);
+	expect(texts(merged)).toEqual(['assistant:[{"type":"text","text":"partial done"}]']);
+	expect(merged.openKeys).toEqual([]);
+	const late = fold([{ type: "message_end", message: assistant("partial done", 3) }], merged);
+	expect(late.items).toHaveLength(1);
+	expect(late.items[0]!.key).toBe(t.items[0]!.key);
+});
+
+test("tool results that end in the same millisecond stay separate", () => {
+	const result = (id: string) => ({ role: "toolResult", toolCallId: id, content: [], timestamp: 4 }) as AgentMessage;
+	const t = fold([
+		{ type: "message_start", message: result("a") },
+		{ type: "message_end", message: result("a") },
+		{ type: "message_start", message: result("b") },
+		{ type: "message_end", message: result("b") },
+	]);
+	expect(t.items).toHaveLength(2);
+	expect(mergeSubagentMessages(t, [result("a"), result("b")]).items).toHaveLength(2);
+});
+
 test("subscribes a chat at events while any of its sub-agent views is open", () => {
 	const changes: string[] = [];
 	const watchers = createSubagentWatchers((chatId, level) => changes.push(`${chatId}=${level}`));

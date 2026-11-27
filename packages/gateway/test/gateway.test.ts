@@ -112,6 +112,38 @@ describe("ChatManager", () => {
 		expect(replayed.filter(f => uiRequestKind(String(f.method)) === "dialog").map(f => f.id)).toEqual(["keep", "future"]);
 	});
 
+	test("gives omp the highest sub-agent level any UI asked for, and sub-agent events only to UIs that asked", async () => {
+		const manager = new ChatManager({ ompPath: FAKE_OMP, idleReapMs: 0 });
+		const watcher = collector();
+		const other = collector();
+		const chat = await manager.open({ projectId: "p1", cwd: tmp, subscriber: watcher.subscriber });
+		manager.subscribe(chat, other.subscriber);
+		const level = async () => (await chat.process.call<{ level: string }>({ type: "get_subagent_level" })).level;
+
+		await manager.setSubagentLevel(chat, other.subscriber, "progress");
+		expect(await level()).toBe("progress");
+		await manager.setSubagentLevel(chat, watcher.subscriber, "events");
+		expect(await level()).toBe("events");
+		// Lowering one UI keeps the level another still needs.
+		await manager.setSubagentLevel(chat, other.subscriber, "off");
+		expect(await level()).toBe("events");
+
+		await chat.process.call({ type: "emit_subagent_event" });
+		await until(() => other.frames().some(f => f.type === "notice" && f.message === "after-subagent-event"));
+		expect(watcher.frames().some(f => f.type === "subagent_event")).toBe(true);
+		expect(other.frames().some(f => f.type === "subagent_event")).toBe(false);
+
+		// The watching UI leaves: omp drops back to what the rest asked for.
+		manager.unsubscribeAll(watcher.subscriber);
+		expect(chat.subagentLevel()).toBe("off");
+		// omp itself got the downgrade (commands are handled in order).
+		expect(await level()).toBe("off");
+		await manager.setSubagentLevel(chat, other.subscriber, "progress");
+		expect(await level()).toBe("progress");
+
+		await manager.closeAll();
+	});
+
 	test("a chat whose socket left while it was opening is reaped, not leaked", async () => {
 		const manager = new ChatManager({ ompPath: FAKE_OMP, idleReapMs: 50 });
 		const gone: Subscriber = { connected: false, send: () => {} };

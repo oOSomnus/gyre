@@ -12,7 +12,7 @@ import {
 	type Workspace,
 } from "@gyre/protocol";
 import type { ServerWebSocket } from "bun";
-import { ChatManager, type ChatManagerOptions, type Subscriber } from "./chats";
+import { ChatManager, type ChatManagerOptions, isSubagentLevel, type Subscriber } from "./chats";
 import { Store, WorkspaceConflictError } from "./db";
 import { validWorkspace, validClientMessage } from "./validation";
 import { isContained, openContained } from "./contained-file";
@@ -635,7 +635,12 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 					return;
 				}
 				try {
-					const response = await chat.process.send(message.command, message.timeoutMs);
+					const command = message.command;
+					// Several UIs share one omp level: the gateway decides it from what each asked for.
+					const response =
+						command.type === "set_subagent_subscription" && isSubagentLevel(command.level)
+							? await chats.setSubagentLevel(chat, ws.data.subscriber, command.level, message.timeoutMs)
+							: await chat.process.send(command, message.timeoutMs);
 					if (response.success) send({ t: "result", reqId: message.reqId, ok: true, data: response.data ?? null });
 					else
 						send({

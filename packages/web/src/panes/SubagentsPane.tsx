@@ -1,9 +1,11 @@
 import type { PaneSpec } from "@gyre/protocol";
-import { Bot, Square } from "lucide-react";
+import { Bot, ExternalLink, Square } from "lucide-react";
 import { useEffect, useState } from "react";
 import { gateway } from "../lib/gateway";
-import { useApp } from "../store/app";
+import { subStatus } from "../chat/SubagentCard";
+import { openChatPane, useApp } from "../store/app";
 import { type SubagentInfo, useChats } from "../store/chats";
+import { subagentLevel } from "../store/subagent-transcripts";
 
 /** Live view of task sub-agents spawned by the focused (or chosen) chat. */
 export function SubagentsPane({ pane }: { pane: PaneSpec }) {
@@ -18,7 +20,8 @@ export function SubagentsPane({ pane }: { pane: PaneSpec }) {
 		let current = true;
 		setSnapshot([]);
 		if (!chatId || chat?.info.status !== "ready") return;
-		void gateway.rpc(chatId, { type: "set_subagent_subscription", level: "progress" }).catch(() => undefined);
+		// Keep `events` while a sub-agent view of this chat is open.
+		void gateway.rpc(chatId, { type: "set_subagent_subscription", level: subagentLevel(chatId) }).catch(() => undefined);
 		const poll = () =>
 			void gateway
 				.rpc<SubagentInfo[] | { subagents?: SubagentInfo[] }>(chatId, { type: "get_subagents" })
@@ -58,36 +61,46 @@ export function SubagentsPane({ pane }: { pane: PaneSpec }) {
 						No sub-agents running. They appear here when the agent delegates with the task tool.
 					</div>
 				)}
-				{list.map(agent => (
-					<div key={agent.id} className="gy-card tool">
-						<div className="gy-card-head">
-							<Bot size={13} style={{ color: "var(--tool)" }} />
-							<span className="gy-label" style={{ color: "var(--tool)" }}>
-								{String(agent.agent ?? "agent")}
-							</span>
-							<span className="min-w-0 flex-1 truncate text-[12.5px]">{String(agent.description ?? agent.task ?? "")}</span>
-							<span className="gy-chip">{String(agent.status ?? "…")}</span>
-							{chatId && (agent.status === "running" || agent.status === "pending") && (
-								<button
-									type="button"
-									className="gy-icon-btn"
-									title="Cancel"
-									onClick={() => {
-									setActionError(null);
-									void gateway.rpc(chatId, { type: "cancel_subagent", subagentId: agent.subagentId ?? agent.id }).catch(e => setActionError((e as Error).message));
-								}}
-								>
-									<Square size={12} />
+				{list.map(agent => {
+					const status = subStatus(agent);
+					const open = () => chatId && openChatPane("subagent", chatId, { ref: agent.id, subagentId: agent.subagentId ?? agent.id });
+					return (
+						<div key={agent.id} className="gy-card tool" data-subagent={agent.id}>
+							<div className="gy-card-head">
+								<button type="button" className="gy-card-label min-w-0 flex-1 text-left" title="Open its conversation" data-jump="open-subagent" onClick={open}>
+									<Bot size={13} style={{ color: "var(--tool)" }} />
+									<span className="gy-label" style={{ color: "var(--tool)" }}>
+										{String(agent.agent ?? "agent")}
+									</span>
+									<span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-normal tracking-normal normal-case">{String(agent.description ?? agent.task ?? "")}</span>
 								</button>
+								<div className="gy-card-meta">
+									<span className={`gy-chip ${status === "completed" ? "ok" : status === "failed" || status === "aborted" ? "err" : "info"}`}>{status}</span>
+									<button type="button" title="Open its conversation" onClick={open}>
+										<ExternalLink size={12} />
+									</button>
+									{chatId && (status === "running" || status === "pending" || status === "started") && (
+										<button
+											type="button"
+											title="Cancel"
+											onClick={() => {
+												setActionError(null);
+												void gateway.rpc(chatId, { type: "cancel_subagent", subagentId: agent.subagentId ?? agent.id }).catch(e => setActionError((e as Error).message));
+											}}
+										>
+											<Square size={11} />
+										</button>
+									)}
+								</div>
+							</div>
+							{typeof agent.assignment === "string" && (
+								<div className="gy-card-body text-[12px]" style={{ color: "var(--text-dim)" }}>
+									{agent.assignment.slice(0, 600)}
+								</div>
 							)}
 						</div>
-						{typeof agent.assignment === "string" && (
-							<div className="gy-card-body text-[12px]" style={{ color: "var(--text-dim)" }}>
-								{agent.assignment.slice(0, 600)}
-							</div>
-						)}
-					</div>
-				))}
+					);
+				})}
 			</div>
 		</div>
 	);

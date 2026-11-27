@@ -19,6 +19,7 @@ const respond = (id: unknown, command: string, data?: unknown) => write({ type: 
 const fail = (id: unknown, command: string, error: string, code?: string) => write({ type: "response", id, command, success: false, error, code });
 
 let sessionFile = "/tmp/fake-session.jsonl";
+let subagentLevel = "off";
 let pendingUi: ((response: Record<string, unknown>) => void) | null = null;
 
 write({ type: "ready", protocolVersion: 1, supportedProtocolVersions: [1, 2], maxFrameBytes: 1048576 });
@@ -79,6 +80,19 @@ for await (const chunk of Bun.stdin.stream()) {
 					inbox: process.env.PLANNOTATOR_INBOX_TOOL,
 					argv: process.argv.slice(2),
 				});
+				break;
+			case "set_subagent_subscription":
+				subagentLevel = String(cmd.level);
+				respond(cmd.id, "set_subagent_subscription", { level: subagentLevel });
+				break;
+			case "get_subagent_level":
+				respond(cmd.id, "get_subagent_level", { level: subagentLevel });
+				break;
+			case "emit_subagent_event":
+				// Like omp: sub-agent events only go out at the `events` level.
+				if (subagentLevel === "events") write({ type: "subagent_event", payload: { id: "sub1", event: { type: "agent_start" } } });
+				write({ type: "notice", level: "info", message: "after-subagent-event" });
+				respond(cmd.id, "emit_subagent_event");
 				break;
 			case "big":
 				respond(cmd.id, "big", { blob: "x".repeat(1_500_000) });

@@ -4,7 +4,7 @@ import { Activity, Bot, MessagesSquare, SquareTerminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { progressOf, subStatus } from "../chat/SubagentCard";
 import { api, gateway } from "../lib/gateway";
-import { useApp } from "../store/app";
+import { openChatPane, useApp } from "../store/app";
 import { useChats } from "../store/chats";
 
 const POLL_TIMEOUT_MS = 10_000;
@@ -184,14 +184,20 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 				return (
 					<div key={`${chatId}:${sub.id}`} className="gy-row">
 						<span className="gy-chip info">{subStatus(sub)}</span>
-						<div className="min-w-0 flex-1">
+						<button
+							type="button"
+							className="min-w-0 flex-1 text-left"
+							title="Open its conversation"
+							data-jump="open-subagent"
+							onClick={() => openChatPane("subagent", chatId, { ref: sub.id, subagentId: sub.subagentId })}
+						>
 							<div className="truncate text-[13px]">
 								{String(sub.agent ?? "agent")} · {String(sub.description ?? "")}
 							</div>
 							<div className="truncate font-mono text-[11px]" style={{ color: "var(--muted)" }}>
 								{p.currentTool ?? "thinking"} {p.toolCount ? `· ${p.toolCount} tools` : ""}
 							</div>
-						</div>
+						</button>
 						{sub.subagentId && (
 							<button
 								type="button"

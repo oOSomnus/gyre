@@ -51,7 +51,7 @@ Legend: `cmd` RPC command, `evt` event frame, `ui` `extension_ui_request` method
 | Images at actual size | `panes/ImagePane.tsx` | image content blocks |
 | COMPLETION CHOICE / TOOL SAFETY | `chat/DialogCard.tsx` | `ui select/confirm/input/editor/ask/form/cancel`; approval prompts are selects ending in "Deny" |
 | Sub-agent cards inside the task card | `chat/SubagentCard.tsx` | `cmd set_subagent_subscription {level: progress}`, `evt subagent_lifecycle/progress` (matched by `parentToolCallId`) |
-| Sub-agent pane | `panes/SubagentPane.tsx` | `cmd get_subagent_messages` (incremental), `cmd steer_subagent`, `cmd cancel_subagent` |
+| Sub-agent pane: the sub-agent's conversation rendered like a chat (streaming text, thinking, running tool cards), read-only apart from steer and cancel; opened from its card, the Agents pane or Task Manager | `panes/SubagentPane.tsx`, `chat/Transcript.tsx`, `store/subagent-transcripts.ts` | `cmd set_subagent_subscription {level: events}` while open, `evt subagent_event` (folded like chat frames), `cmd get_subagent_messages` (once, then only when nothing streams), `cmd steer_subagent`, `cmd cancel_subagent` |
 | Objectives | `panes/ObjectivesPane.tsx` | `cmd goal`, `get_state.goal`, `get_state.todoPhases`, todo `tool_execution_end` details |
 | Event graph | `panes/GraphPane.tsx` (@xyflow/react) | transcript, tool executions, sub-agents, todo phases |
 | Task Manager | `panes/TasksPane.tsx` | `gw` `/api/chats` (+ restart/kill), `/api/ptys`, chat store sub-agents |

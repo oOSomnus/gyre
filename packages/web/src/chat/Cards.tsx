@@ -98,13 +98,14 @@ function ImageThumb({ chatId, src, alt }: { chatId?: string; src: string; alt: s
 	);
 }
 
-export const UserCard = memo(function UserCard({ message, chatId }: { message: AgentMessage; chatId?: string }) {
+/** `readOnly`: no view · review · fork actions (a sub-agent's message is not in `chatId`'s session). */
+export const UserCard = memo(function UserCard({ message, chatId, readOnly }: { message: AgentMessage; chatId?: string; readOnly?: boolean }) {
 	const text = textOf(message.content);
 	const images = Array.isArray(message.content) ? message.content.filter(b => b.type === "image") : [];
 	if (message.synthetic && !text) return null;
 	return (
 		<div className="gy-card user">
-			<CardHead label={message.steering ? "User · steer" : "User"} meta={<MessageMeta chatId={chatId} message={message} text={text} />} />
+			<CardHead label={message.steering ? "User · steer" : "User"} meta={<MessageMeta chatId={readOnly ? undefined : chatId} message={message} text={text} />} />
 			<div className="gy-card-body">
 				<div className="whitespace-pre-wrap break-words">{text}</div>
 				{images.length > 0 && (
@@ -195,6 +196,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 	toolExec,
 	toolResults,
 	chatId,
+	readOnly,
 	hideAbort,
 }: {
 	message: AgentMessage;
@@ -202,6 +204,8 @@ export const AssistantMessage = memo(function AssistantMessage({
 	toolExec: Record<string, ToolExecution>;
 	toolResults: Record<string, AgentMessage>;
 	chatId?: string;
+	/** No view · review · fork actions; tool cards still use `chatId`. */
+	readOnly?: boolean;
 	/** The abort is internal control flow (e.g. the run ended after submit_plan): no "Turn aborted" card. */
 	hideAbort?: boolean;
 }) {
@@ -227,7 +231,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 						<div key={`x${i}`} className="gy-card assistant">
 							<CardHead
 								label="Assistant"
-								meta={i === firstTextIndex && !streaming ? <MessageMeta chatId={chatId} message={message} review text={fullText} /> : <span>{time(message.timestamp)}</span>}
+								meta={i === firstTextIndex && !streaming ? <MessageMeta chatId={readOnly ? undefined : chatId} message={message} review text={fullText} /> : <span>{time(message.timestamp)}</span>}
 							>
 								{message.model && (
 									<span className="truncate font-mono text-[10.5px] font-normal tracking-normal normal-case" style={{ color: "var(--muted)" }}>

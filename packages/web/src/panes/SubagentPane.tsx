@@ -1,29 +1,52 @@
-/** One sub-agent's live card plus its transcript (incremental get_subagent_messages), with steer and cancel. */
+/**
+ * One sub-agent's conversation, rendered like a chat: the session file is read
+ * once, then its session events stream in live (omp's `events` subscription)
+ * with streaming text and running tool cards. Falls back to polling the
+ * session file when no live events arrive. Steer and cancel included.
+ */
 import type { PaneSpec } from "@gyre/protocol";
 import { Loader2, Send, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { AssistantMessage, GenericMessage, UserCard } from "../chat/Cards";
 import { modelName, progressOf, subStatus } from "../chat/SubagentCard";
+import { LatestButton, TranscriptItems, useStickToBottom, visibleTranscriptItems } from "../chat/Transcript";
 import { gateway } from "../lib/gateway";
 import { formatTokens, type AgentMessage } from "../lib/omp";
 import { useChats } from "../store/chats";
+import { mergeSubagentTranscript, useSubagentTranscript, watchSubagent } from "../store/subagent-transcripts";
+
+/** Poll the session file this often while running and nothing streams live. */
+const POLL_RUNNING_MS = 1500;
+/** And this often once the sub-agent is done (or between live updates), to catch anything missed. */
+const POLL_IDLE_MS = 6000;
 
 export function SubagentPane({ pane }: { pane: PaneSpec }) {
 	const chatId = pane.chatId ?? "";
 	const sub = useChats(s => (pane.ref ? s.chats[chatId]?.subagents[pane.ref] : undefined));
 	const subagentId = sub?.subagentId ?? pane.subagentId;
 	const sessionFile = sub?.sessionFile;
-	const [messages, setMessages] = useState<AgentMessage[]>([]);
+	// Live events are keyed by sub-agent id; with only a session file the view polls it.
+	const viewKey = subagentId ?? (sessionFile ? `file:${sessionFile}` : undefined);
+	const transcript = useSubagentTranscript(chatId, viewKey);
+	const live = transcript?.live ?? false;
 	const [error, setError] = useState<string | null>(null);
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [steer, setSteer] = useState("");
 	const cursor = useRef(0);
+	const { scroller, onScroll, stick, toLatest } = useStickToBottom();
 	const status = sub ? subStatus(sub) : "unknown";
 	const active = status === "running" || status === "pending" || status === "started";
 
+	// Stream this sub-agent's events while the pane is open.
 	useEffect(() => {
-		if (!chatId || (!subagentId && !sessionFile)) return;
-		let live = true;
+		if (!chatId || !viewKey) return;
+		cursor.current = 0;
+		return watchSubagent(chatId, viewKey);
+	}, [chatId, viewKey]);
+
+	// Read the session file: all of it first, then only what was appended.
+	useEffect(() => {
+		if (!chatId || !viewKey) return;
+		let current = true;
 		let pending = false;
 		const poll = async () => {
 			if (pending) return;
@@ -34,28 +57,27 @@ export function SubagentPane({ pane }: { pane: PaneSpec }) {
 					...(subagentId ? { subagentId } : { sessionFile }),
 					fromByte: cursor.current,
 				});
-				if (!live) return;
-				if (data.reset) setMessages(data.messages ?? []);
-				else if (data.messages?.length) setMessages(m => [...m, ...(data.messages ?? [])]);
+				if (!current) return;
+				mergeSubagentTranscript(chatId, viewKey, data.messages ?? [], !!data.reset);
 				cursor.current = data.nextByte ?? cursor.current;
 				setError(null);
 			} catch (e) {
-				if (live) setError(String((e as Error).message));
+				if (current) setError(String((e as Error).message));
 			} finally {
 				pending = false;
 			}
 		};
 		void poll();
-		const timer = setInterval(poll, active ? 1500 : 6000);
+		const timer = setInterval(poll, active && !live ? POLL_RUNNING_MS : POLL_IDLE_MS);
 		return () => {
-			live = false;
+			current = false;
 			clearInterval(timer);
 		};
-	}, [chatId, subagentId, sessionFile, active]);
+	}, [chatId, viewKey, subagentId, sessionFile, active, live]);
 
 	const p = sub ? progressOf(sub) : {};
 	const tokens = typeof p.tokens === "number" ? p.tokens : p.tokens?.total;
-	const toolResults = Object.fromEntries(messages.filter(m => m.role === "toolResult" && m.toolCallId).map(m => [m.toolCallId as string, m]));
+	const items = transcript ? visibleTranscriptItems(transcript.items, transcript.toolResults) : [];
 
 	return (
 		<div className="flex h-full min-h-0 flex-col" style={{ background: "var(--panel)" }}>
@@ -65,6 +87,11 @@ export function SubagentPane({ pane }: { pane: PaneSpec }) {
 			>
 				<span className="font-mono text-[11.5px] font-semibold tracking-widest uppercase">{String(sub?.agent ?? "sub-agent")}</span>
 				<span className={`gy-chip ${status === "completed" ? "ok" : active ? "info" : "err"}`}>{status}</span>
+				{active && live && (
+					<span className="gy-label" title="Streaming this sub-agent's events live">
+						live
+					</span>
+				)}
 				{modelName(p.resolvedModel) && <span className="font-mono text-[11px]">{modelName(p.resolvedModel)}</span>}
 				{tokens ? <span className="gy-label">{formatTokens(tokens)} tok</span> : null}
 				<span className="min-w-0 flex-1 truncate text-[12px]">{String(sub?.description ?? "")}</span>
@@ -74,29 +101,26 @@ export function SubagentPane({ pane }: { pane: PaneSpec }) {
 					</button>
 				)}
 			</div>
-			<div className="min-h-0 flex-1 space-y-2 overflow-auto p-2">
-				{(commandError || error) && (
-					<div className="text-[12px]" style={{ color: "var(--err)" }}>
-						{commandError || error}
-					</div>
-				)}
-				{messages.length === 0 && !error && (
-					<div className="flex items-center gap-2 p-3 text-[12.5px]" style={{ color: "var(--muted)" }}>
-						<Loader2 size={13} className="animate-spin" /> Waiting for the transcript…
-					</div>
-				)}
-				{messages.map((m, i) =>
-					m.role === "user" ? (
-						// biome-ignore lint/suspicious/noArrayIndexKey: transcript order
-						<UserCard key={i} message={m} />
-					) : m.role === "assistant" ? (
-						// biome-ignore lint/suspicious/noArrayIndexKey: transcript order
-						<AssistantMessage key={i} message={m} streaming={false} toolExec={{}} toolResults={toolResults} />
-					) : m.role === "toolResult" ? null : (
-						// biome-ignore lint/suspicious/noArrayIndexKey: transcript order
-						<GenericMessage key={i} message={m} />
-					),
-				)}
+			<div ref={scroller} onScroll={onScroll} className="relative min-h-0 flex-1 overflow-y-auto px-2 py-2">
+				<div className="mx-auto flex max-w-[1080px] flex-col gap-2.5">
+					{(commandError || error) && (
+						<div className="text-[12px]" style={{ color: "var(--err)" }}>
+							{commandError || error}
+						</div>
+					)}
+					{items.length === 0 && !error && (
+						<div className="flex items-center gap-2 p-3 text-[12.5px]" style={{ color: "var(--muted)" }}>
+							<Loader2 size={13} className="animate-spin" /> Waiting for the transcript…
+						</div>
+					)}
+					{transcript && <TranscriptItems items={items} toolExec={transcript.toolExec} toolResults={transcript.toolResults} chatId={chatId} readOnly />}
+					{transcript?.busy && !items.some(item => item.kind === "message" && item.streaming) && (
+						<div className="flex items-center gap-2 px-1 text-[12px]" style={{ color: "var(--muted)" }}>
+							<Loader2 size={13} className="animate-spin" /> Working…
+						</div>
+					)}
+				</div>
+				{!stick && <LatestButton onClick={toLatest} />}
 			</div>
 			{active && subagentId && (
 				<form

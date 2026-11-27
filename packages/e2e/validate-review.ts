@@ -62,6 +62,7 @@ try {
 	let heldModels: { reqId: string } | undefined;
 	const closedPtyKeys: string[] = [];
 	const closedChats: string[] = [];
+	const subagentLevels: string[] = [];
 	const send = (message: ServerMessage) => socket.send(JSON.stringify(message));
 	const info = (chatId = "chat") => ({ chatId, projectId: registered.id, cwd: project, status: "ready" as const, generation: "one", sessionPath: currentSession });
 	const result = (message: { reqId: string }, data: unknown) => send({ t: "result", reqId: message.reqId, ok: true, data });
@@ -108,6 +109,17 @@ try {
 					break;
 				case "get_subagents":
 					result(message, []);
+					break;
+				case "set_subagent_subscription":
+					subagentLevels.push(String(message.command.level));
+					result(message, { level: message.command.level });
+					break;
+				case "get_subagent_messages":
+					result(message, {
+						nextByte: 10,
+						reset: false,
+						messages: message.command.fromByte ? [] : [{ role: "user", content: "Find the auth entry point", timestamp: 1 }],
+					});
 					break;
 				default:
 					result(message, {});
@@ -281,6 +293,39 @@ try {
 		for (const id of ["one", "two"]) await apply({ type: "subagent_lifecycle", payload: { id, parentToolCallId: "same-parent", status: "running" } });
 		const keys = await page.evaluate(() => Object.keys((window as any).__gyre.useChats.getState().chats.chat.subagents));
 		assert(keys.includes("one") && keys.includes("two"), "unindexed sibling subagent was removed");
+	});
+	await step("a sub-agent pane streams its messages and tool calls live, like a chat", async () => {
+		const subEvent = (event: Record<string, unknown>) => send({ t: "frame", chatId: "chat", frame: { type: "subagent_event", payload: { id: "scout-native", event } } });
+		await page.evaluate(() =>
+			(window as any).__gyre.useApp.getState().addPane({ id: "sub-pane", kind: "subagent", chatId: "chat", ref: "scout-native", subagentId: "scout-native" }),
+		);
+		const pane = page.locator('[data-pane="sub-pane"]');
+		await pane.getByText("Find the auth entry point").waitFor();
+		const level = async (want: string) => {
+			for (let i = 0; i < 100 && subagentLevels.at(-1) !== want; i++) await Bun.sleep(20);
+		};
+		await level("events");
+		assert(subagentLevels.at(-1) === "events", `sub-agent pane did not subscribe to events: ${subagentLevels}`);
+		const call = { type: "toolCall", id: "sub-call", name: "grep", arguments: { pattern: "login" } };
+		subEvent({ type: "agent_start" });
+		subEvent({ type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "Searching for" }] } });
+		subEvent({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: "Searching for login handlers" }] } });
+		await pane.getByText("Searching for login handlers").waitFor();
+		subEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Searching for login handlers" }, call], timestamp: 2 } });
+		subEvent({ type: "tool_execution_start", toolCallId: "sub-call", toolName: "grep", args: call.arguments });
+		await pane.locator(".gy-card.tool").first().waitFor();
+		assert(await pane.locator(".gy-card.tool .animate-spin").count(), "running sub-agent tool card shows no spinner");
+		await pane.screenshot({ path: join(scratch, "review-subagent.png") });
+		subEvent({ type: "tool_execution_end", toolCallId: "sub-call", toolName: "grep", result: { content: [{ type: "text", text: "src/auth.ts:42" }] } });
+		await page.waitForFunction(() => !document.querySelector('[data-pane="sub-pane"] .gy-card.tool .animate-spin'));
+		await pane.locator('.gy-card.tool button[data-jump="tool"]').first().click();
+		await pane.locator(".gy-card.tool .gy-card-body").getByText("src/auth.ts:42").waitFor();
+		const leaked = await page.evaluate(() => (window as any).__gyre.useChats.getState().chats.chat.frames.some((f: any) => f.frame.type === "subagent_event"));
+		assert(!leaked, "sub-agent events landed in the chat's frame log");
+		await page.evaluate(() => (window as any).__gyre.useApp.getState().closePane("sub-pane"));
+		await page.waitForFunction(() => !document.querySelector('[data-pane="sub-pane"]'));
+		await level("progress");
+		assert(subagentLevels.at(-1) === "progress", `closing the last sub-agent pane kept events on: ${subagentLevels}`);
 	});
 	await step("streaming chat frames preserve focus inside extension forms", async () => {
 		await apply({ type: "extension_ui_request", id: "focus-form", method: "form", html: '<form><input name="answer"></form>' });

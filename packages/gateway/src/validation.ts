@@ -54,6 +54,7 @@ const kinds = new Set([
 	"image",
 	"subagent",
 	"studio",
+	"git",
 ]);
 export function validWorkspace(v: unknown): v is Workspace {
 	if (!record(v) || !text(v.name) || !record(v.panes) || !finite(v.updatedAt)) return false;
@@ -61,7 +62,7 @@ export function validWorkspace(v: unknown): v is Workspace {
 	const panes = v.panes;
 	for (const [id, p] of Object.entries(panes)) {
 		if (!record(p) || p.id !== id || !text(p.kind) || !kinds.has(p.kind)) return false;
-		if (!["projectId", "sessionPath", "filePath", "chatId", "subagentId", "ref", "section", "title"].every(k => p[k] === undefined || text(p[k]))) return false;
+		if (!["projectId", "sessionPath", "filePath", "chatId", "subagentId", "ref", "section", "title", "revision"].every(k => p[k] === undefined || text(p[k]))) return false;
 	}
 	const paneId = (id: unknown) => text(id) && Object.hasOwn(panes, id);
 	const seen = new Set<string>();

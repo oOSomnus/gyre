@@ -6,6 +6,7 @@ A tiled, keyboard-first desktop UI for the [omp](https://github.com/can1357/oh-m
 
 - **Agent:** omp, unmodified. All of its tools, slash commands, skills, MCP servers, sessions and model providers are available.
 - **UI:** five themes, auto-tiling and floating panes, keyboard mode and jump marks, palettes, an event graph, a task manager, Agent Studio, MCP and model-role settings, a phone layout and remote access. See [docs/ux-spec.md](docs/ux-spec.md).
+- **Git pane:** omp's `/git` is TUI-only, so Gyre has its own `/git [revision]`: changed files, a split diff, stage, unstage or discard per file or hunk, commit or amend, and a commit message from omp's commit model. `/git HEAD~2` shows one commit.
 - **Plan mode:** omp's plan mode is TUI-only, so Gyre adds it over RPC with a small omp extension: plan, review (in [Plannotator](https://github.com/backnotprop/plannotator) when installed), refine, approve. Shell commands are not sandboxed while planning.
 - **Upstream:** Gyre drives omp over its versioned RPC protocol and never forks it. See [Tracking omp upstream](docs/architecture.md#tracking-omp-upstream).
 

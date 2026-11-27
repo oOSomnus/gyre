@@ -65,7 +65,8 @@ Legend: `cmd` RPC command, `evt` event frame, `ui` `extension_ui_request` method
 | Remote access | Settings → Remote access, login screen | `gw` allowed hosts, `/api/login` cookie |
 | Marks | `marks/JumpMarks.tsx` | DOM; second-step actions per `data-jump-kind` (link, table, image, code, file) |
 | Palettes (Alt+X global, Alt+C pane) | `palette/CommandPalette.tsx` | app actions, `cmd get_available_commands` |
-| TUI-only omp commands (`/clear`, `/new`, `/resume`, `/model`, `/settings`) | `chat/localCommands.ts` (composer and palette) | `cmd new_session` (`/clear` links the old session as parent), Sessions pane, model picker, Settings pane. omp's own version wins if it ever advertises one over RPC |
+| TUI-only omp commands (`/clear`, `/new`, `/resume`, `/model`, `/settings`, `/git`) | `chat/localCommands.ts` (composer and palette) | `cmd new_session` (`/clear` links the old session as parent), Sessions pane, model picker, Settings pane, Git pane. omp's own version wins if it ever advertises one over RPC |
+| Git pane (`/git [revision]`, New menu, palette): branch and ahead/behind, Conflicts / Staged / Changes groups with stage, unstage and discard per file (discard asks first), a hunk list over a Monaco split diff (inline in narrow panes and on phones) with per-hunk stage, unstage and discard, commit and amend (Ctrl+Enter), Generate. With a revision: a read-only view of that commit. Refreshes on focus, after its own actions and when a chat in the project finishes a turn | `panes/GitPane.tsx`, `panes/MonacoDiffViewer.tsx`, `lib/git.ts` | `gw` `/api/projects/:id/git/{status,diff,commit,last-message}` (GET), `/git/{stage,unstage,discard,hunk,commit,generate-message}` (POST); Generate runs `cli` `omp commit --legacy --dry-run` |
 | Terminal, Send to AI | `panes/TerminalPane.tsx` | `gw` PTY (`pty_open {key}`, `pty_detach`, `pty_close`) |
 | Files, sessions, settings/providers, raw events | `FilePane`, `SessionsPane`, `SettingsPane`, `EventsPane` | `gw` `/api/fs/*`, `/api/sessions`; `cli` config; `cmd get_login_providers`; every `evt` |
 | omp setup reminder (omp missing / no provider; points to omp for provider setup) | `shell/OmpSetup.tsx` in dead chat panes, the empty workspace, the phone layout and Settings → Providers; TopBar "Add a provider" chip | `gw` `ompStatus` from `/api/health` and `welcome`; Re-check: `gw` `POST /api/omp/recheck`, then restarts dead chat panes |
@@ -103,6 +104,7 @@ Gyre's omp extension (`packages/omp-extension`) provides plan mode over RPC, sin
 | Feature | Status |
 |---|---|
 | Hook Studio | omp hooks are files under `.omp/hooks`; edit them in a terminal or file pane |
-| Commit review ("Review N changes", Alt+R) | omp's `/review` or a terminal `git diff` |
+| Commit review ("Review N changes", Alt+R) | the Git pane (`/git`) for diffs, or omp's `/review` |
+| Git push, pull, branches, stash, AI-selected staging | not in the Git pane yet; use a terminal |
 | Embedded browser pane | omp's `browser` tool renders as a tool card |
 | Semantic indexer, objective evaluator | not planned; omp's own search tools, goals and todos cover the agent side |

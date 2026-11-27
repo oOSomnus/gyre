@@ -193,3 +193,17 @@ describe("extension UI request methods (pinned omp source)", () => {
 		expect([...UI_DIALOG_METHODS, ...UI_PRESENTATION_METHODS, UI_CANCEL_METHOD].sort()).toEqual(methods);
 	});
 });
+
+describe.skipIf(!version)("Git pane: omp's commit-message generator", () => {
+	test("`omp commit` still has --legacy, --dry-run and --no-changelog, and refuses a repo with nothing to commit without a model call", async () => {
+		const { OmpCli } = await import("../src/omp-cli");
+		const cli = new OmpCli(ompPath);
+		const help = await cli.run(["commit", "--help"]);
+		for (const flag of ["--legacy", "--dry-run", "--no-changelog"]) expect(help.stdout + help.stderr).toContain(flag);
+		const repo = mkdtempSync(join(tmpdir(), "gyre-contract-git-"));
+		Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
+		const result = await cli.run(["commit", "--legacy", "--dry-run", "--no-changelog"], repo, 60_000);
+		expect(result.stdout).not.toContain("Generated commit message:");
+		expect(result.stderr).toContain("No changes to commit");
+	}, 90_000);
+});

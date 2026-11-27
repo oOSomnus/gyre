@@ -39,7 +39,7 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
   - A `close_chat` that arrives while the same socket's `open_chat` for that chat is still starting stops the process that open creates, unless a newer open for the same chat has taken it over.
 - **`server.ts`**: HTTP API and WebSocket.
   - Security: binds to 127.0.0.1 by default, requires a per-launch token, and rejects `Host` headers that are not loopback or listed in `GYRE_ALLOWED_HOSTS` (DNS-rebinding guard). The token is injected into the page only for loopback clients or clients holding the HttpOnly login cookie (`POST /api/login`).
-  - Other endpoints include `/api/omp/config` (allowlisted `omp config` keys), `/api/omp/skills`, `/api/agents`, `/api/mcp`, `/api/chats/:id/{restart,kill,plan-prefs}`, `/api/projects/:id/restart-chats`, `/api/ptys`, `/api/fs/stat`, `/api/kv/ui.*`, `/api/remote`.
+  - Other endpoints include `/api/omp/config` (allowlisted `omp config` keys), `/api/omp/skills`, `/api/agents`, `/api/mcp`, `/api/chats/:id/{restart,kill,plan-prefs}`, `/api/projects/:id/restart-chats`, `/api/projects/:id/git/*` (Git pane), `/api/ptys`, `/api/fs/stat`, `/api/kv/ui.*`, `/api/remote`.
   - `PATCH /api/omp/config` edits one `{key, name, value}` assignment in `modelRoles` or `task.agentModelOverrides`; `null` removes it. The gateway serializes config mutations and merges against the latest saved map.
   - Workspace saves compare revisions and return `409` on conflict. Deleted workspace IDs remain tombstoned; a new workspace must use a new ID.
   - `/api/kv/ui.*` GET returns an `ETag` (a hash of the stored JSON, or `"absent"`). A PUT with `If-Match` writes only if the record still has that version, atomically in one sqlite transaction, and returns `412` otherwise. Every Agent Studio draft mutation (`web/src/lib/agent-drafts.ts`) uses it: saves and publish cleanup change only their own key, re-read and retry on `412`, and a save never silently replaces a newer draft of the same agent (it reports a conflict instead).
@@ -51,6 +51,12 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
 - **`sessions.ts`**: the single in-process omp API use (`SessionManager.list`), because RPC has no session-listing command. It is lazily imported and isolated.
 - **`pty.ts`**: terminals via Bun's native PTY (`Bun.spawn({ terminal })`). Shells are keyed by pane id and outlive their UI: detach on unmount, reattach with scrollback replay (at the size it was produced), kill only on close.
 - **`omp-cli.ts`**: runs `omp config|skill|agents` for settings omp has no RPC command for.
+- **`git.ts`**: the Git pane's backend, using the `git` CLI (not omp's native VCS bindings) at the repository root that contains the project. It runs argv only with no shell, `GIT_TERMINAL_PROMPT=0` and a no-op editor.
+  - Every path must be one `git status` currently lists. A revision is rejected if it looks like an option, then checked with `rev-parse --verify --end-of-options`.
+  - Hunks carry an id hashed from their text. A hunk action rebuilds the diff, finds the hunk by id (`409` if the tree changed) and runs `git apply [--cached] [-R]` on a one-hunk patch.
+  - Mutations of one repository are serialized.
+  - Work-tree reads go through `openContained`.
+- **`commit-message.ts`**: Generate in the Git pane runs `omp commit --legacy --dry-run --no-changelog`, the generator omp's own git UI uses, and parses the printed message. omp stages everything when the index is empty, so the gateway refuses unless something is staged and holds the repository's lock while omp runs. It uses the CLI instead of importing `generateGitCommit`, because that import pulls omp's whole SDK into the compiled gateway, and the build fails.
 - **`studio.ts`**: reads and writes omp agent files and `mcp.json` (validated names, fixed locations).
 
 ### Wire protocol (UI ↔ gateway)
@@ -131,6 +137,8 @@ Gyre aims to expose every omp feature without maintaining a fork. These rules ke
 | omp's native plan prompts (`plan-mode-active.md`, `plan-mode-approved.md`), adapted in `omp-extension/src/prompts.ts` | extension | contract test checks the native template still exists; review the diff when bumping |
 | Plannotator's public bus API (`plannotator:request` `plan-review`, `session-opened`, `review-result`, `session-closed`) | extension | extension unit tests; optional at runtime (Gyre's own review card is the fallback) |
 | `omp config get/set --json` output, `omp config path`, `omp skill list --json`, `omp agents unpack --dir` | `omp-cli.ts` | contract test (config, agent dir) |
+| `omp commit --legacy --dry-run --no-changelog` (flags, the `Generated commit message:` marker, the stderr warning line) for the Git pane's Generate | `commit-message.ts` | contract test (flags exist, an empty repo is refused without a model call); unit tests for parsing |
+| omp's `/git` is TUI-only (`handleTui`, so missing from `get_available_commands`) | `chat/localCommands.ts` | Gyre's `/git` steps aside automatically if omp advertises one |
 | Sub-agent frames (`subagent_lifecycle`/`progress` payloads, the `events` level and `subagent_event {id, event}` with no `messageId`, `get_subagent_messages`) | `store/chats.ts`, `store/session-events.ts`, `SubagentCard`, `SubagentPane`, gateway `chats.ts` | UI degrades to the plain task card; without live events the Sub-agent pane polls `get_subagent_messages` |
 | omp agent and MCP file formats/locations | `studio.ts` | gateway unit tests |
 

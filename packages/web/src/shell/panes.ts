@@ -4,6 +4,7 @@ import {
 	Bot,
 	ClipboardList,
 	FileText,
+	GitBranch,
 	History,
 	Image,
 	ListChecks,
@@ -39,6 +40,7 @@ export const PANE_META: Record<PaneKind, PaneMeta> = {
 	tasks: { icon: Activity, title: "Task Manager", needsProject: false, creatable: true },
 	subagents: { icon: Network, title: "Agents", needsProject: false, creatable: true },
 	studio: { icon: Sparkles, title: "Agent Studio", needsProject: false, creatable: true },
+	git: { icon: GitBranch, title: "Git", needsProject: true, creatable: true },
 	settings: { icon: Settings, title: "Settings", needsProject: false, creatable: true },
 	events: { icon: ScrollText, title: "Events", needsProject: false, chatBound: true, creatable: true },
 	plan: { icon: ClipboardList, title: "Plan", needsProject: false, chatBound: true },
@@ -65,6 +67,7 @@ function chatName(chatId: string): string {
 export function paneTitle(pane: PaneSpec): string {
 	if (pane.title) return pane.title;
 	if (pane.kind === "chat") return chatName(pane.id);
+	if (pane.kind === "git") return pane.revision ? `Git · ${pane.revision}` : "Git";
 	if (pane.kind === "file") return pane.filePath ? (pane.filePath.split("/").pop() ?? "Files") : "Files";
 	const base = PANE_META[pane.kind]?.title ?? pane.kind;
 	if (pane.kind === "subagent") {

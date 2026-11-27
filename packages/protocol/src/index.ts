@@ -159,7 +159,8 @@ export type PaneKind =
 	| "message"
 	| "image"
 	| "subagent"
-	| "studio";
+	| "studio"
+	| "git";
 
 /** A pane in the tiled workspace. `kind` decides the component. */
 export interface PaneSpec {
@@ -178,6 +179,8 @@ export interface PaneSpec {
 	ref?: string;
 	/** settings / studio: initial section. */
 	section?: string;
+	/** git: the commit the pane is pinned to (any revision `git rev-parse` accepts). */
+	revision?: string;
 	title?: string;
 }
 
@@ -240,6 +243,73 @@ export interface PlanPrefs {
 	role: string;
 	context: "fresh" | "compact" | "keep";
 }
+
+// ---------------------------------------------------------------------------
+// Git pane (`/api/projects/:id/git/...`)
+// ---------------------------------------------------------------------------
+
+/** One changed path. `index`/`worktree` are porcelain status letters ("." = unchanged, "?" = untracked). */
+export interface GitFile {
+	path: string;
+	/** Rename/copy source. */
+	origPath?: string;
+	index: string;
+	worktree: string;
+	untracked: boolean;
+	/** Unmerged (conflicted) path. */
+	conflicted?: boolean;
+	/** Lines added/removed in the index (staged) and work tree (unstaged); undefined for binary files. */
+	staged?: { added?: number; removed?: number; binary?: boolean };
+	unstaged?: { added?: number; removed?: number; binary?: boolean };
+}
+
+export interface GitStatus {
+	root: string;
+	/** Branch name, or null when HEAD is detached. */
+	branch: string | null;
+	headSha?: string;
+	upstream?: string;
+	ahead: number;
+	behind: number;
+	files: GitFile[];
+}
+
+/** A diff hunk. `id` hashes the header and body, so a hunk action on a changed tree is rejected. */
+export interface GitHunk {
+	id: string;
+	header: string;
+	/** The hunk's lines, header excluded. */
+	lines: string[];
+}
+
+export interface GitDiff {
+	path: string;
+	/** Old side path (differs on renames). */
+	oldPath: string;
+	/** Which side: index vs HEAD (staged) or work tree vs index (unstaged). Ignored for a revision diff. */
+	staged: boolean;
+	revision?: string;
+	binary: boolean;
+	/** Full text of each side for the split view ("" when the side does not exist or is binary). */
+	oldText: string;
+	newText: string;
+	/** True when a side was too large to send and was left empty. */
+	truncated?: boolean;
+	hunks: GitHunk[];
+}
+
+export interface GitCommitInfo {
+	sha: string;
+	author: string;
+	email: string;
+	date: string;
+	subject: string;
+	body: string;
+	parents: string[];
+	files: Array<{ path: string; origPath?: string; status: string; added?: number; removed?: number }>;
+}
+
+export type GitHunkAction = "stage" | "unstage" | "discard";
 
 export const PLAN_WIDGET_KEY = "gyre.plan";
 

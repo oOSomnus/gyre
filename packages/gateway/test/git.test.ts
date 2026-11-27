@@ -1,10 +1,10 @@
 /** The Git pane's gateway side: porcelain parsing, staging, hunks, commits and the HTTP routes. */
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitCommitInfo, GitDiff, GitStatus } from "@gyre/protocol";
-import { GitError, GitRepo, parseFileDiff, parseNumstat, parseStatus } from "../src/git";
+import { contentOnlyHeader, GitError, GitRepo, gitChildEnv, parseFileDiff, parseNumstat, parseStatus } from "../src/git";
 import { GENERATE_ARGS, generateCommitMessage, parseDryRun } from "../src/commit-message";
 import { type Gateway, startGateway } from "../src/server";
 import { validWorkspace } from "../src/validation";
@@ -15,7 +15,7 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 let counter = 0;
 function sh(cwd: string, ...args: string[]): string {
-	const result = Bun.spawnSync(["git", ...args], { cwd, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+	const result = Bun.spawnSync(["git", ...args], { cwd, env: { ...gitChildEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
 	if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
 	return result.stdout.toString();
 }
@@ -142,6 +142,55 @@ describe("GitRepo", () => {
 		expect((await repo.status()).files).toEqual([{ path: "first.txt", index: "?", worktree: "?", untracked: true }]);
 	});
 
+	test("unstage on an unborn branch after the staged file was edited keeps the edit", async () => {
+		const dir = repoWith({});
+		writeFileSync(join(dir, "first.txt"), "1\n");
+		const repo = await GitRepo.open(dir);
+		await repo.stage(["first.txt"]);
+		writeFileSync(join(dir, "first.txt"), "1\n2\n");
+		await repo.unstage(["first.txt"]);
+		expect((await repo.status()).files).toEqual([{ path: "first.txt", index: "?", worktree: "?", untracked: true }]);
+		expect(readFileSync(join(dir, "first.txt"), "utf8")).toBe("1\n2\n");
+	});
+
+	test("paths are literal: a file named like a glob touches only itself", async () => {
+		const dir = repoWith({ "a.txt": "a\n" });
+		writeFileSync(join(dir, "a.txt"), "a2\n");
+		writeFileSync(join(dir, "*.txt"), "star\n");
+		writeFileSync(join(dir, "b.txt"), "b\n");
+		const repo = await GitRepo.open(dir);
+		await repo.stage(["*.txt"]);
+		const byPath = Object.fromEntries((await repo.status()).files.map(f => [f.path, [f.index, f.worktree]]));
+		expect(byPath).toEqual({ "*.txt": ["A", "."], "a.txt": [".", "M"], "b.txt": ["?", "?"] });
+		await repo.unstage(["*.txt"]);
+		await repo.discard(["*.txt"]);
+		expect(readFileSync(join(dir, "b.txt"), "utf8")).toBe("b\n");
+		expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("a2\n");
+		expect((await repo.status()).files.map(f => f.path)).toEqual(["a.txt", "b.txt"]);
+	});
+
+	test("an inherited GIT_DIR / GIT_WORK_TREE does not redirect commands to another repository", async () => {
+		const other = repoWith({ "other.txt": "o\n" });
+		const dir = repoWith({ "a.txt": "a\n" });
+		writeFileSync(join(dir, "a.txt"), "a2\n");
+		const saved = { dir: process.env.GIT_DIR, tree: process.env.GIT_WORK_TREE };
+		process.env.GIT_DIR = join(other, ".git");
+		process.env.GIT_WORK_TREE = other;
+		try {
+			expect(gitChildEnv().GIT_DIR).toBeUndefined();
+			const repo = await GitRepo.open(dir);
+			expect(repo.root).toBe(realpathSync(dir));
+			await repo.stage(["a.txt"]);
+			expect((await repo.status()).files).toMatchObject([{ path: "a.txt", index: "M" }]);
+		} finally {
+			for (const [name, value] of [["GIT_DIR", saved.dir], ["GIT_WORK_TREE", saved.tree]] as const) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
+		expect(sh(other, "status", "--porcelain")).toBe("");
+	});
+
 	test("hunks: stage one of two, unstage it, discard one, and a stale id is a 409", async () => {
 		const dir = repoWith({ "f.txt": lines(30) });
 		const edited = lines(30).replace("line 2\n", "line 2 edited\n").replace("line 28\n", "line 28 edited\n");
@@ -168,6 +217,32 @@ describe("GitRepo", () => {
 
 		const error = await repo.applyHunk("f.txt", again.hunks[0]!.id, "discard").catch(e => e);
 		expect(error.status).toBe(409);
+	});
+
+	test("unstaging one hunk of a staged rename keeps the rename and the other hunk", async () => {
+		const dir = repoWith({ "a.txt": lines(30) });
+		sh(dir, "mv", "a.txt", "b.txt");
+		const edited = lines(30).replace("line 2\n", "line 2 edited\n").replace("line 28\n", "line 28 edited\n");
+		writeFileSync(join(dir, "b.txt"), edited);
+		const repo = await GitRepo.open(dir);
+		await repo.stage(["b.txt"]);
+		const staged = await repo.diff("b.txt", { staged: true });
+		expect(staged.oldPath).toBe("a.txt");
+		expect(staged.hunks).toHaveLength(2);
+
+		await repo.applyHunk("b.txt", staged.hunks[1]!.id, "unstage");
+		expect((await repo.status()).files).toMatchObject([{ path: "b.txt", origPath: "a.txt", index: "R", worktree: "M" }]);
+		expect(sh(dir, "show", ":0:b.txt")).toBe(lines(30).replace("line 2\n", "line 2 edited\n"));
+		expect(readFileSync(join(dir, "b.txt"), "utf8")).toBe(edited);
+	});
+
+	test("contentOnlyHeader drops rename lines and names the new path on both sides", () => {
+		const header = ["diff --git a/old name.txt b/new.txt", "similarity index 90%", "rename from old name.txt", "rename to new.txt", "index 1111111..2222222 100644", "--- a/old name.txt", "+++ b/new.txt"];
+		expect(contentOnlyHeader(header)).toEqual(["diff --git a/new.txt b/new.txt", "index 1111111..2222222 100644", "--- a/new.txt", "+++ b/new.txt"]);
+		const quoted = ["diff --git a/x \"b/t\\tab\"", "rename from x", "rename to \"t\\tab\"", "--- a/x", '+++ "b/t\\tab"'];
+		expect(contentOnlyHeader(quoted)).toEqual(['diff --git "a/t\\tab" "b/t\\tab"', '--- "a/t\\tab"', '+++ "b/t\\tab"']);
+		const plain = ["diff --git a/f b/f", "index 1..2 100644", "--- a/f", "+++ b/f"];
+		expect(contentOnlyHeader(plain)).toEqual(plain);
 	});
 
 	test("untracked files show as added but their hunks are not actionable", async () => {

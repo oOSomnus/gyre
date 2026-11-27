@@ -168,6 +168,11 @@ function WorkingTreeView({ pane, projectId, focused }: { pane: PaneSpec; project
 				style={{ borderColor: "var(--border)" }}
 			>
 				<BranchBar status={status} busy={busy} onRefresh={() => void refresh()} />
+				{loadError && (
+					<div className="px-2 py-1 text-[12px]" style={{ color: "var(--err)" }} role="alert">
+						Could not refresh: {loadError.message}
+					</div>
+				)}
 				{actionError && (
 					<div className="flex items-start gap-2 px-2 py-1 text-[12px]" style={{ color: "var(--err)" }} role="alert">
 						<span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{actionError}</span>
@@ -391,13 +396,21 @@ function CommitComposer({
 	const [amend, setAmend] = useState(false);
 	const [generating, setGenerating] = useState(false);
 	const [notice, setNotice] = useState<{ tone: "warn" | "err"; text: string } | null>(null);
+	// Bumped on every change to the draft, so a slow response never overwrites newer text.
+	const draftVersion = useRef(0);
+	const setDraft = (text: string) => {
+		draftVersion.current++;
+		setMessage(text);
+	};
 	const canCommit = message.trim() !== "" && (stagedCount > 0 || amend) && busy === null && !generating;
 
 	const toggleAmend = async (on: boolean) => {
 		setAmend(on);
 		if (on && !message.trim()) {
+			const version = draftVersion.current;
 			try {
-				setMessage((await api<{ message: string }>(gitPath(projectId, "last-message"))).message);
+				const last = (await api<{ message: string }>(gitPath(projectId, "last-message"))).message;
+				if (draftVersion.current === version) setDraft(last);
 			} catch {}
 		}
 	};
@@ -405,9 +418,11 @@ function CommitComposer({
 	const generate = async () => {
 		setGenerating(true);
 		setNotice(null);
+		const version = draftVersion.current;
 		try {
 			const result = await post<{ message: string; validationError: string | null }>(projectId, "generate-message", {});
-			setMessage(result.message);
+			if (draftVersion.current !== version) return;
+			setDraft(result.message);
 			if (result.validationError) setNotice({ tone: "warn", text: `Check the message: ${result.validationError}` });
 		} catch (error) {
 			setNotice({ tone: "err", text: (error as Error).message });
@@ -416,13 +431,18 @@ function CommitComposer({
 		}
 	};
 
-	const commit = () =>
-		run(amend ? "Amending" : "Committing", async () => {
-			await post(projectId, "commit", { message, amend });
-			setMessage("");
+	const commit = () => {
+		const submitted = message;
+		const version = draftVersion.current;
+		return run(amend ? "Amending" : "Committing", async () => {
+			await post(projectId, "commit", { message: submitted, amend });
+			// Text typed while the commit ran is a new draft: keep it.
+			if (draftVersion.current !== version) return;
+			setDraft("");
 			setAmend(false);
 			setNotice(null);
 		});
+	};
 
 	return (
 		<div className="flex flex-col gap-1.5 border-t p-2" style={{ borderColor: "var(--border)" }}>
@@ -431,7 +451,7 @@ function CommitComposer({
 				placeholder={stagedCount ? `Commit message (${stagedCount} staged)` : "Stage changes to commit"}
 				aria-label="Commit message"
 				value={message}
-				onChange={e => setMessage(e.target.value)}
+				onChange={e => setDraft(e.target.value)}
 				onKeyDown={e => {
 					if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && canCommit) {
 						e.preventDefault();

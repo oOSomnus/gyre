@@ -32,6 +32,29 @@ const COMMIT_TIMEOUT_MS = 180_000;
 /** Flags that make diff output independent of the user's diff config, so patches apply. */
 const DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"];
 
+/**
+ * Variables that point git at a repository other than the one `cwd` is in. A
+ * gateway started from a git hook (or a shell that exported them) would
+ * otherwise run every project's commands against that one repository.
+ */
+const REPO_LOCATION_VARS = [
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_COMMON_DIR",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_NAMESPACE",
+	"GIT_PREFIX",
+];
+
+/** `env` (default: this process's) without the repository-location variables, so git discovers the repo from `cwd`. */
+export function gitChildEnv(env: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
+	const clean = { ...env };
+	for (const name of REPO_LOCATION_VARS) delete clean[name];
+	return clean;
+}
+
 interface RunResult {
 	code: number;
 	stdout: Uint8Array;
@@ -50,8 +73,10 @@ export async function runGit(cwd: string, args: string[], options: { stdin?: str
 		stdout: "pipe",
 		stderr: "pipe",
 		env: {
-			...process.env,
+			...gitChildEnv(),
 			GIT_TERMINAL_PROMPT: "0",
+			// Paths are file names from status, never patterns: `*.txt` means that one file.
+			GIT_LITERAL_PATHSPECS: "1",
 			GIT_OPTIONAL_LOCKS: "0",
 			// A commit never opens an editor: the message always comes on stdin.
 			GIT_EDITOR: "true",
@@ -216,6 +241,25 @@ export function parseFileDiff(diff: string): ParsedFileDiff {
 /** A patch holding only `hunk`, for `git apply`. */
 export function hunkPatch(header: readonly string[], hunk: GitHunk): string {
 	return `${[...header, hunk.header, ...hunk.lines].join("\n")}\n`;
+}
+
+/**
+ * `header` reduced to a content change of the new path: no rename or copy
+ * lines, and the new path on both sides. Reverse-applying a staged rename's
+ * hunk with the rename lines would undo the rename in the index as well.
+ */
+export function contentOnlyHeader(header: readonly string[]): string[] {
+	const plus = header.find(line => line.startsWith("+++ "));
+	if (!plus || !header.some(line => /^(rename|copy) (from|to) /.test(line))) return [...header];
+	// `+++ b/path` or, for a quoted path, `+++ "b/path"`.
+	const bSide = plus.slice(4);
+	const aSide = bSide.startsWith('"b/') ? `"a/${bSide.slice(3)}` : bSide.startsWith("b/") ? `a/${bSide.slice(2)}` : bSide;
+	return header.flatMap(line => {
+		if (/^(similarity index|dissimilarity index|rename from|rename to|copy from|copy to) /.test(line)) return [];
+		if (line.startsWith("diff --git ")) return [`diff --git ${aSide} ${bSide}`];
+		if (line.startsWith("--- ")) return [`--- ${aSide}`];
+		return [line];
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +467,8 @@ export class GitRepo {
 			const targets = files.flatMap(f => (f.origPath ? [f.path, f.origPath] : [f.path]));
 			// An unborn branch has no HEAD to restore the index from: drop the entries instead.
 			if (status.headSha) await this.git(["restore", "--staged", "--", ...targets]);
-			else await this.git(["rm", "--cached", "-r", "-q", "--", ...targets]);
+			// `-f`: the work-tree file may have changed since it was staged; only the index entry goes.
+			else await this.git(["rm", "--cached", "-f", "-r", "-q", "--", ...targets]);
 		});
 	}
 
@@ -454,7 +499,9 @@ export class GitRepo {
 			const hunk = parsed.hunks.find(h => h.id === id);
 			if (!hunk) throw new GitError("the file changed since the diff was loaded; refresh and try again", 409);
 			const args = action === "stage" ? ["--cached"] : action === "unstage" ? ["--cached", "-R"] : ["-R"];
-			await this.git(["apply", "--whitespace=nowarn", ...args, "-"], { stdin: hunkPatch(parsed.header, hunk) });
+			// Only the staged diff detects renames; unstaging a hunk keeps the rename staged.
+			const header = action === "unstage" ? contentOnlyHeader(parsed.header) : parsed.header;
+			await this.git(["apply", "--whitespace=nowarn", ...args, "-"], { stdin: hunkPatch(header, hunk) });
 		});
 	}
 

@@ -764,6 +764,8 @@ export function openGitPane(projectId: string, revision?: string, nextTo?: strin
 	for (const ws of app.workspaces) {
 		const existing = Object.values(ws.panes).find(p => p.kind === "git" && p.projectId === projectId && (p.revision ?? "") === (revision ?? ""));
 		if (existing) {
+			// Another pane filling the grid would hide the one being revealed.
+			if (app.maximizedPaneId && app.maximizedPaneId !== existing.id) useApp.setState({ maximizedPaneId: null });
 			app.revealPane(existing.id);
 			return existing.id;
 		}

@@ -88,6 +88,18 @@ describe("/git local command", () => {
 		expect(gitPanes()).toHaveLength(1);
 	});
 
+	test("revealing an existing Git pane un-maximizes another pane but keeps its own maximize", async () => {
+		const { findLocalCommand, gitPanes, useApp } = await setup();
+		await findLocalCommand("chat1", "/git")!();
+		const gitId = gitPanes()[0]!.id;
+		useApp.setState({ maximizedPaneId: "chat1" });
+		await findLocalCommand("chat1", "/git")!();
+		expect(useApp.getState().maximizedPaneId).toBeNull();
+		useApp.setState({ maximizedPaneId: gitId });
+		await findLocalCommand("chat1", "/git")!();
+		expect(useApp.getState().maximizedPaneId).toBe(gitId);
+	});
+
 	test("a revision argument opens a pinned pane; option-like arguments are refused", async () => {
 		const { findLocalCommand, gitPanes } = await setup();
 		await findLocalCommand("chat1", "/git HEAD~2")!();

@@ -753,3 +753,23 @@ export function openChatPane(kind: PaneKind, chatId: string, extra: Partial<Pane
 		paneIdsInOrder(app.activeWorkspace()?.layout ?? null).includes(chatId) ? { nextTo: chatId, direction: "row" } : {},
 	);
 }
+
+/**
+ * Open the Git pane for a project (`/git [revision]`), next to `nextTo` when it
+ * is in the layout. An existing pane for the same project and revision is
+ * revealed instead of opening another one.
+ */
+export function openGitPane(projectId: string, revision?: string, nextTo?: string): string {
+	const app = useApp.getState();
+	for (const ws of app.workspaces) {
+		const existing = Object.values(ws.panes).find(p => p.kind === "git" && p.projectId === projectId && (p.revision ?? "") === (revision ?? ""));
+		if (existing) {
+			// Another pane filling the grid would hide the one being revealed.
+			if (app.maximizedPaneId && app.maximizedPaneId !== existing.id) useApp.setState({ maximizedPaneId: null });
+			app.revealPane(existing.id);
+			return existing.id;
+		}
+	}
+	const inLayout = nextTo !== undefined && paneIdsInOrder(app.activeWorkspace()?.layout ?? null).includes(nextTo);
+	return app.addPane({ kind: "git", projectId, ...(revision ? { revision } : {}) }, inLayout ? { nextTo, direction: "row" } : {});
+}

@@ -9,7 +9,7 @@
  */
 import { gateway } from "../lib/gateway";
 import type { SlashCommand } from "../lib/omp";
-import { useApp } from "../store/app";
+import { openGitPane, useApp } from "../store/app";
 import { startFreshSession, useChats } from "../store/chats";
 
 interface LocalCommand extends SlashCommand {
@@ -59,6 +59,25 @@ const LOCAL_COMMANDS: LocalCommand[] = [
 		description: "Switch model for this chat",
 		source: "gyre",
 		run: chatId => useApp.getState().openModelPicker(chatId),
+	},
+	{
+		name: "git",
+		description: "Open the Git pane: diff, staging and commit (optionally pinned to a revision)",
+		input: { hint: "[revision]" },
+		source: "gyre",
+		run: (chatId, args) => {
+			const projectId = useChats.getState().chats[chatId]?.info.projectId;
+			if (!projectId) {
+				notice(chatId, "warning", "Git: this chat has no project.");
+				return;
+			}
+			const revision = args.split(/\s+/)[0] || undefined;
+			if (revision?.startsWith("-")) {
+				notice(chatId, "warning", "Git: give a revision such as HEAD~2 or a commit sha.");
+				return;
+			}
+			openGitPane(projectId, revision, chatId);
+		},
 	},
 	{
 		name: "settings",

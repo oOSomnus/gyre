@@ -9,6 +9,7 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gitChildEnv } from "./git";
 
 export class OmpCliError extends Error {
 	constructor(
@@ -60,7 +61,8 @@ export class OmpCli {
 			stdout: "pipe",
 			stderr: "pipe",
 			stdin: "ignore",
-			env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+			// omp's git commands (the Git pane's `omp commit`) must find the repo from `cwd`.
+			env: { ...gitChildEnv(), NO_COLOR: "1", FORCE_COLOR: "0" },
 		});
 		this.#running.add(proc);
 		const out = proc.stdout.getReader();

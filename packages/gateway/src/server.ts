@@ -22,6 +22,8 @@ import { browseDirs, expandHome, FsAccessError, listDir, readText, resolveInside
 import { OmpCli, OmpCliError } from "./omp-cli";
 import { OmpCommandError } from "./omp-process";
 import { PtyManager, type PtyListener } from "./pty";
+import { GitError, GitRepo } from "./git";
+import { generateCommitMessage } from "./commit-message";
 import { listSessions } from "./sessions";
 import { deleteAgent, deleteMcp, listAgents, listMcp, type Scope, StudioError, saveAgent, saveMcp, setMcpEnabled } from "./studio";
 
@@ -368,6 +370,33 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				}
 				return json({ restarted: ids.length - failed.length, failed });
 			}
+			// ---- Git pane ----
+			const gitMatch = path.match(/^\/api\/projects\/([^/]+)\/git\/([a-z-]+)$/);
+			if (gitMatch?.[1] && gitMatch[2]) {
+				const repo = await GitRepo.open(projectOr404(gitMatch[1]).path);
+				const action = gitMatch[2];
+				if (method === "GET") {
+					if (action === "status") return json(await repo.status());
+					if (action === "diff") {
+						const revision = url.searchParams.get("rev") || undefined;
+						return json(await repo.diff(url.searchParams.get("path") ?? "", { staged: url.searchParams.get("staged") === "1", revision }));
+					}
+					if (action === "commit") return json(await repo.show(url.searchParams.get("rev") ?? ""));
+					if (action === "last-message") return json({ message: await repo.lastCommitMessage() });
+				}
+				if (method === "POST") {
+					const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+					if (action === "stage") await repo.stage(body.paths);
+					else if (action === "unstage") await repo.unstage(body.paths);
+					else if (action === "discard") await repo.discard(body.paths);
+					else if (action === "hunk") await repo.applyHunk(String(body.path ?? ""), String(body.id ?? ""), body.action as never);
+					else if (action === "commit") return json(await repo.commit(body.message, { amend: body.amend === true }));
+					else if (action === "generate-message") return json(await generateCommitMessage(repo, ompCli));
+					else return fail("unknown git action", 404);
+					return json({ ok: true });
+				}
+				return fail("unknown git action", 404);
+			}
 			if (path === "/api/ptys" && method === "GET") return json(ptys.list());
 			const ptyMatch = path.match(/^\/api\/ptys\/([^/]+)$/);
 			if (ptyMatch?.[1] && method === "DELETE") {
@@ -518,7 +547,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 		} catch (error) {
 			if (error instanceof WorkspaceConflictError) return fail(error.message, 409);
 			if (error instanceof FsAccessError) return fail(error.message, error.status);
-			if (error instanceof OmpCliError || error instanceof StudioError) return fail(error.message, error.status);
+			if (error instanceof OmpCliError || error instanceof StudioError || error instanceof GitError) return fail(error.message, error.status);
 			return fail(error instanceof Error ? error.message : String(error), 500);
 		}
 	}

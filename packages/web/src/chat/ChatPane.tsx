@@ -1,6 +1,6 @@
 import type { PaneSpec } from "@gyre/protocol";
-import { ArrowDown, Loader2, RotateCw } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Loader2, RotateCw } from "lucide-react";
+import { useEffect } from "react";
 import { gateway } from "../lib/gateway";
 import { needsSetup, useOmpStatus } from "../lib/ompStatus";
 import { OmpSetupGuide } from "../shell/OmpSetup";
@@ -8,11 +8,11 @@ import { stripAnsi } from "../lib/omp";
 import { useApp } from "../store/app";
 import { attachPane } from "../store/chat-lifecycle";
 import { useChats } from "../store/chats";
-import { AssistantMessage, CommandOutputCard, EventRow, GenericMessage, NoticeCard, PlanBanner, UserCard } from "./Cards";
+import { PlanBanner } from "./Cards";
 import { ChatStrip } from "./ChatStrip";
 import { Composer } from "./Composer";
 import { DialogCard } from "./DialogCard";
-import { isPlanSubmitAbort } from "./planAbort";
+import { LatestButton, TranscriptItems, useStickToBottom, visibleTranscriptItems } from "./Transcript";
 import { Gyroscope } from "../shell/Gyroscope";
 
 export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }) {
@@ -20,8 +20,7 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 	const updatePane = useApp(s => s.updatePane);
 	const projects = useApp(s => s.projects);
 	const ompStatus = useOmpStatus(s => s.status);
-	const scroller = useRef<HTMLDivElement>(null);
-	const [stick, setStick] = useState(true);
+	const { scroller, onScroll, stick, toLatest } = useStickToBottom();
 
 	useEffect(() => {
 		attachPane(pane);
@@ -31,17 +30,6 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 	useEffect(() => {
 		if (chat?.info.sessionPath && chat.info.sessionPath !== pane.sessionPath) updatePane(pane.id, { sessionPath: chat.info.sessionPath });
 	}, [chat?.info.sessionPath, pane.id, pane.sessionPath, updatePane]);
-
-	const onScroll = useCallback(() => {
-		const el = scroller.current;
-		if (!el) return;
-		setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
-	}, []);
-
-	useLayoutEffect(() => {
-		const el = scroller.current;
-		if (el && stick) el.scrollTop = el.scrollHeight;
-	});
 
 	if (!pane.projectId)
 		return (
@@ -72,9 +60,7 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 
 	const widgetsAbove = Object.entries(chat.widgets).filter(([, w]) => w.placement !== "belowEditor");
 	const widgetsBelow = Object.entries(chat.widgets).filter(([, w]) => w.placement === "belowEditor");
-	const visibleItems = chat.items.filter(
-		item => !(item.kind === "message" && item.message.role === "toolResult" && item.message.toolCallId && chat.toolResults[item.message.toolCallId]),
-	);
+	const visibleItems = visibleTranscriptItems(chat.items, chat.toolResults);
 	const latestDialog = chat.pendingUi[chat.pendingUi.length - 1];
 
 	return (
@@ -89,35 +75,7 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 					{chat.info.status === "ready" && chat.historyLoaded && !visibleItems.some(i => i.kind === "message" || i.kind === "command_output") && (
 						<EmptyChat chatId={pane.id} />
 					)}
-					{visibleItems.map((item, index) => {
-						switch (item.kind) {
-							case "message": {
-								const m = item.message;
-								if (m.role === "user") return <UserCard key={item.key} message={m} chatId={pane.id} />;
-								if (m.role === "assistant")
-									return (
-										<AssistantMessage
-											key={item.key}
-											message={m}
-											streaming={!!item.streaming}
-											toolExec={chat.toolExec}
-											toolResults={chat.toolResults}
-											chatId={pane.id}
-											hideAbort={isPlanSubmitAbort(visibleItems, index, chat.toolResults)}
-										/>
-									);
-								return <GenericMessage key={item.key} message={m} />;
-							}
-							case "command_output":
-								return <CommandOutputCard key={item.key} text={item.text} ts={item.ts} />;
-							case "notice":
-								return <NoticeCard key={item.key} item={item} />;
-							case "event":
-								return <EventRow key={item.key} label={item.label} detail={item.detail} />;
-							default:
-								return null;
-						}
-					})}
+					<TranscriptItems items={visibleItems} toolExec={chat.toolExec} toolResults={chat.toolResults} chatId={pane.id} />
 					<PlanBanner chatId={pane.id} />
 					{chat.pendingUi.map(request => (
 						<DialogCard key={request.id} chatId={pane.id} request={request} active={focused && request === latestDialog} />
@@ -135,18 +93,7 @@ export function ChatPane({ pane, focused }: { pane: PaneSpec; focused: boolean }
 						</div>
 					)}
 				</div>
-				{!stick && (
-					<button
-						type="button"
-						className="gy-btn sticky bottom-2 left-full mr-2 shadow"
-						onClick={() => {
-							setStick(true);
-							scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
-						}}
-					>
-						<ArrowDown size={13} /> Latest
-					</button>
-				)}
+				{!stick && <LatestButton onClick={toLatest} />}
 			</div>
 			<div className="w-full shrink-0 pt-1.5" style={{ background: "var(--panel)", borderTop: "1px solid var(--border-strong)" }}>
 				{widgetsAbove.map(([key, w]) => (

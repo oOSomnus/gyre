@@ -4,7 +4,7 @@
  */
 import { type ChatInfo, type OmpFrame, type ServerMessage, uiRequestKind } from "@gyre/protocol";
 import { sanitize } from "./console-ui";
-import { OmpProcess, type OmpProcessOptions } from "./omp-process";
+import { OmpProcess, type OmpProcessOptions, type OmpResponse } from "./omp-process";
 
 export interface Subscriber {
 	send(message: ServerMessage): void;
@@ -28,6 +28,13 @@ export interface ChatManagerOptions {
 	log?: (line: string) => void;
 }
 
+/** omp's sub-agent subscription levels, lowest first. */
+export const SUBAGENT_LEVELS = ["off", "progress", "events"] as const;
+export type SubagentLevel = (typeof SUBAGENT_LEVELS)[number];
+export function isSubagentLevel(value: unknown): value is SubagentLevel {
+	return SUBAGENT_LEVELS.includes(value as SubagentLevel);
+}
+
 /** Frames whose latest value a late subscriber should receive. */
 const STICKY_FRAME_TYPES = new Set(["available_commands_update", "session_info_update", "config_update"]);
 
@@ -37,6 +44,12 @@ export class Chat {
 	readonly pendingUi = new Map<string, OmpFrame>();
 	/** Latest value of sticky frames and presentation state (status/widgets/title). */
 	readonly sticky = new Map<string, OmpFrame>();
+	/**
+	 * The sub-agent level each UI asked for. omp has one level per process, so it
+	 * gets the highest; `subagent_event` frames (every sub-agent token) go only to
+	 * the UIs that asked for `events`.
+	 */
+	readonly subagentLevels = new Map<Subscriber, SubagentLevel>();
 	busy = false;
 	reapTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -46,13 +59,23 @@ export class Chat {
 	) {}
 
 	broadcast(message: ServerMessage): void {
+		const eventsOnly = message.t === "frame" && message.frame.type === "subagent_event";
 		for (const subscriber of this.subscribers) {
+			if (eventsOnly && this.subagentLevels.get(subscriber) !== "events") continue;
 			try {
 				subscriber.send(message);
 			} catch {
 				this.subscribers.delete(subscriber);
+				this.subagentLevels.delete(subscriber);
 			}
 		}
+	}
+
+	/** The highest level any UI asked for, `off` when none did. */
+	subagentLevel(): SubagentLevel {
+		let index = 0;
+		for (const level of this.subagentLevels.values()) index = Math.max(index, SUBAGENT_LEVELS.indexOf(level));
+		return SUBAGENT_LEVELS[index] ?? "off";
 	}
 
 	setInfo(patch: Partial<ChatInfo>): void {
@@ -204,6 +227,7 @@ export class ChatManager {
 	unsubscribeAll(subscriber: Subscriber): void {
 		subscriber.connected = false;
 		for (const chat of this.chats.values()) {
+			if (chat.subagentLevels.delete(subscriber) && chat.process.running) void this.#applySubagentLevel(chat).catch(() => undefined);
 			if (!chat.subscribers.delete(subscriber)) continue;
 			chat.info = { ...chat.info, subscribers: chat.subscribers.size };
 			if (chat.subscribers.size === 0) this.#scheduleReap(chat);
@@ -243,6 +267,16 @@ export class ChatManager {
 	async closeAll(): Promise<void> {
 		this.stopping = true;
 		await Promise.allSettled([...this.chats.keys()].map(id => this.close(id)));
+	}
+
+	/** Record the sub-agent level one UI wants and give omp the highest any UI wants. */
+	setSubagentLevel(chat: Chat, subscriber: Subscriber, level: SubagentLevel, timeoutMs?: number): Promise<OmpResponse> {
+		if (subscriber.connected !== false) chat.subagentLevels.set(subscriber, level);
+		return this.#applySubagentLevel(chat, timeoutMs);
+	}
+
+	#applySubagentLevel(chat: Chat, timeoutMs?: number): Promise<OmpResponse> {
+		return chat.process.send({ type: "set_subagent_subscription", level: chat.subagentLevel() }, timeoutMs);
 	}
 
 	/** Called after a UI answers a dialog so it is not replayed again. */

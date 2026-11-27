@@ -58,7 +58,7 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
 - **Client → gateway:**
   - `hello{token}`
   - `open_chat{projectId, chatId?, sessionPath?}`
-  - `rpc{chatId, command}`, which forwards **any** omp command
+  - `rpc{chatId, command}`, which forwards **any** omp command. One exception: `set_subagent_subscription` is one level per omp process, so the gateway records the level each UI asks for, sends omp the highest, and sends `subagent_event` frames only to UIs that asked for `events`
   - `ui_response{chatId, response}`
   - `subscribe`, `close_chat`
   - `pty_open{reqId, key?}`, `pty_input`, `pty_resize`, `pty_detach{ptyId, attachmentId}`, `pty_close`, `pty_close_key{projectId, key}`. The open result's attachment ID is that open request's `reqId`, and a detach only releases the attachment whose ID it names. A delayed detach therefore cannot release a newer attachment on the same socket, provided the client never reuses a `reqId` on that socket; the gateway does not enforce unique IDs.
@@ -72,6 +72,7 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
 ## Web UI state
 
 - **`store/chats.ts`** folds omp frames into a per-chat state: transcript items, tool executions, tool results, pending dialogs, statuses, widgets, commands, queue, sub-agents, and a raw frame ring buffer.
+  - Message and tool-execution events are folded by `store/session-events.ts`, which also folds a sub-agent's `subagent_event` frames into `store/subagent-transcripts.ts` while a Sub-agent pane is open. Those frames never reach the chat state or its raw log.
   - Unknown frames still land in the raw log (Events pane).
   - Unknown message roles render as collapsible generic cards.
   - Unknown tools use the generic tool renderer.
@@ -105,8 +106,8 @@ Gyre aims to expose every omp feature without maintaining a fork. These rules ke
 3. **Customize through omp's extension points.** Use extensions, custom tools, hooks, skills and MCP. If Gyre needs new behaviour from omp, propose it upstream rather than patching it locally. Gyre's one extension (`packages/omp-extension`, loaded with `omp -e`) adds plan mode over RPC.
 4. **Write omp settings through omp.** Settings changes go through `omp config set` (validated by omp's registry, picked up live by its config watcher), and only allowlisted keys (`omp-cli.ts`). File-backed config that omp has no command for (agent `.md` files, `mcp.json`) is edited in omp's documented locations and formats.
 5. **Pass through, don't reinterpret.**
-   - The gateway forwards any command and any frame.
-   - The UI renders unknown tools generically, shows unknown message roles as collapsible cards, and logs every frame in the Events pane.
+   - The gateway forwards any command and any frame. The exception is sub-agent events, which go only to UIs that asked for them (see the protocol above).
+   - The UI renders unknown tools generically, shows unknown message roles as collapsible cards, and logs every frame in the Events pane, apart from sub-agent events, which go to the Sub-agent pane.
    - New upstream tools, commands and events therefore appear without Gyre changes.
 6. **Discover rather than hard-code.**
    - Slash commands come from `get_available_commands` and `available_commands_update`.
@@ -130,7 +131,7 @@ Gyre aims to expose every omp feature without maintaining a fork. These rules ke
 | omp's native plan prompts (`plan-mode-active.md`, `plan-mode-approved.md`), adapted in `omp-extension/src/prompts.ts` | extension | contract test checks the native template still exists; review the diff when bumping |
 | Plannotator's public bus API (`plannotator:request` `plan-review`, `session-opened`, `review-result`, `session-closed`) | extension | extension unit tests; optional at runtime (Gyre's own review card is the fallback) |
 | `omp config get/set --json` output, `omp config path`, `omp skill list --json`, `omp agents unpack --dir` | `omp-cli.ts` | contract test (config, agent dir) |
-| Sub-agent frames (`subagent_lifecycle`/`progress` payloads, `get_subagent_messages`) | `store/chats.ts`, `SubagentCard`, `SubagentPane` | UI degrades to the plain task card |
+| Sub-agent frames (`subagent_lifecycle`/`progress` payloads, the `events` level and `subagent_event {id, event}` with no `messageId`, `get_subagent_messages`) | `store/chats.ts`, `store/session-events.ts`, `SubagentCard`, `SubagentPane`, gateway `chats.ts` | UI degrades to the plain task card; without live events the Sub-agent pane polls `get_subagent_messages` |
 | omp agent and MCP file formats/locations | `studio.ts` | gateway unit tests |
 
 ### Plan mode and upstream

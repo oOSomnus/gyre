@@ -7,22 +7,10 @@ import { create } from "zustand";
 import { gateway } from "../lib/gateway";
 import { openChatPane } from "./app";
 import type { AgentMessage, SessionState, SessionStats, SlashCommand, UiRequest } from "../lib/omp";
+import { foldSessionEvent, messagesToView, settleStreaming, type ToolExecution, type TranscriptItem } from "./session-events";
+import { applySubagentEvent, subagentLevel } from "./subagent-transcripts";
 
-export type TranscriptItem =
-	| { kind: "message"; key: string; message: AgentMessage; streaming?: boolean }
-	| { kind: "command_output"; key: string; text: string; ts: number }
-	| { kind: "notice"; key: string; level: "info" | "warning" | "error"; message: string; ts: number; url?: string }
-	| { kind: "event"; key: string; label: string; detail?: string; ts: number };
-
-export interface ToolExecution {
-	status: "running" | "done" | "error";
-	args?: unknown;
-	intent?: string;
-	partial?: unknown;
-	result?: unknown;
-	startedAt: number;
-	endedAt?: number;
-}
+export type { ToolExecution, TranscriptItem } from "./session-events";
 
 export interface TodoTask {
 	content: string;
@@ -140,15 +128,6 @@ export function subagentKey(payload: { subagentId?: unknown; id?: unknown; progr
 	return String(payload.id ?? "");
 }
 
-function upsertMessage(chat: ChatState, key: string, message: AgentMessage, streaming: boolean): TranscriptItem[] {
-	const index = chat.items.findIndex(item => item.kind === "message" && item.key === key);
-	const item: TranscriptItem = { kind: "message", key, message, streaming };
-	if (index === -1) return [...chat.items, item];
-	const items = chat.items.slice();
-	items[index] = item;
-	return items;
-}
-
 export function applyFrame(chat: ChatState, frame: OmpFrame): ChatState {
 	const now = Date.now();
 	const frames = chat.frames.length >= MAX_FRAMES ? chat.frames.slice(-MAX_FRAMES + 1) : chat.frames.slice();
@@ -163,7 +142,7 @@ export function applyFrame(chat: ChatState, frame: OmpFrame): ChatState {
 			break;
 		case "agent_end":
 			turnRevisions.set(chat.info.chatId, (turnRevisions.get(chat.info.chatId) ?? 0) + 1);
-			next.items = next.items.map(item => (item.kind === "message" && item.streaming ? { ...item, streaming: false } : item));
+			next.items = settleStreaming(next.items);
 			break;
 		case "session_settled":
 			turnRevisions.set(chat.info.chatId, (turnRevisions.get(chat.info.chatId) ?? 0) + 1);
@@ -171,38 +150,13 @@ export function applyFrame(chat: ChatState, frame: OmpFrame): ChatState {
 			break;
 		case "message_start":
 		case "message_update":
-		case "message_end": {
-			const message = f.message as AgentMessage | undefined;
-			if (!message) break;
-			const key = typeof f.messageId === "string" ? `m${f.messageId}` : nextKey("m");
-			const final = frame.type === "message_end";
-			next.items = upsertMessage(next, key, message, !final && message.role === "assistant");
-			if (final && message.role === "toolResult" && message.toolCallId) {
-				next.toolResults = { ...next.toolResults, [message.toolCallId]: message };
-			}
+		case "message_end":
+		case "tool_execution_start":
+		case "tool_execution_update":
+			next = foldSessionEvent(next, frame, typeof f.messageId === "string" ? `m${f.messageId}` : nextKey("m"), now);
 			break;
-		}
-		case "tool_execution_start": {
-			const id = String(f.toolCallId);
-			next.toolExec = {
-				...next.toolExec,
-				[id]: { status: "running", args: f.args, intent: f.intent as string | undefined, startedAt: now },
-			};
-			break;
-		}
-		case "tool_execution_update": {
-			const id = String(f.toolCallId);
-			const prev = next.toolExec[id] ?? { status: "running" as const, startedAt: now };
-			next.toolExec = { ...next.toolExec, [id]: { ...prev, partial: f.partialResult } };
-			break;
-		}
 		case "tool_execution_end": {
-			const id = String(f.toolCallId);
-			const prev = next.toolExec[id] ?? { startedAt: now };
-			next.toolExec = {
-				...next.toolExec,
-				[id]: { ...prev, status: f.isError ? "error" : "done", result: f.result, endedAt: now },
-			};
+			next = foldSessionEvent(next, frame, "", now);
 			const phases = (f.result as { details?: { phases?: TodoPhase[] } } | undefined)?.details?.phases;
 			if (f.toolName === "todo" && !f.isError && Array.isArray(phases)) next.todoPhases = phases;
 			break;
@@ -445,12 +399,7 @@ export function loadHistory(chatId: string): Promise<void> {
 async function readHistory(chatId: string, generation: string | undefined, epoch: number): Promise<void> {
 	const data = await gateway.rpc<{ messages?: AgentMessage[] } | AgentMessage[]>(chatId, { type: "get_messages" }, 60_000);
 	const messages = Array.isArray(data) ? data : (data?.messages ?? []);
-	const toolResults: Record<string, AgentMessage> = {};
-	const items: TranscriptItem[] = [];
-	for (const message of messages) {
-		if (message.role === "toolResult" && message.toolCallId) toolResults[message.toolCallId] = message;
-		items.push({ kind: "message", key: nextKey("h"), message });
-	}
+	const { items, toolResults } = messagesToView(messages, () => nextKey("h"));
 	const chat = useChats.getState().chats[chatId];
 	if (!chat) return;
 	if (chat.info.generation !== generation || (historyEpochs.get(chatId) ?? 0) !== epoch) return;
@@ -506,11 +455,17 @@ export function wireChatStore({ accepts }: { accepts(chatId: string): boolean })
 			if (message.chat.status === "ready" && (previous !== "ready" || replaced || message.t === "chat_replay")) {
 				void loadHistory(message.chat.chatId).catch(() => undefined);
 				void loadCommands(message.chat.chatId).catch(() => undefined);
-				void gateway.rpc(message.chat.chatId, { type: "set_subagent_subscription", level: "progress" }).catch(() => undefined);
+				// `events` while a sub-agent view of this chat is open, so a restart or reconnect keeps it live.
+				void gateway.rpc(message.chat.chatId, { type: "set_subagent_subscription", level: subagentLevel(message.chat.chatId) }).catch(() => undefined);
 				refreshState(message.chat.chatId, 0);
 			}
 		} else if (message.t === "frame") {
 			if (!accepts(message.chatId)) return;
+			// Every token of every sub-agent: kept out of the chat (and its raw frame log).
+			if (message.frame.type === "subagent_event") {
+				applySubagentEvent(message.chatId, message.frame.payload);
+				return;
+			}
 			const buffered = sessionTransitions.get(message.chatId);
 			if (buffered) {
 				buffered.push(message.frame);

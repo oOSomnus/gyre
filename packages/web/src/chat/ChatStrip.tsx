@@ -1,7 +1,8 @@
 /** Per-chat status strip above the composer (cache, state, modes, thinking, speed, context). */
-import { Bot, ClipboardList, Crosshair, ListChecks, Workflow } from "lucide-react";
+import { Bot, ClipboardList, Crosshair, FileDiff, ListChecks, Workflow } from "lucide-react";
 import { gateway } from "../lib/gateway";
 import { contextPercent, formatTokens } from "../lib/omp";
+import { latestChangedTurn } from "../lib/review";
 import { chatStatus, STATUS_LABEL } from "../lib/status";
 import { openChatPane, useApp } from "../store/app";
 import { useChats } from "../store/chats";
@@ -49,6 +50,7 @@ export function ChatStrip({ chatId }: { chatId: string }) {
 	}).length;
 	const plan = chat.plan;
 	const planOn = plan && plan.phase !== "idle";
+	const changedTurn = latestChangedTurn(chat.turns);
 	const dot = { running: "var(--st-running)", waiting: "var(--st-waiting)", error: "var(--st-error)", idle: "var(--st-idle)", none: "var(--st-none)" }[status];
 	const tps = state?.tokensPerSecond;
 	const levels = (state?.thinkingLevels as string[] | undefined) ?? LEVELS;
@@ -103,6 +105,20 @@ export function ChatStrip({ chatId }: { chatId: string }) {
 				>
 					<ClipboardList size={15} />
 					{planOn && <span className="gy-badge">{plan?.phase === "reviewing" ? "!" : "P"}</span>}
+				</button>
+			)}
+			{chat.turns && !chat.turns.unavailable && (
+				<button
+					type="button"
+					className="gy-strip-icon"
+					title={changedTurn ? `Review the changes of turn ${changedTurn.n} (Alt+R)` : "Review the agent's changes turn by turn (Alt+R)"}
+					data-on={Boolean(changedTurn)}
+					onClick={() => openChatPane("review", chatId)}
+					data-jump="review"
+					data-testid="review-changes"
+				>
+					<FileDiff size={15} />
+					{changedTurn && <span className="gy-badge">!</span>}
 				</button>
 			)}
 			<button type="button" className="gy-strip-icon" title="Objectives" onClick={() => openChatPane("objectives", chatId)} data-jump="objectives">

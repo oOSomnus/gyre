@@ -2,7 +2,7 @@
  * Global keyboard shortcuts and keyboard mode. Dialog Alt+digit handling lives
  * in DialogCard; jump-mark keys live in JumpMarks.
  */
-import { type Direction, focusedChatId, paneIdsInOrder, useApp } from "../store/app";
+import { type Direction, focusedChatId, openChatPane, paneIdsInOrder, useApp } from "../store/app";
 import { closePaneAndResources, numberedPanes } from "../store/actions";
 
 export const SHORTCUT_HELP: Array<{ title: string; keys: Array<[string, string]> }> = [
@@ -16,6 +16,7 @@ export const SHORTCUT_HELP: Array<{ title: string; keys: Array<[string, string]>
 			["Ctrl M", "Model picker for the focused chat; again to switch between models and roles"],
 			["Alt ← ↑ → ↓", "Move focus between panes"],
 			["Alt Z", "Maximize / restore the focused pane"],
+			["Alt R", "Review the focused chat's changes turn by turn"],
 			["Ctrl Shift Enter", "New chat beside the focused pane"],
 			["Alt Shift 1…9", "Switch workspace"],
 			["Alt 1…9", "Answer the newest dialog in the focused chat"],
@@ -201,6 +202,14 @@ export function installShortcuts(): () => void {
 		if (event.altKey && !mod && key.startsWith("arrow")) {
 			stop();
 			moveFocus(key.slice(5) as Direction);
+			return;
+		}
+		if (event.altKey && !mod && !event.shiftKey && isKey("r")) {
+			const chatId = focusedChatId();
+			if (chatId) {
+				stop();
+				openChatPane("review", chatId);
+			}
 			return;
 		}
 		if (event.altKey && !mod && isKey("z")) {

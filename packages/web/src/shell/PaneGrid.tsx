@@ -36,6 +36,7 @@ import { StudioPane } from "../panes/StudioPane";
 import { GitPane } from "../panes/GitPane";
 import { HookStudioPane } from "../panes/HookStudioPane";
 import { JobsPane } from "../panes/JobsPane";
+import { ReviewPane } from "../panes/ReviewPane";
 import { runningJobCount } from "../lib/jobs";
 import { SubagentPane } from "../panes/SubagentPane";
 import { SubagentsPane } from "../panes/SubagentsPane";
@@ -99,7 +100,7 @@ export function PaneMenu({ pane, floating }: { pane: PaneSpec; floating: boolean
 					{chatId && (
 						<>
 							<Dropdown.Separator className="my-1 h-px" style={{ background: "var(--border-strong)" }} />
-							{(["plan", "objectives", "graph", "events"] as const).map(kind => {
+							{(["plan", "objectives", "graph", "events", "review"] as const).map(kind => {
 								const Icon = PANE_META[kind].icon;
 								return (
 									<Dropdown.Item key={kind} className={menuItem} onSelect={() => openChatPane(kind, chatId)}>
@@ -246,6 +247,8 @@ export function PaneContent({ pane, focused }: { pane: PaneSpec; focused: boolea
 			return <HookStudioPane pane={pane} />;
 		case "jobs":
 			return <JobsPane pane={pane} />;
+		case "review":
+			return <ReviewPane pane={pane} />;
 		default:
 			return null;
 	}

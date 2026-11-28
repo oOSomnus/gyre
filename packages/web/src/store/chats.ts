@@ -2,7 +2,7 @@
  * Per-chat state, built by folding omp frames. Unknown frames are kept in the
  * raw log (Events pane) so new upstream events are visible without code changes.
  */
-import { type ChatInfo, type JobInfo, JOBS_WIDGET_KEY, type OmpFrame, PLAN_WIDGET_KEY, type PlanState, uiRequestKind } from "@gyre/protocol";
+import { type ChatInfo, type JobInfo, JOBS_WIDGET_KEY, type OmpFrame, PLAN_WIDGET_KEY, type PlanState, TURNS_WIDGET_KEY, type TurnsState, uiRequestKind } from "@gyre/protocol";
 import { create } from "zustand";
 import { gateway } from "../lib/gateway";
 import { openChatPane } from "./app";
@@ -61,6 +61,8 @@ export interface ChatState {
 	plan: PlanState | null;
 	/** The agent's background jobs, from the extension's `gyre.jobs` widget. */
 	jobs: JobInfo[];
+	/** Per-turn work-tree snapshots, from the extension's `gyre.turns` widget. */
+	turns: TurnsState | null;
 	/** Todo phases: from get_state and live todo tool results. */
 	todoPhases: TodoPhase[];
 	/** Recent tokens/s samples for the sparkline. */
@@ -110,6 +112,17 @@ export function parseJobs(line: string | undefined): JobInfo[] {
 	}
 }
 
+/** The `gyre.turns` widget line, or null when absent or unreadable. */
+export function parseTurns(line: string | undefined): TurnsState | null {
+	if (!line) return null;
+	try {
+		const state = JSON.parse(line) as TurnsState;
+		return state && Array.isArray(state.turns) ? state : null;
+	} catch {
+		return null;
+	}
+}
+
 function emptyChat(info: ChatInfo): ChatState {
 	return {
 		info,
@@ -129,6 +142,7 @@ function emptyChat(info: ChatInfo): ChatState {
 		historyLoaded: false,
 		plan: null,
 		jobs: [],
+		turns: null,
 		todoPhases: [],
 		tpsHistory: [],
 	};
@@ -207,6 +221,10 @@ export function applyFrame(chat: ChatState, frame: OmpFrame): ChatState {
 					} catch {
 						next.plan = null;
 					}
+					break;
+				}
+				if (f.widgetKey === TURNS_WIDGET_KEY) {
+					next.turns = parseTurns((f.widgetLines as string[] | undefined)?.[0]);
 					break;
 				}
 				if (f.widgetKey === JOBS_WIDGET_KEY) {

@@ -405,6 +405,22 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				}
 				return fail("unknown git action", 404);
 			}
+			// ---- Review pane (per-turn snapshots from Gyre's omp extension) ----
+			const reviewMatch = path.match(/^\/api\/projects\/([^/]+)\/review\/(files|diff|revert)$/);
+			if (reviewMatch?.[1] && reviewMatch[2]) {
+				const repo = await GitRepo.open(projectOr404(reviewMatch[1]).path);
+				const action = reviewMatch[2];
+				if (method === "GET" && action === "files") return json(await repo.reviewChanges(url.searchParams.get("from"), url.searchParams.get("to") ?? "worktree"));
+				if (method === "GET" && action === "diff") {
+					return json(await repo.reviewDiff(url.searchParams.get("from"), url.searchParams.get("to") ?? "worktree", url.searchParams.get("path") ?? ""));
+				}
+				if (method === "POST" && action === "revert") {
+					const body = (await req.json()) as { from?: unknown; path?: unknown; hunkId?: unknown };
+					await repo.revert(body.from, body.path, body.hunkId ?? undefined);
+					return json({ ok: true });
+				}
+				return fail("unknown review action", 404);
+			}
 			if (path === "/api/ptys" && method === "GET") return json(ptys.list());
 			const ptyMatch = path.match(/^\/api\/ptys\/([^/]+)$/);
 			if (ptyMatch?.[1] && method === "DELETE") {

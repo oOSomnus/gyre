@@ -162,7 +162,8 @@ export type PaneKind =
 	| "studio"
 	| "git"
 	| "hooks"
-	| "jobs";
+	| "jobs"
+	| "review";
 
 /** A pane in the tiled workspace. `kind` decides the component. */
 export interface PaneSpec {
@@ -371,4 +372,45 @@ export interface JobInfo {
 export interface JobsState {
 	/** Running jobs first, then recently settled ones. */
 	jobs: JobInfo[];
+}
+
+/** Per-turn snapshots of the work tree, published by the Gyre omp extension as the `gyre.turns` widget. */
+export const TURNS_WIDGET_KEY = "gyre.turns";
+
+/** One agent run: git trees of the work tree before and after it (ignored files excluded). */
+export interface TurnRecord {
+	n: number;
+	/** The prompt that started the run (shortened); empty for automatic continuations. */
+	prompt: string;
+	startedAt: number;
+	endedAt?: number;
+	before?: string;
+	after?: string;
+	/** Why a snapshot is missing (git failed or timed out). */
+	error?: string;
+}
+
+export interface TurnsState {
+	sessionId: string;
+	/** Most recent last; at most the last 30 runs. */
+	turns: TurnRecord[];
+	/** Set when turns cannot be recorded (e.g. the project is not a git repository). */
+	unavailable?: string;
+}
+
+/** A file changed between two trees (review pane). */
+export interface ReviewFile {
+	path: string;
+	origPath?: string;
+	/** git status letter: A, M, D, R, C, T. */
+	status: string;
+	added?: number;
+	removed?: number;
+}
+
+/** `GET /api/projects/:id/review/files`: `to` is the tree compared (a fresh snapshot when asked for the work tree). */
+export interface ReviewChanges {
+	from: string;
+	to: string;
+	files: ReviewFile[];
 }

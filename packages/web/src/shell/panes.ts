@@ -19,6 +19,7 @@ import {
 	Sparkles,
 	Webhook,
 	Cpu,
+	FileDiff,
 	type LucideIcon,
 } from "lucide-react";
 import { useChats } from "../store/chats";
@@ -45,6 +46,7 @@ export const PANE_META: Record<PaneKind, PaneMeta> = {
 	git: { icon: GitBranch, title: "Git", needsProject: true, creatable: true },
 	hooks: { icon: Webhook, title: "Hook Studio", needsProject: false, creatable: true },
 	jobs: { icon: Cpu, title: "Background jobs", needsProject: false, creatable: true },
+	review: { icon: FileDiff, title: "Review", needsProject: false, chatBound: true },
 	settings: { icon: Settings, title: "Settings", needsProject: false, creatable: true },
 	events: { icon: ScrollText, title: "Events", needsProject: false, chatBound: true, creatable: true },
 	plan: { icon: ClipboardList, title: "Plan", needsProject: false, chatBound: true },

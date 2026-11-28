@@ -343,6 +343,109 @@ describe("git routes", () => {
 	});
 });
 
+describe("per-turn review", () => {
+	test("a work-tree snapshot includes untracked files, skips ignored ones and leaves the index alone", async () => {
+		const dir = repoWith({ "a.txt": "a\n", ".gitignore": "out/\n" });
+		writeFileSync(join(dir, "new.txt"), "n\n");
+		mkdirSync(join(dir, "out"));
+		writeFileSync(join(dir, "out/x"), "x");
+		const repo = await GitRepo.open(dir);
+		const tree = await repo.snapshotWorktree();
+		expect(sh(dir, "ls-tree", "-r", "--name-only", tree).trim().split("\n")).toEqual([".gitignore", "a.txt", "new.txt"]);
+		expect(sh(dir, "diff", "--cached", "--name-only")).toBe("");
+	});
+
+	test("changes and diffs between two turn trees, and from a turn to the work tree", async () => {
+		const dir = repoWith({ "a.txt": lines(20), "gone.txt": "bye\n", "old.txt": lines(10, "keep") });
+		const repo = await GitRepo.open(dir);
+		const before = await repo.snapshotWorktree();
+		writeFileSync(join(dir, "a.txt"), lines(20).replace("line 2\n", "LINE 2\n"));
+		rmSync(join(dir, "gone.txt"));
+		writeFileSync(join(dir, "added.txt"), "hi\n");
+		sh(dir, "mv", "old.txt", "renamed.txt");
+		const after = await repo.snapshotWorktree();
+		const changes = await repo.reviewChanges(before, after);
+		expect(changes.files.map(f => `${f.status} ${f.path}${f.origPath ? ` <- ${f.origPath}` : ""}`).sort()).toEqual([
+			"A added.txt",
+			"D gone.txt",
+			"M a.txt",
+			"R renamed.txt <- old.txt",
+		]);
+		const turnDiff = await repo.reviewDiff(before, after, "a.txt");
+		expect(turnDiff.hunks.every(h => h.id === "")).toBe(true);
+		expect(turnDiff.newText).toContain("LINE 2");
+		const live = await repo.reviewDiff(before, "worktree", "a.txt");
+		expect(live.hunks[0]!.id).not.toBe("");
+		expect((await repo.reviewChanges(before, before)).files).toEqual([]);
+		await expect(repo.reviewDiff(before, after, "untouched.txt")).rejects.toMatchObject({ status: 404 });
+	});
+
+	test("reverting files puts the work tree back to the turn's start without touching the index", async () => {
+		const dir = repoWith({ "a.txt": "a\n", "gone.txt": "bye\n", "old.txt": "keep\n" });
+		const repo = await GitRepo.open(dir);
+		const before = await repo.snapshotWorktree();
+		writeFileSync(join(dir, "a.txt"), "changed\n");
+		rmSync(join(dir, "gone.txt"));
+		writeFileSync(join(dir, "added.txt"), "hi\n");
+		sh(dir, "mv", "old.txt", "renamed.txt");
+		for (const path of ["a.txt", "gone.txt", "added.txt", "renamed.txt"]) await repo.revert(before, path);
+		expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("a\n");
+		expect(readFileSync(join(dir, "gone.txt"), "utf8")).toBe("bye\n");
+		expect(readFileSync(join(dir, "old.txt"), "utf8")).toBe("keep\n");
+		expect(() => readFileSync(join(dir, "added.txt"))).toThrow();
+		expect(() => readFileSync(join(dir, "renamed.txt"))).toThrow();
+		// git mv staged the rename; revert leaves the index as it was.
+		expect(sh(dir, "diff", "--cached", "--name-status")).toContain("renamed.txt");
+		expect((await repo.reviewChanges(before, "worktree")).files).toEqual([]);
+		await expect(repo.revert(before, "a.txt")).rejects.toMatchObject({ status: 409 });
+	});
+
+	test("reverting one hunk undoes only that hunk; a stale hunk id is a 409", async () => {
+		const dir = repoWith({ "a.txt": lines(30) });
+		const repo = await GitRepo.open(dir);
+		const before = await repo.snapshotWorktree();
+		writeFileSync(join(dir, "a.txt"), lines(30).replace("line 2\n", "LINE 2\n").replace("line 28\n", "LINE 28\n"));
+		const diff = await repo.reviewDiff(before, "worktree", "a.txt");
+		expect(diff.hunks).toHaveLength(2);
+		await repo.revert(before, "a.txt", diff.hunks[0]!.id);
+		const content = readFileSync(join(dir, "a.txt"), "utf8");
+		expect(content).toContain("line 2\n");
+		expect(content).toContain("LINE 28\n");
+		await expect(repo.revert(before, "a.txt", diff.hunks[0]!.id)).rejects.toMatchObject({ status: 409 });
+	});
+
+	test("tree ids are validated before git sees them", async () => {
+		const dir = repoWith({ "a.txt": "a\n" });
+		const repo = await GitRepo.open(dir);
+		for (const bad of ["HEAD", "--all", "", "z".repeat(40), 42]) await expect(repo.resolveTree(bad)).rejects.toMatchObject({ status: 400 });
+		await expect(repo.resolveTree("0".repeat(40))).rejects.toMatchObject({ status: 404 });
+		const commit = sh(dir, "rev-parse", "HEAD").trim();
+		await expect(repo.resolveTree(commit)).rejects.toMatchObject({ status: 404 });
+	});
+
+	test("review routes over HTTP", async () => {
+		const gateway = await startGateway({ host: "127.0.0.1", port: 0, token: "tok", dataDir: join(tmp, "gw-review"), ompPath: FAKE_OMP, idleReapMs: 0 });
+		try {
+			const authed = { "x-gyre-token": "tok", "content-type": "application/json" };
+			const dir = repoWith({ "a.txt": "a\n" });
+			const { id } = (await (await fetch(`${gateway.url}/api/projects`, { method: "POST", headers: authed, body: JSON.stringify({ path: dir }) })).json()) as { id: string };
+			const before = await (await GitRepo.open(dir)).snapshotWorktree();
+			writeFileSync(join(dir, "a.txt"), "b\n");
+			const base = `${gateway.url}/api/projects/${id}/review`;
+			const files = await (await fetch(`${base}/files?from=${before}&to=worktree`, { headers: authed })).json();
+			expect(files.files.map((f: { path: string }) => f.path)).toEqual(["a.txt"]);
+			const diff = (await (await fetch(`${base}/diff?from=${before}&path=a.txt`, { headers: authed })).json()) as GitDiff;
+			expect(diff.oldText).toBe("a\n");
+			expect((await fetch(`${base}/files?from=nope`, { headers: authed })).status).toBe(400);
+			const revert = await fetch(`${base}/revert`, { method: "POST", headers: authed, body: JSON.stringify({ from: before, path: "a.txt" }) });
+			expect(revert.status).toBe(200);
+			expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("a\n");
+		} finally {
+			await gateway.stop();
+		}
+	});
+});
+
 describe("workspace validation", () => {
 	test("git panes, with or without a pinned revision, are saved; a non-string revision is rejected", () => {
 		const ws = (pane: Record<string, unknown>) => ({ name: "w", updatedAt: 1, layout: { type: "pane", paneId: "g" }, panes: { g: { id: "g", ...pane } } });

@@ -18,7 +18,7 @@ const MonacoDiffViewer = lazy(() => import("./MonacoDiffViewer"));
 const NARROW_PX = 640;
 
 /** A callback ref for the pane root and whether it is narrow. A callback ref, because the root mounts after loading. */
-function useNarrow(): [(el: HTMLDivElement | null) => void, boolean] {
+export function useNarrow(): [(el: HTMLDivElement | null) => void, boolean] {
 	const [narrow, setNarrow] = useState(false);
 	const observer = useRef<ResizeObserver | null>(null);
 	const ref = useCallback((el: HTMLDivElement | null) => {

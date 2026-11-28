@@ -222,6 +222,24 @@ export interface FsEntry {
 	size?: number;
 }
 
+/** `GET /api/fs/read`: a file's text, and the version a save must match. */
+export interface FsFile {
+	path: string;
+	content: string;
+	truncated: boolean;
+	binary: boolean;
+	size: number;
+	/** sha256 of the bytes; absent when the file was too large to read whole. */
+	version?: string;
+}
+
+/** `PUT /api/fs/write` result. A 412 body carries `currentVersion` (null: file absent or already exists). */
+export interface FsWriteResult {
+	path: string;
+	version: string;
+	size: number;
+}
+
 /** Gyre plan-mode state, published by the Gyre omp extension as the `gyre.plan` widget. */
 export interface PlanState {
 	phase: "idle" | "planning" | "reviewing" | "executing";

@@ -1,10 +1,12 @@
-import type { FsEntry, PaneSpec } from "@gyre/protocol";
-import { ChevronDown, ChevronRight, File, Folder, Loader2 } from "lucide-react";
-import { lazy, Suspense, useEffect, useState } from "react";
-import { api } from "../lib/gateway";
+import type { FsEntry, FsFile, FsWriteResult, PaneSpec } from "@gyre/protocol";
+import { ChevronDown, ChevronRight, File, FilePlus, Folder, Loader2, Save } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { api, GatewayError } from "../lib/gateway";
+import { unsavedPanes } from "../store/actions";
 import { useApp } from "../store/app";
 
 const MonacoViewer = lazy(() => import("./MonacoViewer"));
+const MonacoDiffViewer = lazy(() => import("./MonacoDiffViewer"));
 
 function TreeNode({
 	projectId,
@@ -66,13 +68,31 @@ function TreeNode({
 	);
 }
 
+/** The file changed on disk (or appeared/vanished) since it was opened. */
+interface Conflict {
+	currentVersion: string | null;
+	/** What is on disk now, for the diff; null when the file is gone. */
+	disk: string | null;
+	showDiff: boolean;
+}
+
+const readFile = (projectId: string, path: string) => api<FsFile>(`/api/fs/read?projectId=${projectId}&path=${encodeURIComponent(path)}`);
+
 export function FilePane({ pane }: { pane: PaneSpec }) {
 	const updatePane = useApp(s => s.updatePane);
 	const [root, setRoot] = useState<FsEntry[] | null>(null);
-	const [file, setFile] = useState<{ path: string; content: string; binary: boolean; truncated: boolean } | null>(null);
+	const [treeKey, setTreeKey] = useState(0);
+	const [file, setFile] = useState<FsFile | null>(null);
+	/** Unsaved text; null when the buffer matches the file. */
+	const [draft, setDraft] = useState<string | null>(null);
+	const [saving, setSaving] = useState(false);
+	const [conflict, setConflict] = useState<Conflict | null>(null);
+	const [saveError, setSaveError] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [readError, setReadError] = useState<string | null>(null);
 	const projectId = pane.projectId;
+	const draftRef = useRef(draft);
+	draftRef.current = draft;
 
 	useEffect(() => {
 		if (!projectId) return;
@@ -88,16 +108,17 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 		return () => {
 			current = false;
 		};
-	}, [projectId]);
+	}, [projectId, treeKey]);
 
 	useEffect(() => {
 		if (!projectId || !pane.filePath) return;
 		let current = true;
 		setFile(null);
+		setDraft(null);
+		setConflict(null);
+		setSaveError(null);
 		setReadError(null);
-		void api<{ path: string; content: string; binary: boolean; truncated: boolean }>(
-			`/api/fs/read?projectId=${projectId}&path=${encodeURIComponent(pane.filePath)}`,
-		)
+		void readFile(projectId, pane.filePath)
 			.then(file => {
 				if (current) setFile(file);
 			})
@@ -109,24 +130,97 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 		};
 	}, [projectId, pane.filePath]);
 
+	// Closing the pane or the page asks first while edits are unsaved.
+	useEffect(() => {
+		if (draft === null || !file) {
+			unsavedPanes.delete(pane.id);
+			return;
+		}
+		unsavedPanes.set(pane.id, file.path);
+		const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+		window.addEventListener("beforeunload", warn);
+		return () => window.removeEventListener("beforeunload", warn);
+	}, [draft, file, pane.id]);
+	useEffect(() => () => void unsavedPanes.delete(pane.id), [pane.id]);
+
+	const editable = !!file && !file.binary && !file.truncated && !!file.version;
+
+	const save = useCallback(
+		async (baseVersion?: string | null) => {
+			if (!projectId || !file || draftRef.current === null || saving) return;
+			const content = draftRef.current;
+			setSaving(true);
+			setSaveError(null);
+			try {
+				const result = await api<FsWriteResult>("/api/fs/write", {
+					method: "PUT",
+					body: JSON.stringify({ projectId, path: file.path, content, baseVersion: baseVersion === undefined ? file.version : baseVersion }),
+				});
+				setFile({ ...file, content, version: result.version, size: result.size });
+				// Typing during the save keeps the newer text as the draft.
+				setDraft(current => (current === content ? null : current));
+				setConflict(null);
+			} catch (e) {
+				if (e instanceof GatewayError && e.status === 412) {
+					const disk = await readFile(projectId, file.path).catch(() => null);
+					setConflict({ currentVersion: disk?.version ?? null, disk: disk?.content ?? null, showDiff: false });
+				} else setSaveError((e as Error).message);
+			} finally {
+				setSaving(false);
+			}
+		},
+		[projectId, file, saving],
+	);
+
+	const reload = async () => {
+		if (!projectId || !file) return;
+		try {
+			setFile(await readFile(projectId, file.path));
+			setDraft(null);
+			setConflict(null);
+		} catch (e) {
+			setReadError((e as Error).message);
+		}
+	};
+
+	const openPath = (path: string) => {
+		if (path === pane.filePath) return;
+		if (draftRef.current !== null && !confirm(`Discard unsaved changes to ${file?.path}?`)) return;
+		updatePane(pane.id, { filePath: path });
+	};
+
+	const newFile = async () => {
+		if (!projectId) return;
+		const dir = pane.filePath?.includes("/") ? `${pane.filePath.slice(0, pane.filePath.lastIndexOf("/"))}/` : "";
+		const path = prompt("New file (path relative to the project):", dir)?.trim().replace(/^\/+/, "");
+		if (!path || path.endsWith("/")) return;
+		try {
+			await api<FsWriteResult>("/api/fs/write", { method: "PUT", body: JSON.stringify({ projectId, path, content: "", baseVersion: null }) });
+			setTreeKey(k => k + 1);
+			openPath(path);
+		} catch (e) {
+			alert(`Could not create ${path}: ${(e as Error).message}`);
+		}
+	};
+
 	if (!projectId) return <div className="p-4">No project selected.</div>;
 
 	return (
 		<div className="flex h-full min-h-0">
-			<div className="w-60 shrink-0 overflow-auto border-r p-1" style={{ borderColor: "var(--border)" }}>
-				{root === null && !error && <Loader2 size={14} className="m-2 animate-spin" />}
-				{root?.map(entry => (
-					<TreeNode
-						key={entry.path}
-						projectId={projectId}
-						entry={entry}
-						depth={0}
-						selected={pane.filePath}
-						onOpen={path => updatePane(pane.id, { filePath: path })}
-					/>
-				))}
+			<div className="flex w-60 shrink-0 flex-col border-r" style={{ borderColor: "var(--border)" }}>
+				<div className="flex items-center justify-end px-1 pt-1">
+					<button type="button" className="gy-btn" title="New file" aria-label="New file" onClick={() => void newFile()}>
+						<FilePlus size={13} />
+					</button>
+				</div>
+				<div className="min-h-0 flex-1 overflow-auto p-1" key={treeKey}>
+					{root === null && !error && <Loader2 size={14} className="m-2 animate-spin" />}
+					{root?.map(entry => (
+						<TreeNode key={entry.path} projectId={projectId} entry={entry} depth={0} selected={pane.filePath} onOpen={openPath} />
+					))}
+				</div>
 			</div>
-			<div className="min-w-0 flex-1">
+			<div className="flex min-w-0 flex-1 flex-col">
 				{(error || readError) && (
 					<div className="p-3 text-[12px]" style={{ color: "var(--err)" }}>
 						{error || readError}
@@ -134,19 +228,75 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 				)}
 				{!pane.filePath && !error && (
 					<div className="flex h-full items-center justify-center text-[12.5px]" style={{ color: "var(--muted)" }}>
-						Pick a file to view it.
+						Pick a file to view or edit it.
 					</div>
 				)}
 				{pane.filePath && !file && !error && !readError && <Loader2 size={14} className="m-3 animate-spin" />}
+				{file && (
+					<div className="flex shrink-0 items-center gap-2 border-b px-2 py-1 text-[12px]" style={{ borderColor: "var(--border)" }} data-file-bar>
+						<span className="min-w-0 flex-1 truncate font-mono" style={{ color: "var(--text-dim)" }}>
+							{file.path}
+							{draft !== null && (
+								<span title="Unsaved changes" style={{ color: "var(--highlight)" }} data-unsaved>
+									{" "}
+									●
+								</span>
+							)}
+						</span>
+						{file.truncated && <span style={{ color: "var(--muted)" }}>Too large to edit; showing the first 2 MB.</span>}
+						{!file.truncated && !file.binary && !editable && <span style={{ color: "var(--muted)" }}>Read-only</span>}
+						{saveError && (
+							<span role="alert" style={{ color: "var(--err)" }}>
+								{saveError}
+							</span>
+						)}
+						{editable && (
+							<button type="button" className="gy-btn" disabled={draft === null || saving} onClick={() => void save()} title="Save (Ctrl+S)">
+								{saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Save
+							</button>
+						)}
+					</div>
+				)}
+				{conflict && (
+					<div className="flex shrink-0 flex-wrap items-center gap-2 px-2 py-1 text-[12px]" role="alert" style={{ background: "var(--panel-3)" }} data-file-conflict>
+						<span className="flex-1">
+							{conflict.disk === null ? "The file was deleted or created elsewhere since you opened it." : "The file changed on disk since you opened it."}
+						</span>
+						<button type="button" className="gy-btn" onClick={() => void reload()}>
+							Reload (discard mine)
+						</button>
+						<button type="button" className="gy-btn" onClick={() => void save(conflict.currentVersion)}>
+							Overwrite
+						</button>
+						{conflict.disk !== null && (
+							<button type="button" className="gy-btn" onClick={() => setConflict({ ...conflict, showDiff: !conflict.showDiff })}>
+								{conflict.showDiff ? "Hide diff" : "Show diff"}
+							</button>
+						)}
+					</div>
+				)}
 				{file?.binary && (
 					<div className="p-4 text-[12.5px]" style={{ color: "var(--muted)" }}>
 						Binary file — not shown.
 					</div>
 				)}
 				{file && !file.binary && (
-					<Suspense fallback={<Loader2 size={14} className="m-3 animate-spin" />}>
-						<MonacoViewer path={file.path} content={file.content} />
-					</Suspense>
+					<div className="min-h-0 flex-1">
+						<Suspense fallback={<Loader2 size={14} className="m-3 animate-spin" />}>
+							{conflict?.showDiff && conflict.disk !== null ? (
+								<MonacoDiffViewer modelKey={`file-${pane.id}`} path={file.path} oldText={conflict.disk} newText={draft ?? file.content} inline={false} />
+							) : (
+								<MonacoViewer
+									modelKey={`file-${pane.id}`}
+									path={file.path}
+									content={draft ?? file.content}
+									readOnly={!editable}
+									onChange={value => setDraft(value === file.content ? null : value)}
+									onSave={() => void save()}
+								/>
+							)}
+						</Suspense>
+					</div>
 				)}
 			</div>
 		</div>

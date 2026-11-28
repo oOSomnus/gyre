@@ -19,6 +19,8 @@ export const terminalCloser = new Map<string, () => void>();
 export const terminals = new Map<string, Terminal>();
 /** Images opened in image panes, by ref. Data URLs are too big to persist in workspaces. */
 export const images = new Map<string, { src: string; name?: string }>();
+/** Panes holding unsaved edits (pane id -> what is unsaved), checked before closing them. */
+export const unsavedPanes = new Map<string, string>();
 /** Message snapshots opened in message panes ("view" / "review"), by ref. */
 export const snapshots = new Map<string, { text: string; role: string; model?: string; timestamp?: number }>();
 
@@ -34,6 +36,9 @@ export function closePaneResources(pane: PaneSpec): void {
 }
 
 export function closePaneAndResources(pane: PaneSpec): void {
+	const unsaved = unsavedPanes.get(pane.id);
+	if (unsaved && !confirm(`${unsaved} has unsaved changes. Close it and discard them?`)) return;
+	unsavedPanes.delete(pane.id);
 	closePaneResources(pane);
 	useApp.getState().closePane(pane.id);
 }

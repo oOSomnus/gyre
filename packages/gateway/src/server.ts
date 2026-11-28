@@ -18,7 +18,7 @@ import { validWorkspace, validClientMessage } from "./validation";
 import { isContained, openContained } from "./contained-file";
 import { closeSync, fstatSync } from "node:fs";
 import { realpath } from "node:fs/promises";
-import { browseDirs, expandHome, FsAccessError, listDir, readText, resolveInside } from "./fs";
+import { browseDirs, expandHome, FsAccessError, listDir, readText, resolveInside, writeText } from "./fs";
 import { OmpCli, OmpCliError } from "./omp-cli";
 import { OmpCommandError } from "./omp-process";
 import { PtyManager, type PtyListener } from "./pty";
@@ -305,6 +305,13 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				const project = projectOr404(url.searchParams.get("projectId"));
 				return json(await readText(project.path, url.searchParams.get("path") ?? ""));
 			}
+			if (path === "/api/fs/write" && method === "PUT") {
+				const body = (await req.json()) as { projectId?: string; path?: unknown; content?: unknown; baseVersion?: unknown };
+				const project = projectOr404(body.projectId ?? null);
+				if (typeof body.path !== "string" || typeof body.content !== "string") return fail("path and content are required");
+				if (body.baseVersion !== null && typeof body.baseVersion !== "string") return fail("baseVersion must be a version string or null");
+				return json(await writeText(project.path, body.path, body.content, body.baseVersion));
+			}
 
 			if (path === "/api/fs/stat" && method === "POST") {
 				const body = (await req.json()) as { projectId?: string; paths?: string[] };
@@ -546,7 +553,8 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			return fail("not found", 404);
 		} catch (error) {
 			if (error instanceof WorkspaceConflictError) return fail(error.message, 409);
-			if (error instanceof FsAccessError) return fail(error.message, error.status);
+			if (error instanceof FsAccessError) return json({ error: error.message, ...error.data }, error.status);
+			if (error instanceof SyntaxError) return fail("malformed JSON body", 400);
 			if (error instanceof OmpCliError || error instanceof StudioError || error instanceof GitError) return fail(error.message, error.status);
 			return fail(error instanceof Error ? error.message : String(error), 500);
 		}

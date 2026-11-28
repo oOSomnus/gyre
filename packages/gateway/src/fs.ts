@@ -121,7 +121,10 @@ export async function readText(root: string, relPath: string): Promise<FsFile> {
 }
 
 const writeLocks = new Map<string, Promise<unknown>>();
-/** Serialise writes to one file so the version check and the rename happen together. */
+/**
+ * Serialise Gyre's own writes to one file. Other processes are not coordinated: the
+ * version is checked again just before the rename, leaving only the rename itself open.
+ */
 function withWriteLock<T>(key: string, work: () => Promise<T>): Promise<T> {
 	const next = (writeLocks.get(key) ?? Promise.resolve()).catch(() => {}).then(work);
 	writeLocks.set(key, next);
@@ -157,13 +160,20 @@ export async function writeText(root: string, relPath: string, content: string, 
 	if (target) {
 		return withWriteLock(target, async () => {
 			if (baseVersion === null) throw new FsAccessError("file already exists", 412, { currentVersion: null });
-			const current = readContained(realRoot, target, MAX_READ_BYTES);
-			if (current.truncated) throw new FsAccessError("file is too large to save from Gyre", 413);
-			const currentVersion = contentVersion(current.bytes);
-			if (currentVersion !== baseVersion) throw new FsAccessError("file changed on disk since it was opened", 412, { currentVersion });
+			const check = () => {
+				const current = readContained(realRoot, target, MAX_READ_BYTES);
+				if (current.truncated) throw new FsAccessError("file is too large to save from Gyre", 413);
+				const currentVersion = contentVersion(current.bytes);
+				if (currentVersion !== baseVersion) throw new FsAccessError("file changed on disk since it was opened", 412, { currentVersion });
+				return current;
+			};
+			const current = check();
 			try {
-				writeContained(realRoot, dirname(target), basename(target), bytes, { mode: "replace", permissions: current.mode });
+				// Checked again once the new bytes are synced: a change another process (the
+				// agent, say) made meanwhile is a 412 instead of being overwritten.
+				writeContained(realRoot, dirname(target), basename(target), bytes, { mode: "replace", permissions: current.mode, beforeReplace: check });
 			} catch (error) {
+				if (error instanceof FsAccessError) throw error;
 				throw new FsAccessError(error instanceof Error ? error.message : String(error), 403);
 			}
 			return { path: rel, version: contentVersion(bytes), size: bytes.length };

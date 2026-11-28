@@ -89,6 +89,23 @@ function upstreamHeaders(req: Request, targetPort: number): Headers {
 	return headers;
 }
 
+/**
+ * A redirect to the dev server's own address (a loopback host and exactly its port) as a
+ * path on the proxy. Anything else, other ports included, is left as it is.
+ */
+export function rewriteLocation(location: string, targetPort: number): string {
+	if (!/^https?:\/\//i.test(location)) return location;
+	let url: URL;
+	try {
+		url = new URL(location);
+	} catch {
+		return location;
+	}
+	const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+	if (url.protocol !== "http:" || port !== targetPort || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return location;
+	return `${url.pathname}${url.search}${url.hash}` || "/";
+}
+
 export class PreviewProxies {
 	readonly #proxies = new Map<number, Proxy>();
 
@@ -181,9 +198,13 @@ export class PreviewProxies {
 					return ok ? undefined : new Response("upgrade failed", { status: 400 });
 				}
 				let upstream: Response | undefined;
-				// "localhost" may be served on IPv4 or IPv6 only; try the last one that answered first.
+				// "localhost" may be served on IPv4 or IPv6 only; try the last one that answered
+				// first. Only a refused connection moves on to the other address: a later failure
+				// may come after the server received the request, and replaying it could repeat
+				// a mutation.
 				const hosts = [proxy.upstreamHost, proxy.upstreamHost === "127.0.0.1" ? "[::1]" : "127.0.0.1"];
 				const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
+				let failure = `Nothing is answering on localhost:${targetPort}.`;
 				for (const host of hosts) {
 					try {
 						upstream = await fetch(`http://${host}:${targetPort}${path}`, {
@@ -195,17 +216,18 @@ export class PreviewProxies {
 						} as RequestInit);
 						proxy.upstreamHost = host;
 						break;
-					} catch {}
+					} catch (error) {
+						if ((error as { code?: string }).code === "ECONNREFUSED") continue;
+						failure = `localhost:${targetPort} failed to answer: ${(error as Error).message}`;
+						break;
+					}
 				}
-				if (!upstream) return new Response(`Nothing is answering on localhost:${targetPort}.`, { status: 502, headers: { "content-type": "text/plain" } });
+				if (!upstream) return new Response(failure, { status: 502, headers: { "content-type": "text/plain" } });
 				const headers = new Headers(upstream.headers);
 				for (const name of ["connection", "keep-alive", "transfer-encoding"]) headers.delete(name);
 				// Redirects to the dev server's own address stay inside the proxy.
 				const location = headers.get("location");
-				if (location) {
-					const rewritten = location.replace(new RegExp(`^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\]):${targetPort}`), "");
-					headers.set("location", rewritten || "/");
-				}
+				if (location) headers.set("location", rewriteLocation(location, targetPort));
 				return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers });
 			},
 			websocket: {

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PreviewProxies, previewTarget } from "../src/preview";
+import { PreviewProxies, previewTarget, rewriteLocation } from "../src/preview";
 import { startGateway, type Gateway } from "../src/server";
 
 const dir = mkdtempSync(join(tmpdir(), "gyre-preview-"));
@@ -126,4 +126,21 @@ test("cookie-authenticated writes from another origin are refused; the UI's toke
 	const withToken = await fetch(`${gateway.url}/api/projects`, { method: "POST", headers: { ...headers, origin: "http://127.0.0.1:5999" }, body: JSON.stringify({ path: dir }) });
 	expect(withToken.status).toBe(200);
 	expect((await fetch(`${gateway.url}/api/projects`, { headers: { ...cookieHeaders, origin: "http://127.0.0.1:5999" } })).status).toBe(200);
+});
+
+test("only redirects to the dev server's exact address are rewritten", () => {
+	expect(rewriteLocation("http://localhost:3000/login?x=1", 3000)).toBe("/login?x=1");
+	expect(rewriteLocation("http://127.0.0.1:3000", 3000)).toBe("/");
+	expect(rewriteLocation("http://localhost:30001/login", 3000)).toBe("http://localhost:30001/login");
+	expect(rewriteLocation("http://example.com:3000/", 3000)).toBe("http://example.com:3000/");
+	expect(rewriteLocation("/relative", 3000)).toBe("/relative");
+});
+
+test("the preview link puts its token in the query, never in a fragment that contains ?", async () => {
+	const { url } = await openPreview(`http://localhost:${devServer.port}/app#/search?q=x`, "pane-hash");
+	const link = new URL(url);
+	expect(link.pathname).toBe("/app");
+	expect(link.searchParams.get("gyre_preview")).toBeTruthy();
+	expect(link.hash).toBe("#/search?q=x");
+	await fetch(`${gateway.url}/api/preview?paneId=pane-hash`, { method: "DELETE", headers });
 });

@@ -248,8 +248,8 @@ describe.skipIf(!version)("Hook Studio: omp discovers project hooks Gyre writes"
 			baseVersion: null,
 		});
 		const hooked = new OmpProcess({ cwd: project, ompPath, args: ["--no-session"], onFrame: () => {}, onExit: () => {} });
-		await hooked.start();
 		try {
+			await hooked.start();
 			const data = await hooked.call<{ commands: Array<{ name: string }> }>({ type: "get_available_commands" });
 			expect(data.commands.some(c => c.name === "gyre-hook-check")).toBe(true);
 		} finally {

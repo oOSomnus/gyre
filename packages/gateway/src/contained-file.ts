@@ -64,7 +64,7 @@ export function openContained(root: string, target: string, extraFlags = 0): num
 
 /** A file name that stays in its directory: no separators, not `.` or `..`, no NUL. */
 export function isPlainName(name: string): boolean {
-	return name.length > 0 && name.length <= 255 && name !== "." && name !== ".." && !/[/\\\0]/.test(name);
+	return name.length > 0 && Buffer.byteLength(name) <= 255 && name !== "." && name !== ".." && !/[/\\\0]/.test(name);
 }
 
 export interface ContainedWrite {
@@ -72,6 +72,13 @@ export interface ContainedWrite {
 	mode: "create" | "replace";
 	/** Permission bits for the written file (`replace` keeps the old file's by passing them here). */
 	permissions?: number;
+	/**
+	 * `replace` only: runs after the new bytes are synced, immediately before the rename.
+	 * Throwing cancels the write (the temporary file is removed). A caller re-checks the
+	 * target's version here, so the window an outside writer can slip into is only the
+	 * rename itself rather than the whole write and fsync.
+	 */
+	beforeReplace?: () => void;
 }
 
 /**
@@ -88,14 +95,23 @@ export function writeContained(root: string, dir: string, name: string, data: Ui
 		if (options.mode === "create") {
 			const fd = libc.symbols.openat(dirFd, ptr(target), base, options.permissions ?? 0o666);
 			if (fd < 0) throw new Error(lastErrno() === 17 ? "file already exists" : "cannot create file inside project");
-			writeAll(fd, data, options.permissions);
+			try {
+				writeAll(fd, data, options.permissions);
+			} catch (error) {
+				// This attempt created the file (O_EXCL), so a partial one is ours to remove;
+				// left behind, it would turn a retry into "file already exists".
+				libc.symbols.unlinkat(dirFd, ptr(target), 0);
+				throw error;
+			}
 			return;
 		}
-		const tmpName = cstr(`.${name.slice(0, 200)}.gyre-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
+		// A short name independent of the target's, which may already be near NAME_MAX bytes.
+		const tmpName = cstr(`.gyre-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
 		const fd = libc.symbols.openat(dirFd, ptr(tmpName), base, 0o600);
 		if (fd < 0) throw new Error("cannot write inside project");
 		try {
 			writeAll(fd, data, options.permissions ?? 0o644);
+			options.beforeReplace?.();
 			if (libc.symbols.renameat(dirFd, ptr(tmpName), dirFd, ptr(target)) !== 0) throw new Error("cannot replace file inside project");
 		} catch (error) {
 			libc.symbols.unlinkat(dirFd, ptr(tmpName), 0);

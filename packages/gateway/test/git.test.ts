@@ -1,6 +1,6 @@
 /** The Git pane's gateway side: porcelain parsing, staging, hunks, commits and the HTTP routes. */
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitCommitInfo, GitDiff, GitStatus } from "@gyre/protocol";
@@ -372,6 +372,7 @@ describe("per-turn review", () => {
 			"R renamed.txt <- old.txt",
 		]);
 		const turnDiff = await repo.reviewDiff(before, after, "a.txt");
+		expect(turnDiff.hunks).toHaveLength(1);
 		expect(turnDiff.hunks.every(h => h.id === "")).toBe(true);
 		expect(turnDiff.newText).toContain("LINE 2");
 		const live = await repo.reviewDiff(before, "worktree", "a.txt");
@@ -412,6 +413,23 @@ describe("per-turn review", () => {
 		expect(content).toContain("line 2\n");
 		expect(content).toContain("LINE 28\n");
 		await expect(repo.revert(before, "a.txt", diff.hunks[0]!.id)).rejects.toMatchObject({ status: 409 });
+	});
+
+	test("a hunk revert leaves a mode change alone; a directory where a file was is refused", async () => {
+		const dir = repoWith({ "run.sh": lines(10), config: "x=1\n" });
+		const repo = await GitRepo.open(dir);
+		const before = await repo.snapshotWorktree();
+		writeFileSync(join(dir, "run.sh"), lines(10).replace("line 2\n", "LINE 2\n"));
+		chmodSync(join(dir, "run.sh"), 0o755);
+		rmSync(join(dir, "config"));
+		mkdirSync(join(dir, "config"));
+		writeFileSync(join(dir, "config/keep"), "k\n");
+		const diff = await repo.reviewDiff(before, "worktree", "run.sh");
+		await repo.revert(before, "run.sh", diff.hunks[0]!.id);
+		expect(readFileSync(join(dir, "run.sh"), "utf8")).toBe(lines(10));
+		expect(statSync(join(dir, "run.sh")).mode & 0o111).not.toBe(0);
+		await expect(repo.revert(before, "config")).rejects.toMatchObject({ status: 409 });
+		expect(readFileSync(join(dir, "config/keep"), "utf8")).toBe("k\n");
 	});
 
 	test("tree ids are validated before git sees them", async () => {

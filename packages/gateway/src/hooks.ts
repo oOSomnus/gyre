@@ -4,10 +4,10 @@
  * `.omp`, imports each as a module whose default export receives the hook API, and loads them
  * when a chat starts. Saves are conditional on the version read and checked for syntax first.
  */
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { HookFile, HookPhase } from "@gyre/protocol";
-import { readText, writeText } from "./fs";
+import { contentVersion, FsAccessError, readText, writeText } from "./fs";
 import { type Scope, StudioError } from "./studio";
 
 const HOOK_NAME = /^([A-Za-z0-9][A-Za-z0-9._-]{0,63}|\*)\.(ts|js)$/;
@@ -110,14 +110,45 @@ export async function saveHook(input: SaveHook): Promise<HookFile> {
 	mkdirSync(dir, { recursive: true });
 	const previous = input.previous ? { phase: phaseOf(input.previous.phase), name: checkName(input.previous.name) } : undefined;
 	const moving = previous && (previous.phase !== phase || previous.name !== name);
-	// A moved hook is created at its new name, then the old file is removed.
-	const result = await writeText(dir, name, input.content, moving ? null : input.baseVersion);
-	if (moving && previous) rmSync(join(root, previous.phase, previous.name), { force: true });
+	if (!moving || !previous) {
+		const result = await writeText(dir, name, input.content, input.baseVersion);
+		return { scope: input.scope, phase, name, tool: toolOf(name), path: join(dir, name), content: input.content, version: result.version };
+	}
+	// A moved hook is created at its new name, then the old file is removed, provided the
+	// old file is still the version the editor opened (checked before and after the create,
+	// so a stale move leaves a newer source intact and removes the copy it made).
+	const source = join(root, previous.phase, previous.name);
+	const sourceVersion = typeof input.baseVersion === "string" ? input.baseVersion : undefined;
+	if (sourceVersion) checkVersion(source, sourceVersion);
+	const result = await writeText(dir, name, input.content, null);
+	if (sourceVersion) {
+		try {
+			checkVersion(source, sourceVersion);
+		} catch (error) {
+			rmSync(join(dir, name), { force: true });
+			throw error;
+		}
+	}
+	rmSync(source, { force: true });
 	return { scope: input.scope, phase, name, tool: toolOf(name), path: join(dir, name), content: input.content, version: result.version };
 }
 
-export function deleteHook(where: HookLocation, scope: Scope, phase: unknown, name: unknown): void {
+/** Throws a 412 unless the hook file at `path` still has `version`. */
+function checkVersion(path: string, version: string): void {
+	let bytes: Buffer;
+	try {
+		bytes = readFileSync(path);
+	} catch {
+		throw new FsAccessError("the hook was deleted since it was opened", 412, { currentVersion: null });
+	}
+	const current = contentVersion(bytes);
+	if (current !== version) throw new FsAccessError("the hook changed on disk since it was opened", 412, { currentVersion: current });
+}
+
+/** Delete a hook; with `baseVersion`, only if it is still the version the caller read. */
+export function deleteHook(where: HookLocation, scope: Scope, phase: unknown, name: unknown, baseVersion?: string | null): void {
 	const path = join(hooksDir(scope, where), phaseOf(phase), checkName(name));
 	if (!existsSync(path)) throw new StudioError("hook not found", 404);
+	if (baseVersion) checkVersion(path, baseVersion);
 	rmSync(path);
 }

@@ -413,9 +413,12 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				const target = previewTarget(body.url);
 				const opened = previews.open(target.port, body.paneId);
 				const host = (req.headers.get("host") ?? "localhost").replace(/:\d+$/, "");
-				const separator = target.path.includes("?") ? "&" : "?";
-				const [pathAndQuery, hash = ""] = target.path.split("#");
-				return json({ url: `http://${host}:${opened.port}${pathAndQuery}${separator}gyre_preview=${opened.token}${hash ? `#${hash}` : ""}`, port: opened.port });
+				// The fragment may contain "?" or "#" of its own; only the part before it is the query.
+				const hashAt = target.path.indexOf("#");
+				const pathAndQuery = hashAt < 0 ? target.path : target.path.slice(0, hashAt);
+				const hash = hashAt < 0 ? "" : target.path.slice(hashAt);
+				const separator = pathAndQuery.includes("?") ? "&" : "?";
+				return json({ url: `http://${host}:${opened.port}${pathAndQuery}${separator}gyre_preview=${opened.token}${hash}`, port: opened.port });
 			}
 			if (path === "/api/preview" && method === "DELETE") {
 				const paneId = url.searchParams.get("paneId");
@@ -555,7 +558,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				}
 				if (path === "/api/hooks" && method === "DELETE") {
 					const where = { agentDir, projectPath: optionalProject(url.searchParams.get("projectId"))?.path };
-					deleteHook(where, scopeOf(url.searchParams.get("scope")), url.searchParams.get("phase"), url.searchParams.get("name"));
+					deleteHook(where, scopeOf(url.searchParams.get("scope")), url.searchParams.get("phase"), url.searchParams.get("name"), url.searchParams.get("baseVersion"));
 					return json({ ok: true });
 				}
 			}

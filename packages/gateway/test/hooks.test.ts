@@ -62,3 +62,16 @@ test("delete removes one hook and reports a missing one", () => {
 	expect(existsSync(join(agentDir, "hooks/post/gone.ts"))).toBe(false);
 	expect(() => deleteHook(where, "user", "post", "gone.ts")).toThrow(/not found/);
 });
+
+test("a move or delete of a hook that changed since it was read is a 412 and keeps the newer file", async () => {
+	await saveHook({ ...where, scope: "project", phase: "pre", name: "stale.ts", content: HOOK, baseVersion: null });
+	const opened = await readHook(where, "project", "pre", "stale.ts");
+	writeFileSync(join(projectPath, ".omp/hooks/pre/stale.ts"), `${HOOK}// newer\n`);
+	await expect(
+		saveHook({ ...where, scope: "project", phase: "post", name: "moved.ts", content: HOOK, baseVersion: opened.version!, previous: { phase: "pre", name: "stale.ts" } }),
+	).rejects.toMatchObject({ status: 412 });
+	expect(readFileSync(join(projectPath, ".omp/hooks/pre/stale.ts"), "utf8")).toContain("// newer");
+	expect(existsSync(join(projectPath, ".omp/hooks/post/moved.ts"))).toBe(false);
+	expect(() => deleteHook(where, "project", "pre", "stale.ts", opened.version!)).toThrow(/changed/);
+	expect(existsSync(join(projectPath, ".omp/hooks/pre/stale.ts"))).toBe(true);
+});

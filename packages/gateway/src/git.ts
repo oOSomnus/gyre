@@ -616,7 +616,9 @@ export class GitRepo {
 		const [diffText, oldBytes, newBytes] = await Promise.all([
 			this.git(["diff-tree", "-p", "-M", ...DIFF_FLAGS, "-U3", changes.from, changes.to, "--", ...paths]).then(text),
 			entry.status === "A" ? null : this.#blob(`${changes.from}:${oldPath}`),
-			entry.status === "D" ? null : to === "worktree" ? this.#worktree(path) : this.#blob(`${changes.to}:${path}`),
+			// The snapshot, not the live file: the hunks were computed from it, so the text shown
+			// beside them must be the same bytes even if the file changes meanwhile.
+			entry.status === "D" ? null : this.#blob(`${changes.to}:${path}`),
 		]);
 		return this.#buildDiff({ path, oldPath, staged: false, diffText, oldBytes, newBytes, actionable: to === "worktree" });
 	}
@@ -638,14 +640,37 @@ export class GitRepo {
 				const parsed = parseFileDiff(text(await this.git(["diff-tree", "-p", "-M", ...DIFF_FLAGS, "-U3", changes.from, changes.to, "--", ...paths])));
 				const hunk = parsed.hunks.find(h => h.id === hunkId);
 				if (!hunk) throw new GitError("the file changed since the diff was loaded; refresh and try again", 409);
-				await this.git(["apply", "--whitespace=nowarn", "-R", "-"], { stdin: hunkPatch(contentOnlyHeader(parsed.header), hunk) });
+				// A text hunk only: a mode change in the same diff is left to the whole-file revert.
+				const header = contentOnlyHeader(parsed.header).filter(line => !/^(old|new) mode /.test(line));
+				await this.git(["apply", "--whitespace=nowarn", "-R", "-"], { stdin: hunkPatch(header, hunk) });
 				return;
 			}
-			// Added in the turn (or the new side of a rename): remove it. Then restore what the turn changed or removed.
-			if (entry.status === "A" || entry.status === "R") this.#removeWorktreeFile(path);
+			// Restore what the turn changed, removed or renamed away first, then remove what it
+			// added (or the new side of a rename): a failed restore leaves the new file in place.
 			const restore = entry.status === "A" ? undefined : (entry.origPath ?? path);
-			if (restore) await this.git(["restore", `--source=${changes.from}`, "--worktree", "--", restore]);
+			if (restore) {
+				this.#checkRestoreTarget(restore);
+				await this.git(["restore", `--source=${changes.from}`, "--worktree", "--", restore]);
+			}
+			if (entry.status === "A" || entry.status === "R") this.#removeWorktreeFile(path);
 		});
+	}
+
+	/**
+	 * A file revert restores with a forced checkout, which would replace a directory now at
+	 * the path, and everything in it (ignored files included), with the old file. Refuse that.
+	 */
+	#checkRestoreTarget(path: string): void {
+		const abs = join(this.root, path);
+		if (isAbsolute(path) || !isContained(this.root, abs)) throw new GitError("path escapes the repository");
+		let info: ReturnType<typeof lstatSync>;
+		try {
+			info = lstatSync(abs);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw new GitError(`cannot check ${path}: ${(error as Error).message}`);
+		}
+		if (info.isDirectory()) throw new GitError(`${path} is a directory now; move it aside to restore the file`, 409);
 	}
 
 	/** Delete a work-tree file (or symlink) inside the root; never a directory. */
@@ -655,8 +680,10 @@ export class GitRepo {
 		let info: ReturnType<typeof lstatSync>;
 		try {
 			info = lstatSync(abs);
-		} catch {
-			return;
+		} catch (error) {
+			// Already gone is the goal; anything else (permissions, I/O) is a failed revert.
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw new GitError(`cannot remove ${path}: ${(error as Error).message}`);
 		}
 		if (info.isDirectory()) throw new GitError(`${path} is a directory`);
 		// A parent swapped for a symlink must not redirect the delete outside the repository.

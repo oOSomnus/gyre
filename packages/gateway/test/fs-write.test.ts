@@ -101,3 +101,24 @@ test("PUT /api/fs/write saves, reports conflicts and rejects malformed bodies", 
 	const malformed = await fetch(`${gateway.url}/api/fs/write`, { method: "PUT", headers, body: "{" });
 	expect(malformed.status).toBe(400);
 });
+
+test("a change landing while the new bytes are written is a 412, and a cancelled write leaves no temporary file", async () => {
+	const root = join(dir, "late");
+	mkdirSync(root, { recursive: true });
+	writeFileSync(join(root, "f.txt"), "one\n");
+	expect(() =>
+		writeContained(root, root, "f.txt", Buffer.from("mine\n"), {
+			mode: "replace",
+			beforeReplace: () => {
+				throw new Error("changed");
+			},
+		}),
+	).toThrow("changed");
+	expect(readdirSync(root)).toEqual(["f.txt"]);
+	expect(readFileSync(join(root, "f.txt"), "utf8")).toBe("one\n");
+	// A name near the byte limit still gets a temporary sibling.
+	const long = "é".repeat(120);
+	writeFileSync(join(root, long), "x");
+	writeContained(root, root, long, Buffer.from("y"), { mode: "replace" });
+	expect(readFileSync(join(root, long), "utf8")).toBe("y");
+});

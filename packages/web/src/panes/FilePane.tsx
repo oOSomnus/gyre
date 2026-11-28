@@ -156,9 +156,10 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 		};
 	}, [projectId, pane.filePath]);
 
-	// Closing the pane or the page asks first while edits are unsaved.
+	// Closing the pane or the page asks first while edits are unsaved, or while a save runs:
+	// until it lands, the editor's text may differ from what ends up on disk.
 	useEffect(() => {
-		if (draft === null || !file) {
+		if ((draft === null && !saving) || !file) {
 			unsavedPanes.delete(pane.id);
 			return;
 		}
@@ -166,7 +167,7 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 		const warn = (event: BeforeUnloadEvent) => event.preventDefault();
 		window.addEventListener("beforeunload", warn);
 		return () => window.removeEventListener("beforeunload", warn);
-	}, [draft, file, pane.id]);
+	}, [draft, file, saving, pane.id]);
 	// Unmounting (its workspace switched away) keeps unsaved edits for when it is shown again;
 	// the pane stays registered as unsaved, so closing it from elsewhere still asks. A pane that
 	// was closed is gone from every workspace, and its edits go with it.

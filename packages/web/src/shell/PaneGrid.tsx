@@ -215,7 +215,8 @@ export function PaneContent({ pane, focused }: { pane: PaneSpec; focused: boolea
 		case "chat":
 			return <ChatPane pane={pane} focused={focused} />;
 		case "file":
-			return <FilePane pane={pane} />;
+			// Keyed by pane: a shared slot (maximized, mobile) must not carry one pane's draft into another.
+			return <FilePane key={pane.id} pane={pane} />;
 		case "terminal":
 			return <TerminalPane pane={pane} focused={focused} />;
 		case "sessions":

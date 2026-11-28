@@ -30,9 +30,16 @@ export function ReviewPane({ pane }: { pane: PaneSpec }) {
 	const [mode, setMode] = useState<ReviewMode>("turn");
 	const effectiveMode: ReviewMode = turn && !turn.after ? "since" : mode;
 	const range = turn ? rangeFor(turn, effectiveMode) : null;
-	const [changes, setChanges] = useState<ReviewChanges | null>(null);
+	// Each result is kept with the request it answers and shown only while that request is
+	// still the current one: another turn's file list, or another file's diff (which line
+	// comments would be filed against), never stands in while the next one loads.
+	const rangeKey = range ? `${range.from}..${range.to}` : null;
+	const [loadedChanges, setChanges] = useState<{ key: string; changes: ReviewChanges } | null>(null);
+	const changes = loadedChanges && loadedChanges.key === rangeKey ? loadedChanges.changes : null;
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
-	const [diff, setDiff] = useState<GitDiff | null>(null);
+	const diffKey = `${rangeKey}|${selectedPath}`;
+	const [loadedDiff, setDiff] = useState<{ key: string; diff: GitDiff } | null>(null);
+	const diff = loadedDiff && loadedDiff.key === diffKey ? loadedDiff.diff : null;
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [busy, setBusy] = useState(false);
@@ -42,22 +49,23 @@ export function ReviewPane({ pane }: { pane: PaneSpec }) {
 	const base = projectId ? `/api/projects/${projectId}/review` : null;
 
 	useEffect(() => {
-		if (!base || !range) {
+		if (!base || !range || !rangeKey) {
 			setChanges(null);
 			return;
 		}
+		const key = rangeKey;
 		const request = ++generation.current;
 		setLoading(true);
 		setError(null);
 		api<ReviewChanges>(`${base}/files?${new URLSearchParams(range)}`)
 			.then(result => {
 				if (request !== generation.current) return;
-				setChanges(result);
+				setChanges({ key, changes: result });
 				setSelectedPath(current => (current && result.files.some(f => f.path === current) ? current : (result.files[0]?.path ?? null)));
 			})
 			.catch(e => request === generation.current && setError((e as Error).message))
 			.finally(() => request === generation.current && setLoading(false));
-	}, [base, range?.from, range?.to, refreshKey]);
+	}, [base, rangeKey, refreshKey]);
 
 	useEffect(() => {
 		if (!base || !range || !selectedPath || !changes?.files.some(f => f.path === selectedPath)) {
@@ -65,13 +73,14 @@ export function ReviewPane({ pane }: { pane: PaneSpec }) {
 			return;
 		}
 		let current = true;
+		const key = diffKey;
 		api<GitDiff>(`${base}/diff?${new URLSearchParams({ ...range, path: selectedPath })}`)
-			.then(d => current && setDiff(d))
+			.then(d => current && setDiff({ key, diff: d }))
 			.catch(e => current && setError((e as Error).message));
 		return () => {
 			current = false;
 		};
-	}, [base, range?.from, range?.to, selectedPath, changes]);
+	}, [base, diffKey, selectedPath, changes]);
 
 	// "Since then" follows the work tree: refresh when this chat finishes a run.
 	useEffect(() => {
@@ -103,7 +112,8 @@ export function ReviewPane({ pane }: { pane: PaneSpec }) {
 	);
 
 	const addComment = (line: number) => {
-		if (!turn || !selectedPath) return;
+		// Only against the diff on screen: it must be the selected file's, in this range.
+		if (!turn || !selectedPath || diff?.path !== selectedPath) return;
 		const text = prompt(`Comment on ${selectedPath}:${line}`);
 		if (!text?.trim()) return;
 		setComments(list => [...list, { id: crypto.randomUUID(), turn: turn.n, path: selectedPath, line, text }]);

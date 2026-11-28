@@ -296,12 +296,15 @@ await step("file pane edits and saves a file (Ctrl+S)", async () => {
 		// Put the fixture back however the step went.
 		await page.evaluate(
 			async ([pid, tok, content]) => {
-				const current = await (await fetch(`/api/fs/read?projectId=${pid}&path=src/app.ts`, { headers: { "x-gyre-token": tok } })).json();
-				await fetch("/api/fs/write", {
+				const read = await fetch(`/api/fs/read?projectId=${pid}&path=src/app.ts`, { headers: { "x-gyre-token": tok } });
+				if (!read.ok) throw new Error(`restoring the fixture: read failed with ${read.status}`);
+				const current = await read.json();
+				const write = await fetch("/api/fs/write", {
 					method: "PUT",
 					headers: { "x-gyre-token": tok, "content-type": "application/json" },
 					body: JSON.stringify({ projectId: pid, path: "src/app.ts", content, baseVersion: current.version }),
 				});
+				if (!write.ok) throw new Error(`restoring the fixture: write failed with ${write.status}`);
 			},
 			[projectId, token, original.content] as const,
 		);

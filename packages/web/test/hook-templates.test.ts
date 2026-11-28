@@ -70,6 +70,12 @@ test("form problems catch invalid patterns, names and impossible combinations", 
 	expect(formProblems(form({ action: "command", command: " " }))).toHaveLength(1);
 	expect(formProblems(form({ trigger: "agent_end", action: "block" }))).toHaveLength(1);
 	expect(formProblems(form({ variables: [{ name: "1bad", value: "" }] }))).toHaveLength(1);
+	// Names that would make the generated module fail to parse.
+	expect(formProblems(form({ variables: [{ name: "TOOLS", value: "" }] }))).toHaveLength(1);
+	expect(formProblems(form({ variables: [{ name: "class", value: "" }] }))).toHaveLength(1);
+	expect(formProblems(form({ variables: [{ name: "A", value: "" }, { name: "A", value: "" }] }))).toHaveLength(1);
+	// TOOLS is only declared for tool triggers.
+	expect(formProblems(form({ trigger: "agent_end", action: "notify", variables: [{ name: "TOOLS", value: "" }] }))).toEqual([]);
 });
 
 test("phase and suggested names follow the trigger and tool", () => {

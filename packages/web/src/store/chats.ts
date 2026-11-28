@@ -61,6 +61,8 @@ export interface ChatState {
 	plan: PlanState | null;
 	/** The agent's background jobs, from the extension's `gyre.jobs` widget. */
 	jobs: JobInfo[];
+	/** Counts transcript resets (a fresh session), so per-transcript positions stay unique. */
+	transcriptEpoch?: number;
 	/** Per-turn work-tree snapshots, from the extension's `gyre.turns` widget. */
 	turns: TurnsState | null;
 	/** Todo phases: from get_state and live todo tool results. */
@@ -501,7 +503,8 @@ export function wireChatStore({ accepts }: { accepts(chatId: string): boolean })
 			const previous = store.chats[message.chat.chatId]?.info.status;
 			store.setInfo(message.chat);
 			if (message.t === "chat_replay") store.patch(message.chat.chatId, { pendingUi: [] });
-			if (replaced) store.patch(message.chat.chatId, { historyLoaded: false });
+			// Jobs belonged to the old process: the new one cannot list or kill them.
+			if (replaced) store.patch(message.chat.chatId, { historyLoaded: false, jobs: [] });
 			if (message.chat.status === "ready" && (previous !== "ready" || replaced || message.t === "chat_replay")) {
 				void loadHistory(message.chat.chatId).catch(() => undefined);
 				void loadCommands(message.chat.chatId).catch(() => undefined);
@@ -530,6 +533,7 @@ export function wireChatStore({ accepts }: { accepts(chatId: string): boolean })
 export function resetTranscript(chatId: string): void {
 	historyEpochs.set(chatId, (historyEpochs.get(chatId) ?? 0) + 1);
 	useChats.getState().patch(chatId, {
+		transcriptEpoch: (useChats.getState().chats[chatId]?.transcriptEpoch ?? 0) + 1,
 		items: [],
 		toolExec: {},
 		toolResults: {},

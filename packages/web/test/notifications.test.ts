@@ -57,6 +57,10 @@ test("a run ending is done, or an error when the last reply failed", () => {
 	expect(detect(chat({ busy: true }), chat({ busy: false, items: [reply()] as never }))[0]).toMatchObject({ kind: "done", body: "All tests pass." });
 	expect(detect(chat({ busy: true }), chat({ busy: false, items: [reply("error")] as never }))[0]).toMatchObject({ kind: "error", body: "rate limited" });
 	expect(detect(chat({ busy: false }), chat({ busy: true }))).toEqual([]);
+	// A fresh session restarts the transcript; its first run is not the old run's duplicate.
+	const first = detect(chat({ busy: true }), chat({ busy: false, items: [reply()] as never }))[0]!;
+	const afterReset = detect(chat({ busy: true, transcriptEpoch: 1 }), chat({ busy: false, transcriptEpoch: 1, items: [reply()] as never }))[0]!;
+	expect(afterReset.key).not.toBe(first.key);
 });
 
 test("plans entering review, settled jobs and fresh warnings are reported; stale notices are not", () => {
@@ -84,6 +88,7 @@ test("the store dedupes by key, keeps newest first, caps the list and tracks rea
 	store.push([
 		{ kind: "done", chatId: "c", title: "a again", key: "k1" },
 		{ kind: "error", chatId: "c", title: "b", key: "k2" },
+		{ kind: "error", chatId: "c", title: "b twice in one batch", key: "k2" },
 	]);
 	expect(useNotifications.getState().items.map(n => n.title)).toEqual(["b", "a"]);
 	useNotifications.getState().markAllRead();

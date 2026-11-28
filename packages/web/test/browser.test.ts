@@ -13,7 +13,7 @@ g.sessionStorage ??= memoryStorage();
 g.window ??= globalThis;
 g.fetch = async () => new Response("{}", { headers: { "content-type": "application/json" } });
 
-const { isLoopbackUrl, needsProxy, normalizeUrl } = await import("../src/lib/browser");
+const { isLoopbackUrl, needsProxy, normalizeUrl, withoutPreviewToken } = await import("../src/lib/browser");
 const { openBrowserPane, useApp } = await import("../src/store/app");
 
 test("typed addresses get a scheme: http for localhost, https otherwise", () => {
@@ -43,4 +43,9 @@ test("opening a link reuses the workspace's browser pane", () => {
 	const panes = Object.values(useApp.getState().activeWorkspace()!.panes);
 	expect(panes.filter(p => p.kind === "browser")).toHaveLength(1);
 	expect(panes[0]!.url).toBe("http://localhost:3000/about");
+});
+
+test("a new tab gets the preview address without the spent token", () => {
+	expect(withoutPreviewToken("http://host:4000/app?x=1&gyre_preview=tok#/a?b")).toBe("http://host:4000/app?x=1#/a?b");
+	expect(withoutPreviewToken("http://localhost:5173/")).toBe("http://localhost:5173/");
 });

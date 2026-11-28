@@ -32,15 +32,22 @@ export function rangeFor(turn: TurnRecord, mode: ReviewMode): { from: string; to
 	return { from: turn.before, to: "worktree" };
 }
 
-/** The message sent to the chat for a set of review comments, grouped by file in line order. */
+/**
+ * The message sent to the chat for a set of review comments, grouped by file in line order.
+ * Comments from more than one turn are grouped by turn first, since a line number only
+ * means something within the turn it was made on.
+ */
 export function commentsMessage(comments: ReviewComment[]): string {
 	if (!comments.length) return "";
-	const byPath = new Map<string, ReviewComment[]>();
-	for (const c of comments) byPath.set(c.path, [...(byPath.get(c.path) ?? []), c]);
 	const turns = [...new Set(comments.map(c => c.turn))].sort((a, b) => a - b);
 	const lines = [`Review of your changes (turn${turns.length > 1 ? "s" : ""} ${turns.join(", ")}):`, ""];
-	for (const [path, list] of byPath) {
-		for (const c of list.sort((a, b) => a.line - b.line)) lines.push(`- ${path}:${c.line} — ${c.text.trim()}`);
+	for (const turn of turns) {
+		if (turns.length > 1) lines.push(`Turn ${turn}:`);
+		const byPath = new Map<string, ReviewComment[]>();
+		for (const c of comments) if (c.turn === turn) byPath.set(c.path, [...(byPath.get(c.path) ?? []), c]);
+		for (const [path, list] of byPath) {
+			for (const c of list.sort((a, b) => a.line - b.line)) lines.push(`- ${path}:${c.line} — ${c.text.trim()}`);
+		}
 	}
 	lines.push("", "Please address these comments.");
 	return lines.join("\n");

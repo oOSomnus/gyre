@@ -31,3 +31,19 @@ export function isLoopbackUrl(url: string): boolean {
 export function needsProxy(url: string, uiHostname: string): boolean {
 	return isLoopbackUrl(url) && new URL(url).protocol === "http:" && !UI_LOOPBACK.has(uiHostname);
 }
+
+/**
+ * A preview address without its one-time token, which the iframe has already spent (a
+ * reused token is refused). The proxy's cookie, set by that first load, lets a new tab in.
+ * Direct addresses have no token and come back unchanged.
+ */
+export function withoutPreviewToken(src: string): string {
+	try {
+		const url = new URL(src);
+		if (!url.searchParams.has("gyre_preview")) return src;
+		url.searchParams.delete("gyre_preview");
+		return url.toString();
+	} catch {
+		return src;
+	}
+}

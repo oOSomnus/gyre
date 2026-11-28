@@ -69,7 +69,9 @@ export function detectNotifications(
 				chatId,
 				title: failed ? `${label} stopped with an error` : `${label} finished`,
 				body: short(failed ? String(last?.errorMessage ?? "The request failed") : assistantText(last?.content) || "The agent is waiting for you."),
-				key: `run:${chatId}:${chat.items.length}`,
+				// The transcript position is stable when the same events replay, and the process
+				// and reset counter keep it unique once a fresh session starts the count over.
+				key: `run:${chatId}:${chat.info.generation ?? ""}:${chat.transcriptEpoch ?? 0}:${chat.items.length}`,
 			});
 		}
 

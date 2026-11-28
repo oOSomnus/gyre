@@ -42,21 +42,41 @@ const keyOf = (h: { scope: Scope; phase: HookPhase; name: string }) => `${h.scop
 
 export function HookStudioPane({ pane }: { pane: PaneSpec }) {
 	const projects = useApp(s => s.projects);
-	const [projectId, setProjectId] = useState<string | undefined>(pane.projectId ?? projects[0]?.id);
-	return <HookStudio key={projectId ?? "user"} paneId={pane.id} initial={pane.section} projectId={projectId} setProjectId={setProjectId} />;
+	const updatePane = useApp(s => s.updatePane);
+	const [projectId, setProjectIdState] = useState<string | undefined>(pane.projectId ?? projects[0]?.id);
+	// The pane's spec follows what it shows (project, open hook), so a notification about a
+	// hook can tell whether this pane already shows it.
+	const setProjectId = (id: string | undefined) => {
+		setProjectIdState(id);
+		updatePane(pane.id, { projectId: id, section: undefined });
+	};
+	const section = pane.section;
+	const setSection = useCallback(
+		(next: string | undefined) => {
+			if (next !== section) updatePane(pane.id, { section: next });
+		},
+		[pane.id, section, updatePane],
+	);
+	return <HookStudio key={projectId ?? "user"} paneId={pane.id} initial={pane.section} projectId={projectId} setProjectId={setProjectId} setSection={setSection} />;
 }
+
+/** Restarting user-wide covers a project restart; keep the widest scope still pending. */
+const widest = (scopes: Array<Scope | null>): Scope => (scopes.includes("user") ? "user" : "project");
 
 function HookStudio({
 	paneId,
 	initial,
 	projectId,
 	setProjectId,
+	setSection,
 }: {
 	paneId: string;
 	/** `scope:phase:name` to open first (e.g. from an error notification). */
 	initial?: string;
 	projectId?: string;
 	setProjectId: (id: string | undefined) => void;
+	/** Record the open hook (`scope:phase:name`) in the pane's spec. */
+	setSection: (section: string | undefined) => void;
 }) {
 	const projects = useApp(s => s.projects);
 	const [hooks, setHooks] = useState<HookFile[] | null>(null);
@@ -71,8 +91,15 @@ function HookStudio({
 	const [diagnostics, setDiagnostics] = useState<string[]>([]);
 	const [restartable, setRestartable] = useState<Scope | null>(null);
 	const loadGeneration = useRef(0);
+	/**
+	 * Bumped whenever the editor changes hands (another hook opened, a new draft started):
+	 * a read, save or delete that finishes afterwards leaves the editor alone.
+	 */
+	const editorGeneration = useRef(0);
+	const [initialTarget] = useState(initial);
 	const project = projects.find(p => p.id === projectId);
-	const dirty = !!editing && (buffer !== editing.content || editing.version === null);
+	const moved = !!editing?.saved && keyOf(editing.saved) !== keyOf(editing);
+	const dirty = !!editing && (buffer !== editing.content || editing.version === null || moved);
 
 	const load = useCallback(async () => {
 		const generation = ++loadGeneration.current;
@@ -91,29 +118,32 @@ function HookStudio({
 
 	const open = useCallback(
 		async (hook: { scope: Scope; phase: HookPhase; name: string }) => {
+			const generation = ++editorGeneration.current;
 			try {
 				const query = new URLSearchParams({ scope: hook.scope, phase: hook.phase, name: hook.name });
 				if (projectId) query.set("projectId", projectId);
 				const file = await api<HookFile>(`/api/hooks/file?${query}`);
+				if (generation !== editorGeneration.current) return;
 				const content = file.content ?? "";
 				setEditing({ scope: file.scope, phase: file.phase, name: file.name, content, version: file.version ?? null, saved: { scope: file.scope, phase: file.phase, name: file.name } });
 				setBuffer(content);
 				setCreating(false);
 				setDiagnostics([]);
 				setMessage(null);
+				setSection(keyOf(file));
 			} catch (e) {
-				setMessage({ text: (e as Error).message, tone: "err" });
+				if (generation === editorGeneration.current) setMessage({ text: (e as Error).message, tone: "err" });
 			}
 		},
-		[projectId],
+		[projectId, setSection],
 	);
 
 	useEffect(() => {
 		void load().then(list => {
-			const target = initial && list?.find(h => keyOf(h) === initial);
+			const target = initialTarget && list?.find(h => keyOf(h) === initialTarget);
 			if (target) void open(target);
 		});
-	}, [load, open, initial]);
+	}, [load, open, initialTarget]);
 
 	useEffect(() => {
 		if (dirty && editing) unsavedPanes.set(paneId, `Hook ${editing.name}`);
@@ -121,10 +151,13 @@ function HookStudio({
 	}, [dirty, editing, paneId]);
 	useEffect(() => () => void unsavedPanes.delete(paneId), [paneId]);
 
-	const confirmDiscard = () => !dirty || confirm(`Discard unsaved changes to ${editing?.name}?`);
+	// While a save or delete is in flight the editor stays put: its result belongs to this hook.
+	const confirmDiscard = () => !busy && (!dirty || confirm(`Discard unsaved changes to ${editing?.name}?`));
 
 	const startNew = () => {
 		if (!confirmDiscard()) return;
+		editorGeneration.current++;
+		setSection(undefined);
 		setEditing(null);
 		setCreating(true);
 		setForm(EMPTY_FORM);
@@ -133,6 +166,7 @@ function HookStudio({
 	};
 
 	const useContent = (content: string, phase: HookPhase, name: string) => {
+		editorGeneration.current++;
 		setEditing({ scope: projectId ? "project" : "user", phase, name, content, version: null });
 		setBuffer(content);
 		setCreating(false);
@@ -140,35 +174,58 @@ function HookStudio({
 
 	const save = async () => {
 		if (!editing || busy) return;
+		const target = editing;
+		const content = buffer;
+		const generation = editorGeneration.current;
+		const owns = () => generation === editorGeneration.current;
 		setBusy(true);
 		setMessage(null);
 		setDiagnostics([]);
+		const source = moved ? target.saved : undefined;
+		// Moving across scopes is a new file plus a delete of the old one.
+		const crossScope = !!source && source.scope !== target.scope;
 		try {
-			const moved = editing.saved && keyOf(editing.saved) !== keyOf(editing);
-			// Moving across scopes is a new file plus a delete of the old one.
-			const crossScope = moved && editing.saved!.scope !== editing.scope;
 			const saved = await api<HookFile>("/api/hooks", {
 				method: "PUT",
 				body: JSON.stringify({
-					scope: editing.scope,
+					scope: target.scope,
 					projectId,
-					phase: editing.phase,
-					name: editing.name,
-					content: buffer,
-					baseVersion: crossScope ? null : editing.version,
-					previous: moved && !crossScope ? { phase: editing.saved!.phase, name: editing.saved!.name } : undefined,
+					phase: target.phase,
+					name: target.name,
+					content,
+					baseVersion: crossScope ? null : target.version,
+					previous: source && !crossScope ? { phase: source.phase, name: source.name } : undefined,
 				}),
 			});
-			if (crossScope) await deleteFile(editing.saved!);
-			setEditing({ ...editing, content: buffer, version: saved.version ?? null, saved: { scope: saved.scope, phase: saved.phase, name: saved.name } });
-			setMessage({ text: "Saved. omp loads hooks when a chat starts.", tone: "ok" });
-			setRestartable(saved.scope);
+			const at = { scope: saved.scope, phase: saved.phase, name: saved.name };
+			// The new file exists from here on, so a retry saves it in place instead of creating it again.
+			if (owns()) {
+				setEditing({ ...target, content, version: saved.version ?? null, saved: at });
+				setSection(keyOf(at));
+			}
+			// A move also takes the hook away from where it was; the restart must cover both.
+			setRestartable(prev => widest([prev, saved.scope, source?.scope ?? null]));
+			let leftOver: string | undefined;
+			if (crossScope && source) {
+				try {
+					await deleteFile(source, target.version);
+				} catch (e) {
+					leftOver = `Saved, but the old ${source.scope} hook ${source.phase}/${source.name} was not removed (${(e as Error).message}). Delete it from the list.`;
+				}
+			}
+			if (owns()) setMessage(leftOver ? { text: leftOver, tone: "err" } : { text: "Saved. omp loads hooks when a chat starts.", tone: "ok" });
 			await load();
 		} catch (e) {
+			if (!owns()) return;
 			const error = e as GatewayError;
 			if (error.status === 422 && Array.isArray(error.body?.diagnostics)) setDiagnostics((error.body.diagnostics as unknown[]).map(String));
 			setMessage({
-				text: error.status === 412 ? (editing.version === null ? "A hook with that name already exists." : "The hook changed on disk since you opened it. Reopen it to see the current file.") : error.message,
+				text:
+					error.status === 412
+						? error.message.includes("already exists")
+							? "A hook with that name already exists."
+							: "The hook changed on disk since you opened it. Reopen it to see the current file."
+						: error.message,
 				tone: "err",
 			});
 		} finally {
@@ -176,22 +233,33 @@ function HookStudio({
 		}
 	};
 
-	const deleteFile = async (hook: { scope: Scope; phase: HookPhase; name: string }) => {
+	/** Delete a hook; with `baseVersion`, only while it is still that version (else a 412). */
+	const deleteFile = async (hook: { scope: Scope; phase: HookPhase; name: string }, baseVersion?: string | null) => {
 		const query = new URLSearchParams({ scope: hook.scope, phase: hook.phase, name: hook.name });
 		if (projectId) query.set("projectId", projectId);
+		if (baseVersion) query.set("baseVersion", baseVersion);
 		await api(`/api/hooks?${query}`, { method: "DELETE" });
 	};
 
 	const remove = async () => {
-		if (!editing?.saved || !confirm(`Delete hook ${editing.saved.name}?`)) return;
+		if (busy || !editing?.saved || !confirm(`Delete hook ${editing.saved.name}?`)) return;
+		const target = editing.saved;
+		const generation = editorGeneration.current;
+		setBusy(true);
 		try {
-			await deleteFile(editing.saved);
-			setRestartable(editing.saved.scope);
-			setEditing(null);
-			setMessage({ text: "Deleted. Running chats keep the hook until they restart.", tone: "ok" });
+			await deleteFile(target);
+			setRestartable(prev => widest([prev, target.scope]));
+			if (generation === editorGeneration.current) {
+				editorGeneration.current++;
+				setEditing(null);
+				setSection(undefined);
+				setMessage({ text: "Deleted. Running chats keep the hook until they restart.", tone: "ok" });
+			}
 			await load();
 		} catch (e) {
-			setMessage({ text: (e as Error).message, tone: "err" });
+			if (generation === editorGeneration.current) setMessage({ text: (e as Error).message, tone: "err" });
+		} finally {
+			setBusy(false);
 		}
 	};
 
@@ -229,6 +297,7 @@ function HookStudio({
 						className="gy-input h-7 min-w-0 flex-1 text-[12px]"
 						value={projectId ?? ""}
 						onChange={e => confirmDiscard() && setProjectId(e.target.value || undefined)}
+						disabled={busy}
 					>
 						<option value="">No project (user only)</option>
 						{projects.map(p => (
@@ -237,7 +306,7 @@ function HookStudio({
 							</option>
 						))}
 					</select>
-					<button type="button" className="gy-btn" onClick={startNew} title="New hook" data-testid="new-hook">
+					<button type="button" className="gy-btn" onClick={startNew} disabled={busy} title="New hook" data-testid="new-hook">
 						<FilePlus2 size={12} />
 					</button>
 				</div>
@@ -331,7 +400,7 @@ function HookStudio({
 										<Trash2 size={11} /> Delete
 									</button>
 								)}
-								<button type="button" className="gy-btn primary" disabled={busy || (!dirty && !!editing.saved && keyOf(editing) === keyOf(editing.saved))} onClick={() => void save()} data-testid="save-hook">
+								<button type="button" className="gy-btn primary" disabled={busy || !dirty} onClick={() => void save()} data-testid="save-hook">
 									{busy ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />} Save
 								</button>
 							</span>

@@ -8,7 +8,7 @@
 import type { PaneSpec } from "@gyre/protocol";
 import { ArrowLeft, ArrowRight, ExternalLink, Globe, Loader2, RotateCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { needsProxy, normalizeUrl } from "../lib/browser";
+import { needsProxy, normalizeUrl, withoutPreviewToken } from "../lib/browser";
 import { api } from "../lib/gateway";
 import { useApp } from "../store/app";
 
@@ -29,6 +29,7 @@ export function BrowserPane({ pane }: { pane: PaneSpec }) {
 	useEffect(() => {
 		if (!url) {
 			setSrc(null);
+			setLoading(false);
 			return;
 		}
 		const h = history.current;
@@ -39,6 +40,8 @@ export function BrowserPane({ pane }: { pane: PaneSpec }) {
 		}
 		setError(null);
 		if (!needsProxy(url, location.hostname)) {
+			// A proxy request still pending for the previous address no longer owns the spinner.
+			setLoading(false);
 			setSrc(url);
 			return;
 		}
@@ -101,7 +104,7 @@ export function BrowserPane({ pane }: { pane: PaneSpec }) {
 					spellCheck={false}
 					data-testid="browser-address"
 				/>
-				<button type="button" className="gy-btn" aria-label="Open in a new tab" disabled={!src} onClick={() => src && window.open(src, "_blank", "noopener")}>
+				<button type="button" className="gy-btn" aria-label="Open in a new tab" disabled={!src} onClick={() => src && window.open(withoutPreviewToken(src), "_blank", "noopener")}>
 					<ExternalLink size={12} />
 				</button>
 			</form>

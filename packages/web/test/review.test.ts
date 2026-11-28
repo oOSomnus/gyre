@@ -47,7 +47,20 @@ test("comments become one message grouped by file in line order", () => {
 		{ id: "3", turn: 3, path: "b.ts", line: 2, text: "unused" },
 	]);
 	expect(message).toBe(
-		["Review of your changes (turns 2, 3):", "", "- b.ts:2 — unused", "- b.ts:9 — rename this", "- a.ts:30 — off by one", "", "Please address these comments."].join("\n"),
+		[
+			"Review of your changes (turns 2, 3):",
+			"",
+			"Turn 2:",
+			"- b.ts:9 — rename this",
+			"- a.ts:30 — off by one",
+			"Turn 3:",
+			"- b.ts:2 — unused",
+			"",
+			"Please address these comments.",
+		].join("\n"),
+	);
+	expect(commentsMessage([{ id: "1", turn: 4, path: "a.ts", line: 1, text: "x" }])).toBe(
+		["Review of your changes (turn 4):", "", "- a.ts:1 — x", "", "Please address these comments."].join("\n"),
 	);
 	expect(commentsMessage([])).toBe("");
 });

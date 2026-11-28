@@ -797,6 +797,7 @@ export function openBrowserPane(url: string, nextTo?: string): string {
 	const existing = Object.values(app.activeWorkspace()?.panes ?? {}).find(p => p.kind === "browser");
 	if (existing) {
 		app.updatePane(existing.id, { url });
+		if (app.maximizedPaneId && app.maximizedPaneId !== existing.id) useApp.setState({ maximizedPaneId: null });
 		app.revealPane(existing.id);
 		return existing.id;
 	}

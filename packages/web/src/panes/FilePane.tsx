@@ -2,7 +2,7 @@ import type { FsEntry, FsFile, FsWriteResult, PaneSpec } from "@gyre/protocol";
 import { ChevronDown, ChevronRight, File, FilePlus, Folder, Loader2, Save } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { api, GatewayError } from "../lib/gateway";
-import { unsavedPanes } from "../store/actions";
+import { keptFileDrafts, unsavedPanes } from "../store/actions";
 import { useApp } from "../store/app";
 
 const MonacoViewer = lazy(() => import("./MonacoViewer"));
@@ -93,6 +93,15 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 	const projectId = pane.projectId;
 	const draftRef = useRef(draft);
 	draftRef.current = draft;
+	const fileRef = useRef(file);
+	fileRef.current = file;
+	/** The editor's text right now, whether or not it matches the saved file. */
+	const bufferRef = useRef<string | null>(null);
+	/**
+	 * Bumped when the pane switches to another project or file: a save, conflict read or
+	 * reload that finishes after that belongs to the old selection and is not applied.
+	 */
+	const selection = useRef(0);
 
 	useEffect(() => {
 		if (!projectId) return;
@@ -113,14 +122,28 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 	useEffect(() => {
 		if (!projectId || !pane.filePath) return;
 		let current = true;
-		setFile(null);
-		setDraft(null);
+		selection.current++;
 		setConflict(null);
 		setSaveError(null);
 		setReadError(null);
+		// Edits kept while the pane was hidden in a background workspace come back as they
+		// were, still based on the version they were made against.
+		const kept = keptFileDrafts.get(pane.id);
+		keptFileDrafts.delete(pane.id);
+		if (kept && kept.projectId === projectId && kept.file.path === pane.filePath) {
+			setFile(kept.file);
+			setDraft(kept.draft);
+			bufferRef.current = kept.draft;
+			return;
+		}
+		setFile(null);
+		setDraft(null);
+		bufferRef.current = null;
 		void readFile(projectId, pane.filePath)
 			.then(file => {
-				if (current) setFile(file);
+				if (!current) return;
+				setFile(file);
+				bufferRef.current = file.content;
 			})
 			.catch(e => {
 				if (current) setReadError(String(e.message));
@@ -141,7 +164,16 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 		window.addEventListener("beforeunload", warn);
 		return () => window.removeEventListener("beforeunload", warn);
 	}, [draft, file, pane.id]);
-	useEffect(() => () => void unsavedPanes.delete(pane.id), [pane.id]);
+	// Unmounting (its workspace switched away) keeps unsaved edits for when it is shown again;
+	// the pane stays registered as unsaved, so closing it from elsewhere still asks.
+	useEffect(
+		() => () => {
+			const file = fileRef.current;
+			if (draftRef.current !== null && file && projectId) keptFileDrafts.set(pane.id, { projectId, file, draft: draftRef.current });
+			else unsavedPanes.delete(pane.id);
+		},
+		[pane.id, projectId],
+	);
 
 	const editable = !!file && !file.binary && !file.truncated && !!file.version;
 
@@ -149,6 +181,8 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 		async (baseVersion?: string | null) => {
 			if (!projectId || !file || draftRef.current === null || saving) return;
 			const content = draftRef.current;
+			const owner = selection.current;
+			const owns = () => owner === selection.current;
 			setSaving(true);
 			setSaveError(null);
 			try {
@@ -156,14 +190,18 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 					method: "PUT",
 					body: JSON.stringify({ projectId, path: file.path, content, baseVersion: baseVersion === undefined ? file.version : baseVersion }),
 				});
+				if (!owns()) return;
 				setFile({ ...file, content, version: result.version, size: result.size });
-				// Typing during the save keeps the newer text as the draft.
-				setDraft(current => (current === content ? null : current));
+				// Whatever the editor holds now stays as typed: newer text, or even the text from
+				// before this save, is unsaved relative to what was just written.
+				const now = bufferRef.current ?? content;
+				setDraft(now === content ? null : now);
 				setConflict(null);
 			} catch (e) {
+				if (!owns()) return;
 				if (e instanceof GatewayError && e.status === 412) {
 					const disk = await readFile(projectId, file.path).catch(() => null);
-					setConflict({ currentVersion: disk?.version ?? null, disk: disk?.content ?? null, showDiff: false });
+					if (owns()) setConflict({ currentVersion: disk?.version ?? null, disk: disk?.content ?? null, showDiff: false });
 				} else setSaveError((e as Error).message);
 			} finally {
 				setSaving(false);
@@ -174,12 +212,16 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 
 	const reload = async () => {
 		if (!projectId || !file) return;
+		const owner = selection.current;
 		try {
-			setFile(await readFile(projectId, file.path));
+			const fresh = await readFile(projectId, file.path);
+			if (owner !== selection.current) return;
+			setFile(fresh);
 			setDraft(null);
+			bufferRef.current = fresh.content;
 			setConflict(null);
 		} catch (e) {
-			setReadError((e as Error).message);
+			if (owner === selection.current) setReadError((e as Error).message);
 		}
 	};
 
@@ -291,7 +333,10 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 									path={file.path}
 									content={draft ?? file.content}
 									readOnly={!editable}
-									onChange={value => setDraft(value === file.content ? null : value)}
+									onChange={value => {
+										bufferRef.current = value;
+										setDraft(value === file.content ? null : value);
+									}}
 									onSave={() => void save()}
 								/>
 							)}

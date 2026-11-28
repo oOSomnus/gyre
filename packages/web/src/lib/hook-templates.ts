@@ -75,6 +75,22 @@ const toolList = (tools: string) =>
 		.filter(Boolean);
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+/** Words a `const` cannot be named (reserved in strict-mode modules, plus TS's own). */
+const RESERVED = new Set(
+	(
+		"break case catch class const continue debugger default delete do else enum export extends false finally for function if import in " +
+		"instanceof new null return super switch this throw true try typeof var void while with yield let static implements interface package " +
+		"private protected public await arguments eval undefined NaN Infinity"
+	).split(" "),
+);
+
+/** Top-level names the generator itself declares for `form`. */
+function generatedNames(form: HookForm): string[] {
+	const names = ["HookAPI"];
+	if (isToolTrigger(form.trigger)) names.push("TOOLS", "PATTERN");
+	names.push(...(form.action === "command" ? ["COMMAND", "TIMEOUT_MS"] : ["MESSAGE"]));
+	return names;
+}
 
 /** Problems that would make the generated module wrong; empty when it can be generated. */
 export function formProblems(form: HookForm): string[] {
@@ -88,7 +104,12 @@ export function formProblems(form: HookForm): string[] {
 	}
 	if (form.action === "command" && !form.command.trim()) problems.push("Enter the shell command to run.");
 	if ((form.action === "block" || form.action === "confirm") && form.trigger !== "tool_call") problems.push("Only a hook before a tool runs can block it.");
-	for (const v of form.variables) if (!IDENTIFIER.test(v.name)) problems.push(`"${v.name}" is not a valid variable name.`);
+	const taken = new Set(generatedNames(form));
+	for (const v of form.variables) {
+		if (!IDENTIFIER.test(v.name) || RESERVED.has(v.name)) problems.push(`"${v.name}" is not a valid variable name.`);
+		else if (taken.has(v.name)) problems.push(`"${v.name}" is already used in the generated hook; pick another name.`);
+		taken.add(v.name);
+	}
 	if (!(form.timeoutSeconds > 0)) problems.push("The timeout must be more than 0 seconds.");
 	return problems;
 }

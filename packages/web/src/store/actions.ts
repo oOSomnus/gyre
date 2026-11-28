@@ -3,7 +3,7 @@
  * pane lifecycle, composing into a chat from elsewhere, and transcript actions
  * (view, review, fork, open image/file).
  */
-import type { PaneSpec, Workspace } from "@gyre/protocol";
+import type { FsFile, PaneSpec, Workspace } from "@gyre/protocol";
 import type { Terminal } from "@xterm/xterm";
 import { api, gateway } from "../lib/gateway";
 import type { AgentMessage } from "../lib/omp";
@@ -21,12 +21,24 @@ export const terminals = new Map<string, Terminal>();
 export const images = new Map<string, { src: string; name?: string }>();
 /** Panes holding unsaved edits (pane id -> what is unsaved), checked before closing them. */
 export const unsavedPanes = new Map<string, string>();
+/**
+ * Unsaved file edits of file panes that are not mounted (their workspace is in the
+ * background), by pane id: the file as opened (its version is the save's base) and the
+ * edited text. The pane picks them up again when it is shown.
+ */
+export const keptFileDrafts = new Map<string, { projectId: string; file: FsFile; draft: string }>();
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+	window.addEventListener("beforeunload", event => {
+		if (keptFileDrafts.size) event.preventDefault();
+	});
+}
 /** Message snapshots opened in message panes ("view" / "review"), by ref. */
 export const snapshots = new Map<string, { text: string; role: string; model?: string; timestamp?: number }>();
 
 // ---------------------------------------------------------------- pane lifecycle
 
 export function closePaneResources(pane: PaneSpec): void {
+	keptFileDrafts.delete(pane.id);
 	if (pane.kind === "chat") closeChat(pane.id);
 	// A remote browser pane may hold a preview proxy; the gateway stops it when nobody does.
 	if (pane.kind === "browser") void api(`/api/preview?paneId=${encodeURIComponent(pane.id)}`, { method: "DELETE" }).catch(() => undefined);

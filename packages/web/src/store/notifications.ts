@@ -54,7 +54,8 @@ export const useNotifications = create<NotificationStore>((set, get) => ({
 	push(drafts) {
 		if (!drafts.length) return;
 		const known = new Set(get().items.map(n => n.key));
-		const fresh = drafts.filter(d => !known.has(d.key)).map(d => ({ ...d, id: crypto.randomUUID(), ts: Date.now(), read: false }));
+		// Also one per key within this batch.
+		const fresh = drafts.filter(d => !known.has(d.key) && !!known.add(d.key)).map(d => ({ ...d, id: crypto.randomUUID(), ts: Date.now(), read: false }));
 		if (!fresh.length) return;
 		const items = [...fresh.reverse(), ...get().items].slice(0, MAX_NOTIFICATIONS);
 		set({ items });
@@ -110,7 +111,9 @@ export function openNotification(n: Notification): void {
 	const project = useApp.getState().projects.find(p => p.id === projectId);
 	const hook = hookTarget(n.extensionPath, project?.path);
 	if (hook) {
-		openOrRevealPane({ kind: "hooks", projectId, section: hook }, p => p.kind === "hooks");
+		// A Hook Studio pane keeps its project and open hook in its spec, so only one already
+		// showing this hook is reused; any other stays as it is and a new pane opens.
+		openOrRevealPane({ kind: "hooks", projectId, section: hook }, p => p.kind === "hooks" && p.projectId === projectId && p.section === hook);
 		return;
 	}
 	if (n.kind === "plan") {

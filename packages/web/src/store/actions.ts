@@ -147,13 +147,27 @@ export function openImage(chatId: string | undefined, src: string, name?: string
 }
 
 /** Open a project file in a file pane next to the chat. */
+/**
+ * Point file pane `pane` at `path`. Unsaved edits there (shown or kept in the background)
+ * are discarded only after the user agrees; declining leaves the pane and its edits as
+ * they are. Returns whether the pane now shows `path`.
+ */
+export function navigateFilePane(pane: PaneSpec, path: string): boolean {
+	if (pane.filePath === path) return true;
+	const unsaved = unsavedPanes.get(pane.id) ?? keptFileDrafts.get(pane.id)?.file.path;
+	if (unsaved && !confirm(`Discard unsaved changes to ${unsaved}?`)) return false;
+	unsavedPanes.delete(pane.id);
+	keptFileDrafts.delete(pane.id);
+	useApp.getState().updatePane(pane.id, { filePath: path });
+	return true;
+}
+
 export function openFile(projectId: string | undefined, path: string): void {
 	const app = useApp.getState();
 	if (!projectId) return;
 	const existing = Object.values(app.activeWorkspace()?.panes ?? {}).find(p => p.kind === "file" && p.projectId === projectId);
 	if (existing) {
-		app.updatePane(existing.id, { filePath: path });
-		app.revealPane(existing.id);
+		if (navigateFilePane(existing, path)) app.revealPane(existing.id);
 		return;
 	}
 	app.addPane({ kind: "file", projectId, filePath: path });

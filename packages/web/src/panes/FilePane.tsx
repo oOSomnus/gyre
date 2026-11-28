@@ -2,7 +2,7 @@ import type { FsEntry, FsFile, FsWriteResult, PaneSpec } from "@gyre/protocol";
 import { ChevronDown, ChevronRight, File, FilePlus, Folder, Loader2, Save } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { api, GatewayError } from "../lib/gateway";
-import { keptFileDrafts, unsavedPanes } from "../store/actions";
+import { keptFileDrafts, navigateFilePane, unsavedPanes } from "../store/actions";
 import { useApp } from "../store/app";
 
 const MonacoViewer = lazy(() => import("./MonacoViewer"));
@@ -79,7 +79,6 @@ interface Conflict {
 const readFile = (projectId: string, path: string) => api<FsFile>(`/api/fs/read?projectId=${projectId}&path=${encodeURIComponent(path)}`);
 
 export function FilePane({ pane }: { pane: PaneSpec }) {
-	const updatePane = useApp(s => s.updatePane);
 	const [root, setRoot] = useState<FsEntry[] | null>(null);
 	const [treeKey, setTreeKey] = useState(0);
 	const [file, setFile] = useState<FsFile | null>(null);
@@ -102,6 +101,10 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 	 * reload that finishes after that belongs to the old selection and is not applied.
 	 */
 	const selection = useRef(0);
+	/** Counts edits in the editor, so a reload never lands over text typed while it ran. */
+	const edits = useRef(0);
+	/** The text an in-flight save is writing; null when no save runs. */
+	const inFlightSave = useRef<string | null>(null);
 
 	useEffect(() => {
 		if (!projectId) return;
@@ -165,12 +168,19 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 		return () => window.removeEventListener("beforeunload", warn);
 	}, [draft, file, pane.id]);
 	// Unmounting (its workspace switched away) keeps unsaved edits for when it is shown again;
-	// the pane stays registered as unsaved, so closing it from elsewhere still asks.
+	// the pane stays registered as unsaved, so closing it from elsewhere still asks. A pane that
+	// was closed is gone from every workspace, and its edits go with it.
 	useEffect(
 		() => () => {
 			const file = fileRef.current;
-			if (draftRef.current !== null && file && projectId) keptFileDrafts.set(pane.id, { projectId, file, draft: draftRef.current });
-			else unsavedPanes.delete(pane.id);
+			const exists = useApp.getState().workspaces.some(ws => ws.panes[pane.id]);
+			// While a save runs, whether it lands is unknown, so the editor's text is kept even if
+			// it matches the file as opened; the save drops the copy if it wrote that same text.
+			const draft = inFlightSave.current !== null ? (bufferRef.current ?? draftRef.current) : draftRef.current;
+			if (exists && draft !== null && file && projectId) {
+				keptFileDrafts.set(pane.id, { projectId, file, draft });
+				unsavedPanes.set(pane.id, file.path);
+			} else unsavedPanes.delete(pane.id);
 		},
 		[pane.id, projectId],
 	);
@@ -185,11 +195,18 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 			const owns = () => owner === selection.current;
 			setSaving(true);
 			setSaveError(null);
+			inFlightSave.current = content;
 			try {
 				const result = await api<FsWriteResult>("/api/fs/write", {
 					method: "PUT",
 					body: JSON.stringify({ projectId, path: file.path, content, baseVersion: baseVersion === undefined ? file.version : baseVersion }),
 				});
+				// Unmounted meanwhile with exactly this text kept: it is saved now.
+				const kept = keptFileDrafts.get(pane.id);
+				if (kept && kept.file.path === file.path && kept.file.version === file.version && kept.draft === content) {
+					keptFileDrafts.delete(pane.id);
+					unsavedPanes.delete(pane.id);
+				}
 				if (!owns()) return;
 				setFile({ ...file, content, version: result.version, size: result.size });
 				// Whatever the editor holds now stays as typed: newer text, or even the text from
@@ -204,18 +221,21 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 					if (owns()) setConflict({ currentVersion: disk?.version ?? null, disk: disk?.content ?? null, showDiff: false });
 				} else setSaveError((e as Error).message);
 			} finally {
+				inFlightSave.current = null;
 				setSaving(false);
 			}
 		},
-		[projectId, file, saving],
+		[projectId, file, saving, pane.id],
 	);
 
 	const reload = async () => {
 		if (!projectId || !file) return;
 		const owner = selection.current;
+		const editsAtStart = edits.current;
 		try {
 			const fresh = await readFile(projectId, file.path);
-			if (owner !== selection.current) return;
+			// Another file, or text typed since the click: that text is not discarded unseen.
+			if (owner !== selection.current || editsAtStart !== edits.current) return;
 			setFile(fresh);
 			setDraft(null);
 			bufferRef.current = fresh.content;
@@ -226,9 +246,7 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 	};
 
 	const openPath = (path: string) => {
-		if (path === pane.filePath) return;
-		if (draftRef.current !== null && !confirm(`Discard unsaved changes to ${file?.path}?`)) return;
-		updatePane(pane.id, { filePath: path });
+		navigateFilePane(pane, path);
 	};
 
 	const newFile = async () => {
@@ -334,6 +352,7 @@ export function FilePane({ pane }: { pane: PaneSpec }) {
 									content={draft ?? file.content}
 									readOnly={!editable}
 									onChange={value => {
+										edits.current++;
 										bufferRef.current = value;
 										setDraft(value === file.content ? null : value);
 									}}

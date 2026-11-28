@@ -503,8 +503,9 @@ export function wireChatStore({ accepts }: { accepts(chatId: string): boolean })
 			const previous = store.chats[message.chat.chatId]?.info.status;
 			store.setInfo(message.chat);
 			if (message.t === "chat_replay") store.patch(message.chat.chatId, { pendingUi: [] });
-			// Jobs belonged to the old process: the new one cannot list or kill them.
-			if (replaced) store.patch(message.chat.chatId, { historyLoaded: false, jobs: [] });
+			// Jobs belonged to the old process: the new one cannot list or kill them. Its turn list
+			// arrives once its session attaches; until then Review has none to offer.
+			if (replaced) store.patch(message.chat.chatId, { historyLoaded: false, jobs: [], turns: null });
 			if (message.chat.status === "ready" && (previous !== "ready" || replaced || message.t === "chat_replay")) {
 				void loadHistory(message.chat.chatId).catch(() => undefined);
 				void loadCommands(message.chat.chatId).catch(() => undefined);

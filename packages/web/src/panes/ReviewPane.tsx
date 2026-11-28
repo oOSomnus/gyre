@@ -127,7 +127,12 @@ export function ReviewPane({ pane }: { pane: PaneSpec }) {
 
 	if (!chat) return <Empty text="This chat is no longer open." />;
 	if (turnsState?.unavailable) return <Empty text={turnsState.unavailable} />;
-	if (!turns.length) return <Empty text={turnsState ? "No turns recorded yet. Each agent run is snapshotted when it starts and ends." : "Waiting for the chat to report its turns…"} />;
+	if (!turns.length) {
+		// A turn whose first snapshot failed cannot be reviewed, but its error should still show.
+		const failed = turnsState?.turns.filter(t => t.error).at(-1);
+		if (failed) return <Empty text={`Turn #${failed.n} could not be snapshotted: ${failed.error}`} />;
+		return <Empty text={turnsState ? "No turns recorded yet. Each agent run is snapshotted when it starts and ends." : "Waiting for the chat to report its turns…"} />;
+	}
 
 	const file = changes?.files.find(f => f.path === selectedPath);
 	const actionable = effectiveMode === "since";

@@ -16,7 +16,13 @@ export function BrowserPane({ pane }: { pane: PaneSpec }) {
 	const updatePane = useApp(s => s.updatePane);
 	const url = pane.url ?? "";
 	const [address, setAddress] = useState(url);
-	const [src, setSrc] = useState<string | null>(null);
+	/**
+	 * What the iframe shows: the source with the address and reload it belongs to. A proxy
+	 * link carries a one-time token, so a reload keeps the current frame until the new link
+	 * arrives and then swaps source and key together.
+	 */
+	const [frame, setFrame] = useState<{ url: string; src: string; reload: number } | null>(null);
+	const src = frame?.src ?? null;
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [reloadKey, setReloadKey] = useState(0);
@@ -28,7 +34,7 @@ export function BrowserPane({ pane }: { pane: PaneSpec }) {
 	// Resolve what the iframe loads: the page itself, or a preview-proxy link for it.
 	useEffect(() => {
 		if (!url) {
-			setSrc(null);
+			setFrame(null);
 			setLoading(false);
 			return;
 		}
@@ -42,14 +48,19 @@ export function BrowserPane({ pane }: { pane: PaneSpec }) {
 		if (!needsProxy(url, location.hostname)) {
 			// A proxy request still pending for the previous address no longer owns the spinner.
 			setLoading(false);
-			setSrc(url);
+			setFrame({ url, src: url, reload: reloadKey });
 			return;
 		}
 		let current = true;
 		setLoading(true);
 		api<{ url: string }>("/api/preview", { method: "POST", body: JSON.stringify({ url, paneId: pane.id }) })
-			.then(result => current && setSrc(result.url))
-			.catch(e => current && setError((e as Error).message))
+			.then(result => current && setFrame({ url, src: result.url, reload: reloadKey }))
+			.catch(e => {
+				if (!current) return;
+				setError((e as Error).message);
+				// A failed reload keeps the page on screen; another address's page does not stay.
+				setFrame(previous => (previous?.url === url ? previous : null));
+			})
 			.finally(() => current && setLoading(false));
 		return () => {
 			current = false;
@@ -113,10 +124,10 @@ export function BrowserPane({ pane }: { pane: PaneSpec }) {
 					{error}
 				</div>
 			)}
-			{src ? (
+			{frame ? (
 				<iframe
-					key={`${src}#${reloadKey}`}
-					src={src}
+					key={`${frame.src}#${frame.reload}`}
+					src={frame.src}
 					title={url}
 					className="min-h-0 w-full flex-1 border-0"
 					style={{ background: "white" }}

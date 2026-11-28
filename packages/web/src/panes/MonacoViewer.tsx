@@ -1,4 +1,4 @@
-import Editor, { loader, type OnMount } from "@monaco-editor/react";
+import Editor, { loader } from "@monaco-editor/react";
 // Core editor + syntax-only languages: editing plain text needs no language workers.
 import * as monaco from "monaco-editor/editor/editor.api";
 import "monaco-editor/basic-languages/monaco.contribution";
@@ -35,25 +35,33 @@ export default function MonacoViewer({
 	const theme = useApp(s => s.theme);
 	const saveRef = useRef(onSave);
 	saveRef.current = onSave;
-	const onMount: OnMount = editor => {
-		editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveRef.current?.());
-	};
 	return (
-		<Editor
-			path={modelKey ? `${modelKey}/${path}` : path}
-			value={content}
-			theme={THEMES[theme].scheme === "light" ? "vs" : "vs-dark"}
-			onMount={onMount}
-			onChange={value => onChange?.(value ?? "")}
-			options={{
-				readOnly,
-				minimap: { enabled: false },
-				fontSize: 12.5,
-				fontFamily: "JetBrains Mono, IBM Plex Mono, ui-monospace, monospace",
-				scrollBeyondLastLine: false,
-				renderLineHighlight: readOnly ? "none" : "line",
-				automaticLayout: true,
+		// Ctrl/Cmd+S is caught here, per editor: Monaco's addCommand is global, so with two
+		// editors open the last one registered would take every save.
+		<div
+			className="h-full"
+			onKeyDownCapture={event => {
+				if (!saveRef.current || !(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "s") return;
+				event.preventDefault();
+				event.stopPropagation();
+				saveRef.current();
 			}}
-		/>
+		>
+			<Editor
+				path={modelKey ? `${modelKey}/${path}` : path}
+				value={content}
+				theme={THEMES[theme].scheme === "light" ? "vs" : "vs-dark"}
+				onChange={value => onChange?.(value ?? "")}
+				options={{
+					readOnly,
+					minimap: { enabled: false },
+					fontSize: 12.5,
+					fontFamily: "JetBrains Mono, IBM Plex Mono, ui-monospace, monospace",
+					scrollBeyondLastLine: false,
+					renderLineHighlight: readOnly ? "none" : "line",
+					automaticLayout: true,
+				}}
+			/>
+		</div>
 	);
 }

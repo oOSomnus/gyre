@@ -22,8 +22,8 @@ Gyre's UI (themes, window manager, panes, keyboard) and the omp RPC commands, ev
 - **Pane frames**: a colored border and title bar per pane kind (chat, terminal, task manager, files, plan, settings, …; colours per theme). A red square close button and a maximize button on the left, the title on the right as `project / name` with the project underlined. Unfocused panes are slightly desaturated; the focused pane glows.
 - **Event cards**: 1px ink border, a tinted header strip with an uppercase letter-spaced mono label (USER butter, ASSISTANT parchment, THINKING lavender, tools sage/teal, COMPLETION CHOICE sky, TOOL SAFETY amber, errors coral, plan gold) and a separate bordered meta cell on the right: `view · review · fork · HH:MM:SS`.
 - **Controls**: uppercase mono buttons with a 1px border and a 2px offset shadow; red danger buttons; green pill toggles; outlined status chips; keycaps; numbered choice rows with a teal selected state and an `Alt + 1…9` legend.
-- **Top bar**: brand and New/palette on the left; a centered MODES group (MARKS Alt+W, KBD), the gyroscope (state as above; click for the palette) and badges (chats that need you, running sub-agents); the workspace name and a minimap per workspace on the right.
-- **Chat strip**: a dark rounded strip above each composer with cache reads, chat state, model, Marks, plan mode, objectives, sub-agents, event graph, thinking level, tok/s with a sparkline, and a context ring. Cells hide by container width.
+- **Top bar**: brand and New/palette on the left; a centered MODES group (MARKS Alt+W, KBD), the gyroscope (state as above; click for the palette) and badges (the notification bell with the count of chats that need you and an unread dot, running sub-agents); the workspace name and a minimap per workspace on the right.
+- **Chat strip**: a dark rounded strip above each composer with cache reads, chat state, model, Marks, plan mode, review (badged when the last turn changed files), objectives, sub-agents, event graph, thinking level, tok/s with a sparkline, and a context ring. Cells hide by container width.
 
 ## Window manager (`store/app.ts`, `shell/PaneGrid.tsx`)
 
@@ -69,6 +69,12 @@ Legend: `cmd` RPC command, `evt` event frame, `ui` `extension_ui_request` method
 | Git pane (`/git [revision]`, New menu, palette): branch and ahead/behind, Conflicts / Staged / Changes groups with stage, unstage and discard per file (discard asks first), a hunk list over a Monaco split diff (inline in narrow panes and on phones) with per-hunk stage, unstage and discard, commit and amend (Ctrl+Enter), Generate. With a revision: a read-only view of that commit. Refreshes on focus, after its own actions and when a chat in the project finishes a turn | `panes/GitPane.tsx`, `panes/MonacoDiffViewer.tsx`, `lib/git.ts` | `gw` `/api/projects/:id/git/{status,diff,commit,last-message}` (GET), `/git/{stage,unstage,discard,hunk,commit,generate-message}` (POST); Generate runs `cli` `omp commit --legacy --dry-run` |
 | Terminal, Send to AI | `panes/TerminalPane.tsx` | `gw` PTY (`pty_open {key}`, `pty_detach`, `pty_close`) |
 | Files, sessions, settings/providers, raw events | `FilePane`, `SessionsPane`, `SettingsPane`, `EventsPane` | `gw` `/api/fs/*`, `/api/sessions`; `cli` config; `cmd get_login_providers`; every `evt` |
+| File editing: Monaco editor, Ctrl+S, unsaved dot, a bar offering reload / overwrite / diff when the file changed on disk, New file, a confirmation before closing unsaved edits | `panes/FilePane.tsx`, `panes/MonacoViewer.tsx` | `gw` `GET /api/fs/read` (`version`), `PUT /api/fs/write` (`baseVersion`, `412`) |
+| Hook Studio: user and project hooks grouped by pre/post, templates, a guided form (trigger, tools, input pattern, block / confirm / notify / run a command with a timeout, variables) that generates an editable module, save with syntax diagnostics, restart affected chats | `panes/HookStudioPane.tsx`, `lib/hook-templates.ts` | `gw` `/api/hooks`, `/api/hooks/file`, `/api/projects/:id/restart-chats` |
+| Background jobs: every chat's jobs (type, intent, command, caption, status, duration), Kill, the chat, a settled job's result; a Task Manager row links here | `panes/JobsPane.tsx`, `lib/jobs.ts` | `ext` `gyre.jobs` widget (`ctx.getAsyncJobSnapshot()`), `cmd prompt` `/jobs kill <id>`, transcript `async-result` messages |
+| Review (`/review`, Alt+R, chat strip): turns newest first; "This turn" (before → after) or "Since then" (before → work tree) with per-file and per-hunk revert; line-number clicks add comments sent to the composer as one message | `panes/ReviewPane.tsx`, `lib/review.ts` | `ext` `gyre.turns` widget, `gw` `/api/projects/:id/review/{files,diff,revert}` |
+| Notifications (bell, Alt+N): needs you, finished, failed, plan ready, job settled, warnings and hook or extension errors (opening Hook Studio for a hook); Settings → General toggles system notifications | `shell/NotificationCenter.tsx`, `store/notifications.ts`, `lib/notifications.ts` | chat-store transitions; `evt extension_error` |
+| Browser: address bar, back / forward / reload / open in tab; localhost links in chat open here; remote browsers go through a preview proxy | `panes/BrowserPane.tsx`, `lib/browser.ts` | `gw` `POST/DELETE /api/preview` |
 | omp setup reminder (omp missing / no provider; points to omp for provider setup) | `shell/OmpSetup.tsx` in dead chat panes, the empty workspace, the phone layout and Settings → Providers; TopBar "Add a provider" chip | `gw` `ompStatus` from `/api/health` and `welcome`; Re-check: `gw` `POST /api/omp/recheck`, then restarts dead chat panes |
 | Add project (folder browser) | `projects/AddProjectDialog.tsx`: path field, breadcrumbs, filterable folder list with git badges, hidden toggle, keyboard (↑↓ Enter Backspace) | `gw` `GET /api/fs/browse`, `POST /api/projects` |
 | Manage projects | Settings → Projects (also TopBar New menu and palette "Manage projects…"): rename, new chat, remove with a confirmation listing what stops | `gw` `PATCH/DELETE /api/projects/:id`, `/api/projects/:id/usage`; removal closes the project's panes in every workspace |
@@ -92,6 +98,8 @@ Gyre's omp extension (`packages/omp-extension`) provides plan mode over RPC, sin
 | Alt W (or Alt J) | Marks: label everything; links/tables/images/code/files offer actions (1-9); a terminal's mark focuses its input |
 | Alt M | Keyboard mode: WASD focus, Shift+WASD swap, Ctrl+WASD resize, Q/E workspaces, 1-9 jump, H hide, F float/dock, Z maximize, X close, N chat, T terminal, Esc exit |
 | Alt Z | Maximize / restore |
+| Alt R | Review the focused chat's changes |
+| Alt N | Notifications |
 | Ctrl M | Model picker; again inside it to switch between Models and Roles |
 | Alt ← ↑ → ↓ | Move focus between panes |
 | Alt 1…9 | Answer the newest dialog |
@@ -103,8 +111,6 @@ Gyre's omp extension (`packages/omp-extension`) provides plan mode over RPC, sin
 
 | Feature | Status |
 |---|---|
-| Hook Studio | omp hooks are files under `.omp/hooks`; edit them in a terminal or file pane |
-| Commit review ("Review N changes", Alt+R) | the Git pane (`/git`) for diffs, or omp's `/review` |
 | Git push, pull, branches, stash, AI-selected staging | not in the Git pane yet; use a terminal |
-| Embedded browser pane | omp's `browser` tool renders as a tool card |
+| Live output of a running background job | omp exposes no job output to extensions; the Jobs pane shows the result once omp delivers it to the chat |
 | Semantic indexer, objective evaluator | not planned; omp's own search tools, goals and todos cover the agent side |

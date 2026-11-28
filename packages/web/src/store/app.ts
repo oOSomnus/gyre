@@ -773,3 +773,34 @@ export function openGitPane(projectId: string, revision?: string, nextTo?: strin
 	const inLayout = nextTo !== undefined && paneIdsInOrder(app.activeWorkspace()?.layout ?? null).includes(nextTo);
 	return app.addPane({ kind: "git", projectId, ...(revision ? { revision } : {}) }, inLayout ? { nextTo, direction: "row" } : {});
 }
+
+/** Reveal the first pane matching `match` in any workspace, or add `spec` (next to `nextTo` when it is docked). */
+export function openOrRevealPane(spec: Omit<PaneSpec, "id">, match: (pane: PaneSpec) => boolean, nextTo?: string): string {
+	const app = useApp.getState();
+	for (const ws of app.workspaces) {
+		const existing = Object.values(ws.panes).find(match);
+		if (existing) {
+			if (app.maximizedPaneId && app.maximizedPaneId !== existing.id) useApp.setState({ maximizedPaneId: null });
+			app.revealPane(existing.id);
+			return existing.id;
+		}
+	}
+	const inLayout = nextTo !== undefined && paneIdsInOrder(app.activeWorkspace()?.layout ?? null).includes(nextTo);
+	return app.addPane(spec, inLayout ? { nextTo, direction: "row" } : {});
+}
+
+export const openJobsPane = (nextTo?: string) => openOrRevealPane({ kind: "jobs" }, p => p.kind === "jobs", nextTo);
+
+/** Show `url` in a browser pane: the first one in the active workspace, else a new one. */
+export function openBrowserPane(url: string, nextTo?: string): string {
+	const app = useApp.getState();
+	const existing = Object.values(app.activeWorkspace()?.panes ?? {}).find(p => p.kind === "browser");
+	if (existing) {
+		app.updatePane(existing.id, { url });
+		if (app.maximizedPaneId && app.maximizedPaneId !== existing.id) useApp.setState({ maximizedPaneId: null });
+		app.revealPane(existing.id);
+		return existing.id;
+	}
+	const inLayout = nextTo !== undefined && paneIdsInOrder(app.activeWorkspace()?.layout ?? null).includes(nextTo);
+	return app.addPane({ kind: "browser", url }, inLayout ? { nextTo, direction: "row" } : {});
+}

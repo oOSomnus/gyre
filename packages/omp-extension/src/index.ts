@@ -16,10 +16,16 @@
  * State is published as JSON in the `gyre.plan` widget, which Gyre
  * reads; Gyre answers through `/gyre-plan <json>` and a prefs file
  * (`GYRE_PLAN_PREFS`) holding the role and context choices.
+ *
+ * The same extension also publishes the agent's background jobs (`jobs.ts`,
+ * `gyre.jobs`) and per-turn work-tree snapshots for the Review pane
+ * (`turns.ts`, `gyre.turns`).
  */
 import { readFileSync } from "node:fs";
 import type { PlanPrefs, PlanState } from "@gyre/protocol";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { registerJobs } from "./jobs";
+import { registerTurns } from "./turns";
 import { planApprovedPrompt, planDecisionReminder, planFeedbackPrompt, planModeContext } from "./prompts";
 
 export const PLAN_WIDGET_KEY = "gyre.plan";
@@ -248,6 +254,8 @@ async function readLocalPlan(sessionFile: string | undefined, planFilePath: stri
 }
 
 export default function gyrePlanMode(pi: ExtensionAPI): void {
+	registerJobs(pi);
+	registerTurns(pi);
 	let rt = initial();
 	const z = pi.zod;
 

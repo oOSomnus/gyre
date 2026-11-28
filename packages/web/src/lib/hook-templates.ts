@@ -1,0 +1,279 @@
+/**
+ * Hook Studio's guided form and templates. A hook is an omp module
+ * (`export default function (pi: HookAPI)`); the form generates one, and the
+ * generated code stays editable afterwards.
+ */
+import type { HookPhase } from "@gyre/protocol";
+
+export type HookTrigger = "tool_call" | "tool_result" | "agent_end" | "turn_end" | "session_start";
+export type HookAction = "block" | "confirm" | "notify" | "command";
+
+export const TRIGGERS: { id: HookTrigger; label: string; hint: string }[] = [
+	{ id: "tool_call", label: "Before a tool runs", hint: "tool_call: can block the call" },
+	{ id: "tool_result", label: "After a tool runs", hint: "tool_result: sees the result" },
+	{ id: "turn_end", label: "After each turn", hint: "turn_end" },
+	{ id: "agent_end", label: "When the agent stops", hint: "agent_end" },
+	{ id: "session_start", label: "When a session starts", hint: "session_start" },
+];
+
+export const ACTIONS: { id: HookAction; label: string; triggers?: HookTrigger[] }[] = [
+	{ id: "block", label: "Block the call with a reason", triggers: ["tool_call"] },
+	{ id: "confirm", label: "Ask me to confirm first", triggers: ["tool_call"] },
+	{ id: "notify", label: "Show a notification" },
+	{ id: "command", label: "Run a shell command" },
+];
+
+export interface HookVariable {
+	name: string;
+	value: string;
+}
+
+export interface HookForm {
+	trigger: HookTrigger;
+	/** Comma-separated tool names; empty matches every tool (tool triggers only). */
+	tools: string;
+	/** Regular expression tested against the tool input as JSON; empty always matches. */
+	match: string;
+	action: HookAction;
+	/** Block reason, confirmation question or notification text. */
+	message: string;
+	command: string;
+	timeoutSeconds: number;
+	/** Send the command's output to the agent as a message. */
+	sendOutput: boolean;
+	variables: HookVariable[];
+}
+
+export const EMPTY_FORM: HookForm = {
+	trigger: "tool_call",
+	tools: "bash",
+	match: "",
+	action: "confirm",
+	message: "Allow this command?",
+	command: "",
+	timeoutSeconds: 30,
+	sendOutput: false,
+	variables: [],
+};
+
+export const isToolTrigger = (trigger: HookTrigger) => trigger === "tool_call" || trigger === "tool_result";
+
+/** omp files a hook under pre/ or post/; it is metadata, but keep it truthful. */
+export const phaseFor = (trigger: HookTrigger): HookPhase => (trigger === "tool_call" ? "pre" : "post");
+
+/** A file name for a new hook: the single tool it watches, else a name from the action. */
+export function suggestedName(form: HookForm): string {
+	const tools = toolList(form.tools);
+	if (isToolTrigger(form.trigger) && tools.length === 1) return `${tools[0]}.ts`;
+	return `${form.action === "command" ? "run" : form.action}-on-${form.trigger.replace(/_/g, "-")}.ts`;
+}
+
+const toolList = (tools: string) =>
+	tools
+		.split(",")
+		.map(t => t.trim())
+		.filter(Boolean);
+
+const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+/** Words a `const` cannot be named (reserved in strict-mode modules, plus TS's own). */
+const RESERVED = new Set(
+	(
+		"break case catch class const continue debugger default delete do else enum export extends false finally for function if import in " +
+		"instanceof new null return super switch this throw true try typeof var void while with yield let static implements interface package " +
+		"private protected public await arguments eval undefined NaN Infinity"
+	).split(" "),
+);
+
+/** Top-level names the generator itself declares for `form`. */
+function generatedNames(form: HookForm): string[] {
+	const names = ["HookAPI"];
+	if (isToolTrigger(form.trigger)) names.push("TOOLS", "PATTERN");
+	names.push(...(form.action === "command" ? ["COMMAND", "TIMEOUT_MS"] : ["MESSAGE"]));
+	return names;
+}
+
+/** Problems that would make the generated module wrong; empty when it can be generated. */
+export function formProblems(form: HookForm): string[] {
+	const problems: string[] = [];
+	if (form.match) {
+		try {
+			new RegExp(form.match);
+		} catch {
+			problems.push("The match pattern is not a valid regular expression.");
+		}
+	}
+	if (form.action === "command" && !form.command.trim()) problems.push("Enter the shell command to run.");
+	if ((form.action === "block" || form.action === "confirm") && form.trigger !== "tool_call") problems.push("Only a hook before a tool runs can block it.");
+	const taken = new Set(generatedNames(form));
+	for (const v of form.variables) {
+		if (!IDENTIFIER.test(v.name) || RESERVED.has(v.name)) problems.push(`"${v.name}" is not a valid variable name.`);
+		else if (taken.has(v.name)) problems.push(`"${v.name}" is already used in the generated hook; pick another name.`);
+		taken.add(v.name);
+	}
+	if (!(form.timeoutSeconds > 0)) problems.push("The timeout must be more than 0 seconds.");
+	return problems;
+}
+
+const literal = (value: string) => JSON.stringify(value);
+
+/** The hook module the form describes. */
+export function generateHook(form: HookForm): string {
+	const tool = isToolTrigger(form.trigger);
+	const lines: string[] = [
+		"// Generated by Gyre Hook Studio. Edit freely: omp loads this file when a chat starts.",
+		'import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";',
+		"",
+	];
+	if (tool) {
+		lines.push(`/** Tools this hook watches; empty: every tool. */`, `const TOOLS: string[] = ${JSON.stringify(toolList(form.tools))};`);
+		lines.push(`/** Tested against the tool input as JSON. */`, `const PATTERN = ${form.match ? `new RegExp(${literal(form.match)})` : "null"};`);
+	}
+	if (form.action !== "command") lines.push(`const MESSAGE = ${literal(form.message)};`);
+	if (form.action === "command") {
+		lines.push(`const COMMAND = ${literal(form.command)};`, `const TIMEOUT_MS = ${Math.round(form.timeoutSeconds * 1000)};`);
+	}
+	for (const v of form.variables) lines.push(`const ${v.name} = ${literal(v.value)};`);
+	lines.push("", "export default function (pi: HookAPI) {", `\tpi.on(${literal(form.trigger)}, async (event, ctx) => {`);
+	if (tool) {
+		lines.push(
+			"\t\tif (TOOLS.length > 0 && !TOOLS.includes(event.toolName)) return undefined;",
+			"\t\tif (PATTERN && !PATTERN.test(JSON.stringify(event.input))) return undefined;",
+		);
+	}
+	switch (form.action) {
+		case "block":
+			lines.push("\t\treturn { block: true, reason: MESSAGE };");
+			break;
+		case "confirm":
+			lines.push(
+				"\t\t// Without a UI (print mode) nobody can confirm, so the call is blocked.",
+				'\t\tconst allowed = ctx.hasUI ? await ctx.ui.confirm("Hook", MESSAGE) : false;',
+				'\t\tif (!allowed) return { block: true, reason: "Blocked by the user" };',
+				"\t\treturn undefined;",
+			);
+			break;
+		case "notify":
+			lines.push('\t\tif (ctx.hasUI) ctx.ui.notify(MESSAGE, "info");', "\t\treturn undefined;");
+			break;
+		case "command":
+			lines.push(
+				'\t\tconst result = await pi.exec("sh", ["-c", COMMAND], { cwd: ctx.cwd, timeout: TIMEOUT_MS });',
+				'\t\tif (result.killed && ctx.hasUI) ctx.ui.notify(`Hook command timed out: ${COMMAND}`, "warning");',
+			);
+			if (form.sendOutput) {
+				lines.push(
+					"\t\tconst output = `${result.stdout}${result.stderr}`.trim();",
+					"\t\tif (output) {",
+					'\t\t\tpi.sendMessage({ customType: "gyre-hook-output", content: `Output of \\`${COMMAND}\\` (exit ${result.code}):\\n${output.slice(0, 8000)}`, display: true });',
+					"\t\t}",
+				);
+			}
+			lines.push("\t\treturn undefined;");
+			break;
+	}
+	lines.push("\t});", "}", "");
+	return lines.join("\n");
+}
+
+export interface HookTemplate {
+	id: string;
+	label: string;
+	description: string;
+	phase: HookPhase;
+	name: string;
+	content: string;
+}
+
+const header = (what: string) => `// ${what}\nimport type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";\n\n`;
+
+export const HOOK_TEMPLATES: HookTemplate[] = [
+	{
+		id: "protected-paths",
+		label: "Protected paths",
+		description: "Block writes and edits to .env, .git/ and node_modules/.",
+		phase: "pre",
+		name: "protected-paths.ts",
+		content: `${header("Blocks writes and edits to protected paths.")}const PROTECTED = [".env", ".git/", "node_modules/"];
+const WRITE_TOOLS = ["write", "edit", "apply_patch", "ast_edit"];
+
+export default function (pi: HookAPI) {
+	pi.on("tool_call", async event => {
+		if (!WRITE_TOOLS.includes(event.toolName)) return undefined;
+		const input = JSON.stringify(event.input);
+		const hit = PROTECTED.find(path => input.includes(path));
+		return hit ? { block: true, reason: \`\${hit} is protected by a hook\` } : undefined;
+	});
+}
+`,
+	},
+	{
+		id: "confirm-dangerous",
+		label: "Confirm dangerous commands",
+		description: "Ask before rm -rf, sudo, git push --force and similar shell commands.",
+		phase: "pre",
+		name: "bash.ts",
+		content: `${header("Asks before dangerous shell commands.")}const DANGEROUS = [/\\brm\\s+-[a-z]*r[a-z]*f/, /\\bsudo\\b/, /git\\s+push\\s+.*--force/, /\\bmkfs\\b/, /\\bdd\\s+if=/];
+
+export default function (pi: HookAPI) {
+	pi.on("tool_call", async (event, ctx) => {
+		if (event.toolName !== "bash") return undefined;
+		const command = String(event.input.command ?? "");
+		if (!DANGEROUS.some(pattern => pattern.test(command))) return undefined;
+		if (!ctx.hasUI) return { block: true, reason: "Dangerous command blocked (no UI to confirm)" };
+		const allowed = await ctx.ui.confirm("Dangerous command", command);
+		return allowed ? undefined : { block: true, reason: "Blocked by the user" };
+	});
+}
+`,
+	},
+	{
+		id: "format-after-edit",
+		label: "Format after edits",
+		description: "Run a formatter on each file the agent edits.",
+		phase: "post",
+		name: "format-after-edit.ts",
+		content: `${header("Runs a formatter on files the agent edits.")}const FORMATTER = ["bunx", "prettier", "--write"];
+const EDIT_TOOLS = ["write", "edit"];
+const TIMEOUT_MS = 20_000;
+
+export default function (pi: HookAPI) {
+	pi.on("tool_result", async (event, ctx) => {
+		if (!EDIT_TOOLS.includes(event.toolName) || event.isError) return undefined;
+		const path = event.input.path ?? event.input.file_path;
+		if (typeof path !== "string") return undefined;
+		const [command, ...args] = FORMATTER;
+		await pi.exec(command!, [...args, path], { cwd: ctx.cwd, timeout: TIMEOUT_MS });
+		return undefined;
+	});
+}
+`,
+	},
+	{
+		id: "notify-done",
+		label: "Notify when the agent stops",
+		description: "Show a notification each time the agent finishes.",
+		phase: "post",
+		name: "notify-on-agent-end.ts",
+		content: `${header("Notifies when the agent finishes.")}export default function (pi: HookAPI) {
+	pi.on("agent_end", async (_event, ctx) => {
+		if (ctx.hasUI) ctx.ui.notify("The agent finished", "info");
+	});
+}
+`,
+	},
+	{
+		id: "git-checkpoint",
+		label: "Git checkpoint per turn",
+		description: "Record a git stash snapshot at the start of every turn (git stash list shows them).",
+		phase: "post",
+		name: "git-checkpoint.ts",
+		content: `${header("Stores a git stash snapshot at the start of each turn.")}export default function (pi: HookAPI) {
+	pi.on("turn_start", async (_event, ctx) => {
+		const { stdout } = await pi.exec("git", ["stash", "create"], { cwd: ctx.cwd });
+		const ref = stdout.trim();
+		if (ref) await pi.exec("git", ["stash", "store", "-m", \`omp checkpoint \${new Date().toISOString()}\`, ref], { cwd: ctx.cwd });
+	});
+}
+`,
+	},
+];

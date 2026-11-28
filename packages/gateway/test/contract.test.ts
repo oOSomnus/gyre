@@ -141,6 +141,32 @@ describe.skipIf(!version)(`omp ${version ?? "(missing)"} + Gyre extension contra
 		expect(after.dumpTools?.some(t => t.name === "submit_plan")).toBe(false);
 	});
 
+	test("Review pane: the extension publishes gyre.turns when the session starts (here: no git repository)", async () => {
+		const start = Date.now();
+		const turns = () => frames.filter(f => f.type === "extension_ui_request" && f.method === "setWidget" && f.widgetKey === "gyre.turns") as Array<{ widgetLines?: string[] }>;
+		while (!turns().length && Date.now() - start < 10_000) await Bun.sleep(50);
+		const state = JSON.parse(turns().at(-1)?.widgetLines?.[0] ?? "{}");
+		expect(typeof state.sessionId).toBe("string");
+		expect(state.unavailable).toMatch(/git repository/);
+	});
+
+	test("Jobs pane: `/jobs kill <id>` is a builtin that answers with command_output and no model call", async () => {
+		const before = frames.length;
+		const data = await proc.call<{ agentInvoked: boolean }>({ type: "prompt", message: "/jobs kill gyre-missing-job" });
+		expect(data.agentInvoked).toBe(false);
+		const start = Date.now();
+		while (!frames.slice(before).some(f => f.type === "command_output") && Date.now() - start < 10_000) await Bun.sleep(50);
+		expect(frames.slice(before).some(f => f.type === "command_output")).toBe(true);
+	});
+
+	test("Jobs pane: the extension context still exposes getAsyncJobSnapshot", async () => {
+		const rel = "@oh-my-pi/pi-coding-agent/src/extensibility/extensions/types.ts";
+		const path = join(import.meta.dir, "../node_modules", rel);
+		const alt = join(import.meta.dir, "../../../node_modules", rel);
+		const source = await Bun.file((await Bun.file(path).exists()) ? path : alt).text();
+		expect(source).toMatch(/getAsyncJobSnapshot\(\): AsyncJobSnapshot \| null/);
+	});
+
 	test("model roles: the picker lists role rows for '@'", async () => {
 		const picker = await proc.call<{ rows: Array<{ role?: string }> }>({ type: "get_model_picker", query: "@", limit: 50 });
 		expect(Array.isArray(picker.rows)).toBe(true);
@@ -205,5 +231,29 @@ describe.skipIf(!version)("Git pane: omp's commit-message generator", () => {
 		const result = await cli.run(["commit", "--legacy", "--dry-run", "--no-changelog"], repo, 60_000);
 		expect(result.stdout).not.toContain("Generated commit message:");
 		expect(result.stderr).toContain("No changes to commit");
+	}, 90_000);
+});
+
+describe.skipIf(!version)("Hook Studio: omp discovers project hooks Gyre writes", () => {
+	test("a hook saved to <project>/.omp/hooks/pre loads when a chat starts", async () => {
+		const { saveHook } = await import("../src/hooks");
+		const project = mkdtempSync(join(tmpdir(), "gyre-contract-hooks-"));
+		await saveHook({
+			agentDir: join(project, "unused-agent-dir"),
+			projectPath: project,
+			scope: "project",
+			phase: "pre",
+			name: "*.ts",
+			content: 'export default function (pi) {\n\tpi.registerCommand("gyre-hook-check", { description: "contract", handler: async () => {} });\n}\n',
+			baseVersion: null,
+		});
+		const hooked = new OmpProcess({ cwd: project, ompPath, args: ["--no-session"], onFrame: () => {}, onExit: () => {} });
+		try {
+			await hooked.start();
+			const data = await hooked.call<{ commands: Array<{ name: string }> }>({ type: "get_available_commands" });
+			expect(data.commands.some(c => c.name === "gyre-hook-check")).toBe(true);
+		} finally {
+			await hooked.stop();
+		}
 	}, 90_000);
 });

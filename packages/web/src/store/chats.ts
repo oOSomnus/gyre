@@ -2,7 +2,7 @@
  * Per-chat state, built by folding omp frames. Unknown frames are kept in the
  * raw log (Events pane) so new upstream events are visible without code changes.
  */
-import { type ChatInfo, type OmpFrame, PLAN_WIDGET_KEY, type PlanState, uiRequestKind } from "@gyre/protocol";
+import { type ChatInfo, type JobInfo, JOBS_WIDGET_KEY, type OmpFrame, PLAN_WIDGET_KEY, type PlanState, TURNS_WIDGET_KEY, type TurnsState, uiRequestKind } from "@gyre/protocol";
 import { create } from "zustand";
 import { gateway } from "../lib/gateway";
 import { openChatPane } from "./app";
@@ -59,6 +59,12 @@ export interface ChatState {
 	historyLoaded: boolean;
 	/** Gyre plan mode, from the extension's `gyre.plan` widget. */
 	plan: PlanState | null;
+	/** The agent's background jobs, from the extension's `gyre.jobs` widget. */
+	jobs: JobInfo[];
+	/** Counts transcript resets (a fresh session), so per-transcript positions stay unique. */
+	transcriptEpoch?: number;
+	/** Per-turn work-tree snapshots, from the extension's `gyre.turns` widget. */
+	turns: TurnsState | null;
 	/** Todo phases: from get_state and live todo tool results. */
 	todoPhases: TodoPhase[];
 	/** Recent tokens/s samples for the sparkline. */
@@ -97,6 +103,28 @@ const EVENT_LABELS: Record<string, string> = {
 let keySeq = 0;
 const nextKey = (prefix: string) => `${prefix}${++keySeq}`;
 
+/** The `gyre.jobs` widget line; anything unreadable is no jobs. */
+export function parseJobs(line: string | undefined): JobInfo[] {
+	if (!line) return [];
+	try {
+		const jobs = (JSON.parse(line) as { jobs?: unknown }).jobs;
+		return Array.isArray(jobs) ? jobs.filter((j): j is JobInfo => !!j && typeof (j as JobInfo).id === "string" && typeof (j as JobInfo).status === "string") : [];
+	} catch {
+		return [];
+	}
+}
+
+/** The `gyre.turns` widget line, or null when absent or unreadable. */
+export function parseTurns(line: string | undefined): TurnsState | null {
+	if (!line) return null;
+	try {
+		const state = JSON.parse(line) as TurnsState;
+		return state && Array.isArray(state.turns) ? state : null;
+	} catch {
+		return null;
+	}
+}
+
 function emptyChat(info: ChatInfo): ChatState {
 	return {
 		info,
@@ -115,6 +143,8 @@ function emptyChat(info: ChatInfo): ChatState {
 		frames: [],
 		historyLoaded: false,
 		plan: null,
+		jobs: [],
+		turns: null,
 		todoPhases: [],
 		tpsHistory: [],
 	};
@@ -195,6 +225,14 @@ export function applyFrame(chat: ChatState, frame: OmpFrame): ChatState {
 					}
 					break;
 				}
+				if (f.widgetKey === TURNS_WIDGET_KEY) {
+					next.turns = parseTurns((f.widgetLines as string[] | undefined)?.[0]);
+					break;
+				}
+				if (f.widgetKey === JOBS_WIDGET_KEY) {
+					next.jobs = parseJobs((f.widgetLines as string[] | undefined)?.[0]);
+					break;
+				}
 				const widgets = { ...next.widgets };
 				if (!f.widgetLines) delete widgets[String(f.widgetKey)];
 				else widgets[String(f.widgetKey)] = { lines: f.widgetLines as string[], placement: f.widgetPlacement as string };
@@ -233,6 +271,20 @@ export function applyFrame(chat: ChatState, frame: OmpFrame): ChatState {
 					level: (f.level as "info" | "warning" | "error") ?? "info",
 					message: String(f.message ?? ""),
 					ts: now,
+				},
+			];
+			break;
+		case "extension_error":
+			// A hook or extension handler threw; Hook Studio can open it when it is a hook file.
+			next.items = [
+				...next.items,
+				{
+					kind: "notice",
+					key: nextKey("n"),
+					level: "error",
+					message: `${String(f.extensionPath ?? "extension")} failed in ${String(f.event ?? "a handler")}: ${String(f.error ?? "")}`,
+					ts: now,
+					extensionPath: typeof f.extensionPath === "string" ? f.extensionPath : undefined,
 				},
 			];
 			break;
@@ -451,7 +503,9 @@ export function wireChatStore({ accepts }: { accepts(chatId: string): boolean })
 			const previous = store.chats[message.chat.chatId]?.info.status;
 			store.setInfo(message.chat);
 			if (message.t === "chat_replay") store.patch(message.chat.chatId, { pendingUi: [] });
-			if (replaced) store.patch(message.chat.chatId, { historyLoaded: false });
+			// Jobs belonged to the old process: the new one cannot list or kill them. Its turn list
+			// arrives once its session attaches; until then Review has none to offer.
+			if (replaced) store.patch(message.chat.chatId, { historyLoaded: false, jobs: [], turns: null });
 			if (message.chat.status === "ready" && (previous !== "ready" || replaced || message.t === "chat_replay")) {
 				void loadHistory(message.chat.chatId).catch(() => undefined);
 				void loadCommands(message.chat.chatId).catch(() => undefined);
@@ -480,6 +534,7 @@ export function wireChatStore({ accepts }: { accepts(chatId: string): boolean })
 export function resetTranscript(chatId: string): void {
 	historyEpochs.set(chatId, (historyEpochs.get(chatId) ?? 0) + 1);
 	useChats.getState().patch(chatId, {
+		transcriptEpoch: (useChats.getState().chats[chatId]?.transcriptEpoch ?? 0) + 1,
 		items: [],
 		toolExec: {},
 		toolResults: {},

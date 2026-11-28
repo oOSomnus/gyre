@@ -8,12 +8,13 @@
  * with `rev-parse` before use. Commands run at the repository root, so all
  * paths are root-relative, as `git status --porcelain` reports them.
  */
-import type { GitCommitInfo, GitDiff, GitFile, GitHunk, GitHunkAction, GitStatus } from "@gyre/protocol";
-import { createHash } from "node:crypto";
-import { closeSync, fstatSync, readSync } from "node:fs";
+import type { GitCommitInfo, GitDiff, GitFile, GitHunk, GitHunkAction, GitStatus, ReviewChanges, ReviewFile } from "@gyre/protocol";
+import { createHash, randomBytes } from "node:crypto";
+import { closeSync, copyFileSync, fstatSync, lstatSync, readSync, realpathSync, rmSync } from "node:fs";
 import { realpath } from "node:fs/promises";
-import { join } from "node:path";
-import { openContained } from "./contained-file";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join } from "node:path";
+import { isContained, openContained } from "./contained-file";
 
 export class GitError extends Error {
 	constructor(
@@ -64,9 +65,12 @@ interface RunResult {
 const decoder = new TextDecoder();
 const text = (bytes: Uint8Array) => decoder.decode(bytes);
 const isBinary = (bytes: Uint8Array) => bytes.subarray(0, 8000).includes(0);
+/** A diff side larger than MAX_SIDE_BYTES, left unread. */
+const TOO_BIG = "too-big";
+type Side = Uint8Array | null | typeof TOO_BIG;
 
 /** Run git with `args` in `cwd`. Never throws for a non-zero exit; see `GitRepo.git` for that. */
-export async function runGit(cwd: string, args: string[], options: { stdin?: string; timeoutMs?: number } = {}): Promise<RunResult> {
+export async function runGit(cwd: string, args: string[], options: { stdin?: string; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<RunResult> {
 	const proc = Bun.spawn(["git", ...args], {
 		cwd,
 		stdin: options.stdin === undefined ? "ignore" : new TextEncoder().encode(options.stdin),
@@ -83,6 +87,7 @@ export async function runGit(cwd: string, args: string[], options: { stdin?: str
 			GIT_SEQUENCE_EDITOR: "true",
 			LC_ALL: "C",
 			NO_COLOR: "1",
+			...options.env,
 		},
 	});
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -361,6 +366,17 @@ export class GitRepo {
 		return result.code === 0 ? result.stdout : null;
 	}
 
+	/**
+	 * One side of a diff: the blob's bytes, null when it does not exist, or TOO_BIG (checked
+	 * with `cat-file -s` first) so a large object is never buffered just to be refused.
+	 */
+	async #side(spec: string): Promise<Side> {
+		const size = await runGit(this.root, ["cat-file", "-s", spec]);
+		if (size.code !== 0) return null;
+		if (Number(text(size.stdout).trim()) > MAX_SIDE_BYTES) return TOO_BIG;
+		return this.#blob(spec);
+	}
+
 	/** The work-tree file, opened beneath the root so a symlink cannot point the read elsewhere. */
 	#worktree(path: string): Uint8Array | null {
 		let fd: number;
@@ -404,8 +420,8 @@ export class GitRepo {
 		const hasHead = (await runGit(this.root, ["rev-parse", "--verify", "--quiet", "HEAD"])).code === 0;
 		const [diffText, oldBytes, newBytes] = await Promise.all([
 			this.#diffText(file, staged),
-			file.untracked ? null : staged ? (hasHead ? this.#blob(`HEAD:${oldPath}`) : null) : this.#blob(`:0:${file.path}`),
-			staged ? this.#blob(`:0:${file.path}`) : this.#worktree(file.path),
+			file.untracked ? null : staged ? (hasHead ? this.#side(`HEAD:${oldPath}`) : null) : this.#side(`:0:${file.path}`),
+			staged ? this.#side(`:0:${file.path}`) : this.#worktree(file.path),
 		]);
 		return this.#buildDiff({ path: file.path, oldPath, staged, diffText, oldBytes, newBytes, actionable: !file.untracked && !file.conflicted });
 	}
@@ -421,8 +437,8 @@ export class GitRepo {
 		const paths = entry.origPath ? [entry.origPath, path] : [path];
 		const [diffText, oldBytes, newBytes] = await Promise.all([
 			this.git(["diff-tree", "-p", "-M", ...DIFF_FLAGS, "-U3", ...range, "--", ...paths]).then(text),
-			base ? this.#blob(`${base}:${oldPath}`) : null,
-			this.#blob(`${sha}:${path}`),
+			base ? this.#side(`${base}:${oldPath}`) : null,
+			this.#side(`${sha}:${path}`),
 		]);
 		return { ...this.#buildDiff({ path, oldPath, staged: false, diffText, oldBytes, newBytes, actionable: false }), revision: sha };
 	}
@@ -432,13 +448,16 @@ export class GitRepo {
 		oldPath: string;
 		staged: boolean;
 		diffText: string;
-		oldBytes: Uint8Array | null;
-		newBytes: Uint8Array | null;
+		oldBytes: Side;
+		newBytes: Side;
 		actionable: boolean;
 	}): GitDiff {
 		const parsed = parseFileDiff(input.diffText);
-		const binary = parsed.binary || (input.oldBytes ? isBinary(input.oldBytes) : false) || (input.newBytes ? isBinary(input.newBytes) : false);
-		const tooBig = (b: Uint8Array | null) => (b?.length ?? 0) > MAX_SIDE_BYTES;
+		const bytes = (b: Side) => (b instanceof Uint8Array ? b : null);
+		const oldBytes = bytes(input.oldBytes);
+		const newBytes = bytes(input.newBytes);
+		const binary = parsed.binary || (oldBytes ? isBinary(oldBytes) : false) || (newBytes ? isBinary(newBytes) : false);
+		const tooBig = (b: Side) => b === TOO_BIG || (b?.length ?? 0) > MAX_SIDE_BYTES;
 		const truncated = tooBig(input.oldBytes) || tooBig(input.newBytes);
 		const side = (b: Uint8Array | null) => (!b || binary || truncated ? "" : text(b));
 		return {
@@ -446,8 +465,8 @@ export class GitRepo {
 			oldPath: input.oldPath,
 			staged: input.staged,
 			binary,
-			oldText: side(input.oldBytes),
-			newText: side(input.newBytes),
+			oldText: side(oldBytes),
+			newText: side(newBytes),
 			truncated: truncated || undefined,
 			// Untracked and conflicted files have no hunks to apply; the lines are still shown in the split view.
 			hunks: binary ? [] : input.actionable ? parsed.hunks : parsed.hunks.map(h => ({ ...h, id: "" })),
@@ -526,23 +545,7 @@ export class GitRepo {
 		const meta = text(await this.git(["show", "-s", "--format=%H%x00%an%x00%ae%x00%aI%x00%P%x00%s%x00%b", sha])).split("\0");
 		const parents = (meta[4] ?? "").split(" ").filter(Boolean);
 		// Merges list their changes against the first parent, like `git show --first-parent`.
-		const range = parents[0] ? [parents[0], sha] : ["--root", sha];
-		const [names, stats] = await Promise.all([
-			this.git(["diff-tree", "-r", "-z", "-M", "--name-status", "--no-commit-id", ...range]).then(text),
-			this.git(["diff-tree", "-r", "-z", "-M", "--numstat", "--no-commit-id", "--no-ext-diff", "--no-textconv", ...range]).then(text),
-		]);
-		const counts = new Map(parseNumstat(stats).map(e => [e.path, e]));
-		const files: GitCommitInfo["files"] = [];
-		const records = names.split("\0");
-		for (let i = 0; i < records.length; i++) {
-			const status = records[i];
-			if (!status) continue;
-			const rename = status[0] === "R" || status[0] === "C";
-			const origPath = rename ? records[++i] : undefined;
-			const path = records[++i] ?? "";
-			const count = counts.get(path);
-			files.push({ path, origPath, status: status[0]!, added: count?.added, removed: count?.removed });
-		}
+		const files = await this.#treeChanges(parents[0] ? [parents[0], sha] : ["--root", sha]);
 		return {
 			sha,
 			author: meta[1] ?? "",
@@ -553,5 +556,155 @@ export class GitRepo {
 			body: (meta[6] ?? "").trimEnd(),
 			files,
 		};
+	}
+
+	/** Files changed in a `diff-tree` range, with line counts. */
+	async #treeChanges(range: string[]): Promise<ReviewFile[]> {
+		const [names, stats] = await Promise.all([
+			this.git(["diff-tree", "-r", "-z", "-M", "--name-status", "--no-commit-id", ...range]).then(text),
+			this.git(["diff-tree", "-r", "-z", "-M", "--numstat", "--no-commit-id", "--no-ext-diff", "--no-textconv", ...range]).then(text),
+		]);
+		const counts = new Map(parseNumstat(stats).map(e => [e.path, e]));
+		const files: ReviewFile[] = [];
+		const records = names.split("\0");
+		for (let i = 0; i < records.length; i++) {
+			const status = records[i];
+			if (!status) continue;
+			const rename = status[0] === "R" || status[0] === "C";
+			const origPath = rename ? records[++i] : undefined;
+			const path = records[++i] ?? "";
+			const count = counts.get(path);
+			files.push({ path, origPath, status: status[0]!, added: count?.added, removed: count?.removed });
+		}
+		return files;
+	}
+
+	// ---------------------------------------------------------------- per-turn review
+
+	/** Verify `id` names a tree object (a turn snapshot). */
+	async resolveTree(id: unknown): Promise<string> {
+		if (typeof id !== "string" || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(id)) throw new GitError("invalid tree id");
+		const result = await runGit(this.root, ["cat-file", "-t", id]);
+		if (result.code !== 0 || text(result.stdout).trim() !== "tree") throw new GitError("unknown snapshot; it may have been pruned", 404);
+		return id;
+	}
+
+	/**
+	 * The work tree as a tree object, ignored files excluded: `git add -A` into a temporary
+	 * index seeded from the real one (to reuse its stat cache), then `write-tree`. The real
+	 * index and refs are untouched.
+	 */
+	async snapshotWorktree(): Promise<string> {
+		const gitDir = text(await this.git(["rev-parse", "--absolute-git-dir"])).trim();
+		const index = join(tmpdir(), `gyre-index-${process.pid}-${randomBytes(6).toString("hex")}`);
+		try {
+			try {
+				copyFileSync(join(gitDir, "index"), index);
+			} catch {}
+			const env = { GIT_INDEX_FILE: index };
+			const add = await runGit(this.root, ["add", "-A", "--", "."], { env, timeoutMs: 30_000 });
+			if (add.code !== 0) throw new GitError(add.stderr.trim() || "could not snapshot the work tree");
+			const tree = await runGit(this.root, ["write-tree"], { env });
+			const sha = text(tree.stdout).trim();
+			if (tree.code !== 0 || !sha) throw new GitError(tree.stderr.trim() || "could not snapshot the work tree");
+			return sha;
+		} finally {
+			rmSync(index, { force: true });
+		}
+	}
+
+	/** Files changed from tree `from` to tree `to`, or to the current work tree. */
+	async reviewChanges(from: unknown, to: unknown): Promise<ReviewChanges> {
+		const fromTree = await this.resolveTree(from);
+		const toTree = to === "worktree" ? await this.snapshotWorktree() : await this.resolveTree(to);
+		return { from: fromTree, to: toTree, files: fromTree === toTree ? [] : await this.#treeChanges([fromTree, toTree]) };
+	}
+
+	/**
+	 * One file's diff from tree `from` to tree `to` or the work tree. Only a diff against
+	 * the work tree has actionable hunks: those are what `revert` can undo.
+	 */
+	async reviewDiff(from: unknown, to: unknown, path: string): Promise<GitDiff> {
+		const changes = await this.reviewChanges(from, to);
+		const entry = changes.files.find(f => f.path === path);
+		if (!entry) throw new GitError(`${path} did not change`, 404);
+		const oldPath = entry.origPath ?? path;
+		const paths = entry.origPath ? [entry.origPath, path] : [path];
+		const [diffText, oldBytes, newBytes] = await Promise.all([
+			this.git(["diff-tree", "-p", "-M", ...DIFF_FLAGS, "-U3", changes.from, changes.to, "--", ...paths]).then(text),
+			entry.status === "A" ? null : this.#side(`${changes.from}:${oldPath}`),
+			// The snapshot, not the live file: the hunks were computed from it, so the text shown
+			// beside them must be the same bytes even if the file changes meanwhile.
+			entry.status === "D" ? null : this.#side(`${changes.to}:${path}`),
+		]);
+		return this.#buildDiff({ path, oldPath, staged: false, diffText, oldBytes, newBytes, actionable: to === "worktree" });
+	}
+
+	/**
+	 * Put `path` back the way it was in tree `from`, in the work tree only (the index is left
+	 * alone). With `hunkId`, undo just that hunk of the from→work-tree diff; a hunk that changed
+	 * since it was shown is a 409.
+	 */
+	revert(from: unknown, path: unknown, hunkId?: unknown): Promise<void> {
+		return this.#mutate(async () => {
+			if (typeof path !== "string" || !path) throw new GitError("path required");
+			const changes = await this.reviewChanges(from, "worktree");
+			const entry = changes.files.find(f => f.path === path);
+			if (!entry) throw new GitError(`${path} has no changes since that turn`, 409);
+			if (hunkId !== undefined) {
+				if (typeof hunkId !== "string" || !hunkId) throw new GitError("hunk id required");
+				const paths = entry.origPath ? [entry.origPath, path] : [path];
+				const parsed = parseFileDiff(text(await this.git(["diff-tree", "-p", "-M", ...DIFF_FLAGS, "-U3", changes.from, changes.to, "--", ...paths])));
+				const hunk = parsed.hunks.find(h => h.id === hunkId);
+				if (!hunk) throw new GitError("the file changed since the diff was loaded; refresh and try again", 409);
+				// A text hunk only: a mode change in the same diff is left to the whole-file revert.
+				const header = contentOnlyHeader(parsed.header).filter(line => !/^(old|new) mode /.test(line));
+				await this.git(["apply", "--whitespace=nowarn", "-R", "-"], { stdin: hunkPatch(header, hunk) });
+				return;
+			}
+			// Restore what the turn changed, removed or renamed away first, then remove what it
+			// added (or the new side of a rename): a failed restore leaves the new file in place.
+			const restore = entry.status === "A" ? undefined : (entry.origPath ?? path);
+			if (restore) {
+				this.#checkRestoreTarget(restore);
+				await this.git(["restore", `--source=${changes.from}`, "--worktree", "--", restore]);
+			}
+			if (entry.status === "A" || entry.status === "R") this.#removeWorktreeFile(path);
+		});
+	}
+
+	/**
+	 * A file revert restores with a forced checkout, which would replace a directory now at
+	 * the path, and everything in it (ignored files included), with the old file. Refuse that.
+	 */
+	#checkRestoreTarget(path: string): void {
+		const abs = join(this.root, path);
+		if (isAbsolute(path) || !isContained(this.root, abs)) throw new GitError("path escapes the repository");
+		let info: ReturnType<typeof lstatSync>;
+		try {
+			info = lstatSync(abs);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw new GitError(`cannot check ${path}: ${(error as Error).message}`);
+		}
+		if (info.isDirectory()) throw new GitError(`${path} is a directory now; move it aside to restore the file`, 409);
+	}
+
+	/** Delete a work-tree file (or symlink) inside the root; never a directory. */
+	#removeWorktreeFile(path: string): void {
+		const abs = join(this.root, path);
+		if (isAbsolute(path) || !isContained(this.root, abs)) throw new GitError("path escapes the repository");
+		let info: ReturnType<typeof lstatSync>;
+		try {
+			info = lstatSync(abs);
+		} catch (error) {
+			// Already gone is the goal; anything else (permissions, I/O) is a failed revert.
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw new GitError(`cannot remove ${path}: ${(error as Error).message}`);
+		}
+		if (info.isDirectory()) throw new GitError(`${path} is a directory`);
+		// A parent swapped for a symlink must not redirect the delete outside the repository.
+		if (!isContained(this.root, realpathSync(dirname(abs)))) throw new GitError("path escapes the repository");
+		rmSync(abs);
 	}
 }

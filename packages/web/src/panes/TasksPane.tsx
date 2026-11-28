@@ -1,10 +1,11 @@
 /** Task Manager: omp chat processes, terminals and running sub-agents, with open/restart/kill. */
 import type { ChatInfo, PaneSpec, PtyInfo } from "@gyre/protocol";
-import { Activity, Bot, MessagesSquare, SquareTerminal } from "lucide-react";
+import { Activity, Bot, Cpu, MessagesSquare, SquareTerminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { progressOf, subStatus } from "../chat/SubagentCard";
 import { api, gateway } from "../lib/gateway";
-import { openChatPane, useApp } from "../store/app";
+import { runningJobCount } from "../lib/jobs";
+import { openChatPane, openJobsPane, useApp } from "../store/app";
 import { useChats } from "../store/chats";
 
 const POLL_TIMEOUT_MS = 10_000;
@@ -38,6 +39,7 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 	const workspaces = useApp(s => s.workspaces);
 	const revealPane = useApp(s => s.revealPane);
 	const chatStore = useChats(s => s.chats);
+	const runningJobs = runningJobCount(chatStore);
 
 	useEffect(() => {
 		let live = true;
@@ -210,9 +212,13 @@ export function TasksPane(_props: { pane: PaneSpec }) {
 					</div>
 				);
 			})}
-			<div className="gy-row text-[12px]" style={{ color: "var(--muted)" }}>
-				<Activity size={13} /> Background jobs started by the agent: run <span className="font-mono">/jobs</span> in a chat.
-			</div>
+			<button type="button" className="gy-row w-full text-left text-[12px]" onClick={() => openJobsPane()} data-testid="tasks-jobs">
+				<Cpu size={13} />
+				<span className="flex-1">
+					Background jobs: {runningJobs ? `${runningJobs} running` : "none running"}
+				</span>
+				<span style={{ color: "var(--muted)" }}>Open</span>
+			</button>
 		</div>
 	);
 }

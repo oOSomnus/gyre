@@ -160,7 +160,11 @@ export type PaneKind =
 	| "image"
 	| "subagent"
 	| "studio"
-	| "git";
+	| "git"
+	| "hooks"
+	| "jobs"
+	| "review"
+	| "browser";
 
 /** A pane in the tiled workspace. `kind` decides the component. */
 export interface PaneSpec {
@@ -181,6 +185,8 @@ export interface PaneSpec {
 	section?: string;
 	/** git: the commit the pane is pinned to (any revision `git rev-parse` accepts). */
 	revision?: string;
+	/** browser: the page shown. */
+	url?: string;
 	title?: string;
 }
 
@@ -220,6 +226,24 @@ export interface FsEntry {
 	path: string;
 	kind: "file" | "dir";
 	size?: number;
+}
+
+/** `GET /api/fs/read`: a file's text, and the version a save must match. */
+export interface FsFile {
+	path: string;
+	content: string;
+	truncated: boolean;
+	binary: boolean;
+	size: number;
+	/** sha256 of the bytes; absent when the file was too large to read whole. */
+	version?: string;
+}
+
+/** `PUT /api/fs/write` result. A 412 body carries `currentVersion` (null: file absent or already exists). */
+export interface FsWriteResult {
+	path: string;
+	version: string;
+	size: number;
 }
 
 /** Gyre plan-mode state, published by the Gyre omp extension as the `gyre.plan` widget. */
@@ -316,3 +340,80 @@ export const PLAN_WIDGET_KEY = "gyre.plan";
 export const GATEWAY_VERSION = "0.2.0";
 
 export * from "./ui-requests";
+
+/** omp hook modules: `<agentDir>/hooks/{pre,post}/` (user) and `<project>/.omp/hooks/{pre,post}/` (project). */
+export type HookPhase = "pre" | "post";
+
+export interface HookFile {
+	scope: "user" | "project";
+	phase: HookPhase;
+	/** File name; its base name is the tool the hook is filed under (`*` for every tool). */
+	name: string;
+	tool: string;
+	path: string;
+	/** Present when one hook is read. */
+	content?: string;
+	version?: string;
+}
+
+/** The agent's background jobs, published by the Gyre omp extension as the `gyre.jobs` widget. */
+export const JOBS_WIDGET_KEY = "gyre.jobs";
+
+/** One async job (omp `getAsyncJobSnapshot`): a backgrounded bash command, task or eval. */
+export interface JobInfo {
+	id: string;
+	type: string;
+	status: "running" | "completed" | "failed" | "cancelled";
+	label: string;
+	intent?: string;
+	command?: string;
+	caption?: string;
+	startTime: number;
+	endTime?: number;
+}
+
+export interface JobsState {
+	/** Running jobs first, then recently settled ones. */
+	jobs: JobInfo[];
+}
+
+/** Per-turn snapshots of the work tree, published by the Gyre omp extension as the `gyre.turns` widget. */
+export const TURNS_WIDGET_KEY = "gyre.turns";
+
+/** One agent run: git trees of the work tree before and after it (ignored files excluded). */
+export interface TurnRecord {
+	n: number;
+	/** The prompt that started the run (shortened); empty for automatic continuations. */
+	prompt: string;
+	startedAt: number;
+	endedAt?: number;
+	before?: string;
+	after?: string;
+	/** Why a snapshot is missing (git failed or timed out). */
+	error?: string;
+}
+
+export interface TurnsState {
+	sessionId: string;
+	/** Most recent last; at most the last 30 runs. */
+	turns: TurnRecord[];
+	/** Set when turns cannot be recorded (e.g. the project is not a git repository). */
+	unavailable?: string;
+}
+
+/** A file changed between two trees (review pane). */
+export interface ReviewFile {
+	path: string;
+	origPath?: string;
+	/** git status letter: A, M, D, R, C, T. */
+	status: string;
+	added?: number;
+	removed?: number;
+}
+
+/** `GET /api/projects/:id/review/files`: `to` is the tree compared (a fresh snapshot when asked for the work tree). */
+export interface ReviewChanges {
+	from: string;
+	to: string;
+	files: ReviewFile[];
+}

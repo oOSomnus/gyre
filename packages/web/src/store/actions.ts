@@ -3,9 +3,9 @@
  * pane lifecycle, composing into a chat from elsewhere, and transcript actions
  * (view, review, fork, open image/file).
  */
-import type { PaneSpec, Workspace } from "@gyre/protocol";
+import type { FsFile, PaneSpec, Workspace } from "@gyre/protocol";
 import type { Terminal } from "@xterm/xterm";
-import { gateway } from "../lib/gateway";
+import { api, gateway } from "../lib/gateway";
 import type { AgentMessage } from "../lib/omp";
 import { textOf } from "../lib/omp";
 import { openChatPane, paneIdsInOrder, useApp } from "./app";
@@ -19,13 +19,29 @@ export const terminalCloser = new Map<string, () => void>();
 export const terminals = new Map<string, Terminal>();
 /** Images opened in image panes, by ref. Data URLs are too big to persist in workspaces. */
 export const images = new Map<string, { src: string; name?: string }>();
+/** Panes holding unsaved edits (pane id -> what is unsaved), checked before closing them. */
+export const unsavedPanes = new Map<string, string>();
+/**
+ * Unsaved file edits of file panes that are not mounted (their workspace is in the
+ * background), by pane id: the file as opened (its version is the save's base) and the
+ * edited text. The pane picks them up again when it is shown.
+ */
+export const keptFileDrafts = new Map<string, { projectId: string; file: FsFile; draft: string }>();
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+	window.addEventListener("beforeunload", event => {
+		if (keptFileDrafts.size) event.preventDefault();
+	});
+}
 /** Message snapshots opened in message panes ("view" / "review"), by ref. */
 export const snapshots = new Map<string, { text: string; role: string; model?: string; timestamp?: number }>();
 
 // ---------------------------------------------------------------- pane lifecycle
 
 export function closePaneResources(pane: PaneSpec): void {
+	keptFileDrafts.delete(pane.id);
 	if (pane.kind === "chat") closeChat(pane.id);
+	// A remote browser pane may hold a preview proxy; the gateway stops it when nobody does.
+	if (pane.kind === "browser") void api(`/api/preview?paneId=${encodeURIComponent(pane.id)}`, { method: "DELETE" }).catch(() => undefined);
 	if (pane.kind === "terminal") {
 		terminalCloser.get(pane.id)?.();
 		if (pane.projectId) gateway.send({ t: "pty_close_key", key: pane.id, projectId: pane.projectId });
@@ -34,6 +50,9 @@ export function closePaneResources(pane: PaneSpec): void {
 }
 
 export function closePaneAndResources(pane: PaneSpec): void {
+	const unsaved = unsavedPanes.get(pane.id);
+	if (unsaved && !confirm(`${unsaved} has unsaved changes. Close it and discard them?`)) return;
+	unsavedPanes.delete(pane.id);
 	closePaneResources(pane);
 	useApp.getState().closePane(pane.id);
 }
@@ -128,13 +147,27 @@ export function openImage(chatId: string | undefined, src: string, name?: string
 }
 
 /** Open a project file in a file pane next to the chat. */
+/**
+ * Point file pane `pane` at `path`. Unsaved edits there (shown or kept in the background)
+ * are discarded only after the user agrees; declining leaves the pane and its edits as
+ * they are. Returns whether the pane now shows `path`.
+ */
+export function navigateFilePane(pane: PaneSpec, path: string): boolean {
+	if (pane.filePath === path) return true;
+	const unsaved = unsavedPanes.get(pane.id) ?? keptFileDrafts.get(pane.id)?.file.path;
+	if (unsaved && !confirm(`Discard unsaved changes to ${unsaved}?`)) return false;
+	unsavedPanes.delete(pane.id);
+	keptFileDrafts.delete(pane.id);
+	useApp.getState().updatePane(pane.id, { filePath: path });
+	return true;
+}
+
 export function openFile(projectId: string | undefined, path: string): void {
 	const app = useApp.getState();
 	if (!projectId) return;
 	const existing = Object.values(app.activeWorkspace()?.panes ?? {}).find(p => p.kind === "file" && p.projectId === projectId);
 	if (existing) {
-		app.updatePane(existing.id, { filePath: path });
-		app.revealPane(existing.id);
+		if (navigateFilePane(existing, path)) app.revealPane(existing.id);
 		return;
 	}
 	app.addPane({ kind: "file", projectId, filePath: path });

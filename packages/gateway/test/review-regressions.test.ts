@@ -466,3 +466,9 @@ test("a superseded PTY attachment cannot detach its replacement on the same sock
 		socket.close();
 	}
 });
+
+test("the app page, which carries the token, cannot be framed by another site", async () => {
+	const response = await fetch(`${gateway.url}/`);
+	expect(response.headers.get("x-frame-options")).toBe("DENY");
+	expect(response.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+});

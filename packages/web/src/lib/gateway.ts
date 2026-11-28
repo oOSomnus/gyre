@@ -40,6 +40,8 @@ export class GatewayError extends Error {
 		message: string,
 		readonly code?: string,
 		readonly status?: number,
+		/** The JSON error body, for fields beyond `error` (e.g. `currentVersion`, `diagnostics`). */
+		readonly body?: Record<string, unknown>,
 	) {
 		super(message);
 	}
@@ -56,7 +58,7 @@ export async function apiWithEtag<T>(path: string, init: RequestInit = {}): Prom
 		if (init.signal?.aborted) throw error;
 		return {};
 	})) as { error?: string };
-	if (!response.ok) throw new GatewayError(body.error ?? `HTTP ${response.status}`, undefined, response.status);
+	if (!response.ok) throw new GatewayError(body.error ?? `HTTP ${response.status}`, undefined, response.status, body as Record<string, unknown>);
 	return { body: body as T, etag: response.headers.get("etag") };
 }
 

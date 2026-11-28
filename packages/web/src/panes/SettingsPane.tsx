@@ -16,6 +16,7 @@ import { needsSetup, useOmpStatus } from "../lib/ompStatus";
 import { OmpSetupGuide } from "../shell/OmpSetup";
 import { useApp } from "../store/app";
 import { useChats } from "../store/chats";
+import { desktopNotificationsSupported, useNotifications } from "../store/notifications";
 import { THEME_FAMILIES, type ThemeId, THEMES, ThemeSwatch } from "../lib/themes";
 
 const SECTIONS = [
@@ -100,11 +101,36 @@ export function SettingsPane({ pane }: { pane?: PaneSpec }) {
 
 // ---------------------------------------------------------------- general
 
+function DesktopNotifications() {
+	const { desktop, setDesktop } = useNotifications();
+	const [permission, setPermission] = useState(() => (desktopNotificationsSupported() ? Notification.permission : "unsupported"));
+	if (!desktopNotificationsSupported()) return <Hint>This browser or app window cannot show system notifications; the bell in the top bar still collects them.</Hint>;
+	const toggle = async (on: boolean) => {
+		if (on && Notification.permission !== "granted") {
+			const result = await Notification.requestPermission();
+			setPermission(result);
+			if (result !== "granted") return;
+		}
+		setDesktop(on);
+	};
+	return (
+		<div className="gy-row text-[12.5px]">
+			<label className="flex flex-1 items-center gap-2">
+				<input type="checkbox" checked={desktop && permission === "granted"} onChange={e => void toggle(e.target.checked)} data-testid="desktop-notifications" />
+				Show a system notification when Gyre is in the background and a chat finishes, needs you or fails
+			</label>
+			{permission === "denied" && <span style={{ color: "var(--err)" }}>Blocked in the browser's site settings</span>}
+		</div>
+	);
+}
+
 function General() {
 	const { theme, setTheme } = useApp();
 	const label = "font-mono text-[10px] tracking-[0.16em] uppercase";
 	return (
 		<>
+			<Head>Notifications</Head>
+			<DesktopNotifications />
 			<Head>Theme</Head>
 			<div className="grid items-stretch gap-2 p-3" style={{ gridTemplateColumns: "auto minmax(0, 1fr) minmax(0, 1fr)" }}>
 				<span />

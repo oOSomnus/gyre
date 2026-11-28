@@ -18,13 +18,15 @@ import { validWorkspace, validClientMessage } from "./validation";
 import { isContained, openContained } from "./contained-file";
 import { closeSync, fstatSync } from "node:fs";
 import { realpath } from "node:fs/promises";
-import { browseDirs, expandHome, FsAccessError, listDir, readText, resolveInside } from "./fs";
+import { browseDirs, expandHome, FsAccessError, listDir, readText, resolveInside, writeText } from "./fs";
 import { OmpCli, OmpCliError } from "./omp-cli";
 import { OmpCommandError } from "./omp-process";
 import { PtyManager, type PtyListener } from "./pty";
 import { GitError, GitRepo } from "./git";
 import { generateCommitMessage } from "./commit-message";
 import { listSessions } from "./sessions";
+import { deleteHook, HookSyntaxError, listHooks, readHook, saveHook } from "./hooks";
+import { PreviewError, PreviewProxies, previewTarget } from "./preview";
 import { deleteAgent, deleteMcp, listAgents, listMcp, type Scope, StudioError, saveAgent, saveMcp, setMcpEnabled } from "./studio";
 
 export interface GatewayConfig {
@@ -305,6 +307,13 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				const project = projectOr404(url.searchParams.get("projectId"));
 				return json(await readText(project.path, url.searchParams.get("path") ?? ""));
 			}
+			if (path === "/api/fs/write" && method === "PUT") {
+				const body = (await req.json()) as { projectId?: string; path?: unknown; content?: unknown; baseVersion?: unknown };
+				const project = projectOr404(body.projectId ?? null);
+				if (typeof body.path !== "string" || typeof body.content !== "string") return fail("path and content are required");
+				if (body.baseVersion !== null && typeof body.baseVersion !== "string") return fail("baseVersion must be a version string or null");
+				return json(await writeText(project.path, body.path, body.content, body.baseVersion));
+			}
 
 			if (path === "/api/fs/stat" && method === "POST") {
 				const body = (await req.json()) as { projectId?: string; paths?: string[] };
@@ -397,6 +406,44 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				}
 				return fail("unknown git action", 404);
 			}
+			// ---- Browser pane: preview proxies for remote browsers ----
+			if (path === "/api/preview" && method === "POST") {
+				const body = (await req.json()) as { url?: unknown; paneId?: unknown };
+				if (typeof body.paneId !== "string" || !body.paneId) return fail("paneId is required");
+				const target = previewTarget(body.url);
+				const opened = previews.open(target.port, body.paneId);
+				const host = (req.headers.get("host") ?? "localhost").replace(/:\d+$/, "");
+				// The fragment may contain "?" or "#" of its own; only the part before it is the query.
+				const hashAt = target.path.indexOf("#");
+				const pathAndQuery = hashAt < 0 ? target.path : target.path.slice(0, hashAt);
+				const hash = hashAt < 0 ? "" : target.path.slice(hashAt);
+				const separator = pathAndQuery.includes("?") ? "&" : "?";
+				return json({ url: `http://${host}:${opened.port}${pathAndQuery}${separator}gyre_preview=${opened.token}${hash}`, port: opened.port });
+			}
+			if (path === "/api/preview" && method === "DELETE") {
+				const paneId = url.searchParams.get("paneId");
+				if (!paneId) return fail("paneId is required");
+				previews.release(paneId);
+				return json({ ok: true });
+			}
+			if (path === "/api/preview" && method === "GET") return json(previews.list());
+
+			// ---- Review pane (per-turn snapshots from Gyre's omp extension) ----
+			const reviewMatch = path.match(/^\/api\/projects\/([^/]+)\/review\/(files|diff|revert)$/);
+			if (reviewMatch?.[1] && reviewMatch[2]) {
+				const repo = await GitRepo.open(projectOr404(reviewMatch[1]).path);
+				const action = reviewMatch[2];
+				if (method === "GET" && action === "files") return json(await repo.reviewChanges(url.searchParams.get("from"), url.searchParams.get("to") ?? "worktree"));
+				if (method === "GET" && action === "diff") {
+					return json(await repo.reviewDiff(url.searchParams.get("from"), url.searchParams.get("to") ?? "worktree", url.searchParams.get("path") ?? ""));
+				}
+				if (method === "POST" && action === "revert") {
+					const body = (await req.json()) as { from?: unknown; path?: unknown; hunkId?: unknown };
+					await repo.revert(body.from, body.path, body.hunkId ?? undefined);
+					return json({ ok: true });
+				}
+				return fail("unknown review action", 404);
+			}
 			if (path === "/api/ptys" && method === "GET") return json(ptys.list());
 			const ptyMatch = path.match(/^\/api\/ptys\/([^/]+)$/);
 			if (ptyMatch?.[1] && method === "DELETE") {
@@ -483,6 +530,39 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				}
 			}
 
+			// ---- Hook Studio ----
+			if (path === "/api/hooks" || path === "/api/hooks/file") {
+				const agentDir = await ompCli.agentDir();
+				if (path === "/api/hooks" && method === "GET") {
+					return json(listHooks({ agentDir, projectPath: optionalProject(url.searchParams.get("projectId"))?.path }));
+				}
+				if (path === "/api/hooks/file" && method === "GET") {
+					const where = { agentDir, projectPath: optionalProject(url.searchParams.get("projectId"))?.path };
+					return json(await readHook(where, scopeOf(url.searchParams.get("scope")), url.searchParams.get("phase"), url.searchParams.get("name")));
+				}
+				if (path === "/api/hooks" && method === "PUT") {
+					const body = (await req.json()) as Record<string, unknown>;
+					const previous = body.previous as { phase?: unknown; name?: unknown } | undefined;
+					return json(
+						await saveHook({
+							agentDir,
+							projectPath: optionalProject(typeof body.projectId === "string" ? body.projectId : null)?.path,
+							scope: scopeOf(body.scope),
+							phase: body.phase,
+							name: body.name,
+							content: body.content,
+							baseVersion: body.baseVersion === undefined ? null : body.baseVersion,
+							previous: previous && typeof previous === "object" ? { phase: previous.phase, name: previous.name } : undefined,
+						}),
+					);
+				}
+				if (path === "/api/hooks" && method === "DELETE") {
+					const where = { agentDir, projectPath: optionalProject(url.searchParams.get("projectId"))?.path };
+					deleteHook(where, scopeOf(url.searchParams.get("scope")), url.searchParams.get("phase"), url.searchParams.get("name"), url.searchParams.get("baseVersion"));
+					return json({ ok: true });
+				}
+			}
+
 			// ---- MCP servers ----
 			if (path === "/api/mcp" || path === "/api/mcp/enabled") {
 				const agentDir = await ompCli.agentDir();
@@ -546,7 +626,10 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			return fail("not found", 404);
 		} catch (error) {
 			if (error instanceof WorkspaceConflictError) return fail(error.message, 409);
-			if (error instanceof FsAccessError) return fail(error.message, error.status);
+			if (error instanceof FsAccessError) return json({ error: error.message, ...error.data }, error.status);
+			if (error instanceof PreviewError) return fail(error.message, error.status);
+			if (error instanceof HookSyntaxError) return json({ error: error.message, diagnostics: error.diagnostics }, error.status);
+			if (error instanceof SyntaxError) return fail("malformed JSON body", 400);
 			if (error instanceof OmpCliError || error instanceof StudioError || error instanceof GitError) return fail(error.message, error.status);
 			return fail(error instanceof Error ? error.message : String(error), 500);
 		}
@@ -592,7 +675,13 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 		}
 		const boot = `<script>window.__GYRE__=${JSON.stringify(trusted ? { token: config.token } : { remote: true })}</script>`;
 		return new Response(index.replace("</head>", `${boot}</head>`), {
-			headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+			headers: {
+				"content-type": "text/html; charset=utf-8",
+				"cache-control": "no-store",
+				// The page holds the token; no other site may frame it.
+				"x-frame-options": "DENY",
+				"content-security-policy": "frame-ancestors 'none'",
+			},
 		});
 	}
 
@@ -764,6 +853,18 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 	}
 
 	const isAllowedHost = (hostName: string) => LOOPBACK_HOSTS.has(hostName) || hostName === config.host || allowedHosts.has(hostName) || allowedHosts.has("*");
+	const previews = new PreviewProxies({ hostname: config.host, isAllowedHost });
+	const crossOriginCookieWrite = (req: Request, url: URL) => {
+		if (req.method === "GET" || req.method === "HEAD") return false;
+		if (req.headers.get("x-gyre-token") === config.token || url.searchParams.get("token") === config.token) return false;
+		const origin = req.headers.get("origin");
+		if (!origin) return false;
+		try {
+			return new URL(origin).host !== req.headers.get("host");
+		} catch {
+			return true;
+		}
+	};
 
 	const server: ReturnType<typeof Bun.serve<SocketData, never>> = Bun.serve<SocketData, never>({
 		hostname: config.host,
@@ -788,6 +889,10 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			}
 			if (url.pathname.startsWith("/api/")) {
 				if (url.pathname !== "/api/health" && !authorized(req, url)) return fail("unauthorized", 401);
+				// Cookies are shared across ports, so a page on another origin of this host (a preview
+				// proxy, any local dev server) could send the session cookie. Writes authenticated only
+				// by the cookie must come from the gateway's own origin.
+				if (crossOriginCookieWrite(req, url)) return fail("cross-origin request refused", 403);
 				return track(handleApi(req, url));
 			}
 			const peer = srv.requestIP(req)?.address ?? "";
@@ -855,6 +960,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			stopping = true;
 			chats.stopping = true;
 			server.stop(true);
+			previews.stop();
 			ompCli.stop();
 			stopPromise = (async () => {
 				await Promise.allSettled([ptys.closeAll(), chats.closeAll()]);

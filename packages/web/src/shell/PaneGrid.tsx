@@ -34,6 +34,11 @@ import { SessionsPane } from "../panes/SessionsPane";
 import { SettingsPane } from "../panes/SettingsPane";
 import { StudioPane } from "../panes/StudioPane";
 import { GitPane } from "../panes/GitPane";
+import { HookStudioPane } from "../panes/HookStudioPane";
+import { JobsPane } from "../panes/JobsPane";
+import { ReviewPane } from "../panes/ReviewPane";
+import { BrowserPane } from "../panes/BrowserPane";
+import { runningJobCount } from "../lib/jobs";
 import { SubagentPane } from "../panes/SubagentPane";
 import { SubagentsPane } from "../panes/SubagentsPane";
 import { TasksPane } from "../panes/TasksPane";
@@ -96,7 +101,7 @@ export function PaneMenu({ pane, floating }: { pane: PaneSpec; floating: boolean
 					{chatId && (
 						<>
 							<Dropdown.Separator className="my-1 h-px" style={{ background: "var(--border-strong)" }} />
-							{(["plan", "objectives", "graph", "events"] as const).map(kind => {
+							{(["plan", "objectives", "graph", "events", "review"] as const).map(kind => {
 								const Icon = PANE_META[kind].icon;
 								return (
 									<Dropdown.Item key={kind} className={menuItem} onSelect={() => openChatPane(kind, chatId)}>
@@ -149,6 +154,7 @@ function PaneFrame({
 	const project = useApp(s => s.projects.find(p => p.id === pane.projectId));
 	// Subscribe so titles and status lights update as chats stream.
 	useChats(s => {
+		if (pane.kind === "jobs") return `jobs|${runningJobCount(s.chats)}`;
 		const id = pane.kind === "chat" ? pane.id : pane.chatId;
 		const chat = id ? s.chats[id] : undefined;
 		return chat ? `${chat.state?.sessionName ?? ""}|${chat.items.length}|${chat.busy}|${chat.pendingUi.length}|${chat.plan?.phase ?? ""}` : "";
@@ -209,7 +215,8 @@ export function PaneContent({ pane, focused }: { pane: PaneSpec; focused: boolea
 		case "chat":
 			return <ChatPane pane={pane} focused={focused} />;
 		case "file":
-			return <FilePane pane={pane} />;
+			// Keyed by pane: a shared slot (maximized, mobile) must not carry one pane's draft into another.
+			return <FilePane key={pane.id} pane={pane} />;
 		case "terminal":
 			return <TerminalPane pane={pane} focused={focused} />;
 		case "sessions":
@@ -238,6 +245,14 @@ export function PaneContent({ pane, focused }: { pane: PaneSpec; focused: boolea
 			return <StudioPane pane={pane} />;
 		case "git":
 			return <GitPane pane={pane} focused={focused} />;
+		case "hooks":
+			return <HookStudioPane pane={pane} />;
+		case "jobs":
+			return <JobsPane pane={pane} />;
+		case "review":
+			return <ReviewPane pane={pane} />;
+		case "browser":
+			return <BrowserPane pane={pane} />;
 		default:
 			return null;
 	}

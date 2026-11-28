@@ -7,6 +7,8 @@ A tiled, keyboard-first desktop UI for the [omp](https://github.com/can1357/oh-m
 - **Agent:** omp, unmodified. All of its tools, slash commands, skills, MCP servers, sessions and model providers are available.
 - **UI:** five themes, auto-tiling and floating panes, keyboard mode and jump marks, palettes, an event graph, a task manager, Agent Studio, MCP and model-role settings, a phone layout and remote access. See [docs/ux-spec.md](docs/ux-spec.md).
 - **Git pane:** omp's `/git` is TUI-only, so Gyre has its own `/git [revision]`: changed files, a split diff, stage, unstage or discard per file or hunk, commit or amend, and a commit message from omp's commit model. `/git HEAD~2` shows one commit.
+- **Files and hooks:** the file pane edits and saves files (Ctrl+S, with a diff when the file changed on disk), and Hook Studio writes omp hooks from templates or a guided form.
+- **Review, jobs, notifications, browser:** a Review pane (`/review`, Alt+R) shows what each agent turn changed, reverts files or hunks and sends line comments to the agent; a Background jobs pane lists and kills the agent's async jobs; the bell (Alt+N) collects finished runs, questions and errors; a Browser pane shows the app being built, proxied for remote browsers.
 - **Plan mode:** omp's plan mode is TUI-only, so Gyre adds it over RPC with a small omp extension: plan, review (in [Plannotator](https://github.com/backnotprop/plannotator) when installed), refine, approve. Shell commands are not sandboxed while planning.
 - **Upstream:** Gyre drives omp over its versioned RPC protocol and never forks it. See [Tracking omp upstream](docs/architecture.md#tracking-omp-upstream).
 
@@ -85,6 +87,8 @@ GYRE_HOST=0.0.0.0 GYRE_ALLOWED_HOSTS=my-laptop.tailnet.ts.net GYRE_TOKEN='replac
 ```
 
 Open `http://my-laptop.tailnet.ts.net:7341/#token=<secret>` once on the other device; a 30-day cookie remembers it. SSH port forwarding needs none of these settings.
+
+The browser pane shows a dev server on this machine (`localhost:5173`) to a remote browser through a preview proxy on a separate, randomly chosen port of the same host, so that host's other ports must be reachable too (a tailnet is fine; a single forwarded port is not).
 
 ## Development
 

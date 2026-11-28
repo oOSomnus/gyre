@@ -34,6 +34,7 @@ export default function MonacoDiffViewer({
 	newText,
 	inline,
 	reveal,
+	onLineClick,
 }: {
 	/** Unique per pane and side, so two Git panes never share Monaco models. */
 	modelKey: string;
@@ -42,9 +43,13 @@ export default function MonacoDiffViewer({
 	newText: string;
 	inline: boolean;
 	reveal?: DiffReveal;
+	/** Called with a 1-based new-side line when its line number is clicked (review comments). */
+	onLineClick?: (line: number) => void;
 }) {
 	const theme = useApp(s => s.theme);
 	const editorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null);
+	const lineClickRef = useRef(onLineClick);
+	lineClickRef.current = onLineClick;
 	// The library disposes its models before the diff widget lets go of them, which
 	// Monaco reports as an error. Keep the models and dispose them after the editor.
 	const modelsRef = useRef<monaco.editor.IDiffEditorModel | null>(null);
@@ -86,6 +91,10 @@ export default function MonacoDiffViewer({
 				modelsRef.current = editor.getModel();
 				editor.onDidChangeModel(() => {
 					modelsRef.current = editor.getModel() ?? modelsRef.current;
+				});
+				editor.getModifiedEditor().onMouseDown(event => {
+					const line = event.target.position?.lineNumber;
+					if (line && event.target.type === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS) lineClickRef.current?.(line);
 				});
 			}}
 			options={{

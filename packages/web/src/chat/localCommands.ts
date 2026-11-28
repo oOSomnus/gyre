@@ -9,7 +9,7 @@
  */
 import { gateway } from "../lib/gateway";
 import type { SlashCommand } from "../lib/omp";
-import { openGitPane, useApp } from "../store/app";
+import { openChatPane, openGitPane, useApp } from "../store/app";
 import { startFreshSession, useChats } from "../store/chats";
 
 interface LocalCommand extends SlashCommand {
@@ -78,6 +78,12 @@ const LOCAL_COMMANDS: LocalCommand[] = [
 			}
 			openGitPane(projectId, revision, chatId);
 		},
+	},
+	{
+		name: "review",
+		description: "Review the agent's changes turn by turn: diffs, revert, line comments",
+		source: "gyre",
+		run: chatId => void openChatPane("review", chatId),
 	},
 	{
 		name: "settings",

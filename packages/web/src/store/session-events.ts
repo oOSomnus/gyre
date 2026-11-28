@@ -8,7 +8,7 @@ import type { AgentMessage } from "../lib/omp";
 export type TranscriptItem =
 	| { kind: "message"; key: string; message: AgentMessage; streaming?: boolean }
 	| { kind: "command_output"; key: string; text: string; ts: number }
-	| { kind: "notice"; key: string; level: "info" | "warning" | "error"; message: string; ts: number; url?: string }
+	| { kind: "notice"; key: string; level: "info" | "warning" | "error"; message: string; ts: number; url?: string; extensionPath?: string }
 	| { kind: "event"; key: string; label: string; detail?: string; ts: number };
 
 export interface ToolExecution {

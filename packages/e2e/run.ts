@@ -271,6 +271,117 @@ await step("submitted plan opens the review pane with role/context choices", asy
 	await planPane.locator('[data-jump="close"]').click();
 });
 
+await step("file pane edits and saves a file (Ctrl+S)", async () => {
+	const projectId = await page.evaluate(() => (window as unknown as { __gyre: Mc }).__gyre.useApp.getState().projects[0]?.id);
+	const read = () =>
+		page.evaluate(
+			async ([pid, tok]) => (await fetch(`/api/fs/read?projectId=${pid}&path=src/app.ts`, { headers: { "x-gyre-token": tok } })).json(),
+			[projectId, token] as const,
+		);
+	const original = (await read()) as { content: string };
+	try {
+		await page.evaluate(pid => (window as unknown as { __gyre: Mc }).__gyre.useApp.getState().addPane({ kind: "file", projectId: pid, filePath: "src/app.ts" }), projectId);
+		const pane = page.locator('[data-pane][data-kind="file"]').last();
+		await pane.locator(".monaco-editor").waitFor({ timeout: 15_000 });
+		await pane.locator(".monaco-editor .view-lines").click();
+		await page.keyboard.press("Control+End");
+		await page.keyboard.type("\n// saved by e2e");
+		await pane.locator("[data-unsaved]").waitFor({ timeout: 5000 });
+		await page.keyboard.press("Control+s");
+		await pane.locator("[data-unsaved]").waitFor({ state: "detached", timeout: 10_000 });
+		if (!((await read()) as { content: string }).content.includes("// saved by e2e")) throw new Error("the save did not reach the file");
+		await shot(page, "22-file-edit");
+		await pane.locator('[data-jump="close"]').click();
+	} finally {
+		// Put the fixture back however the step went.
+		await page.evaluate(
+			async ([pid, tok, content]) => {
+				const current = await (await fetch(`/api/fs/read?projectId=${pid}&path=src/app.ts`, { headers: { "x-gyre-token": tok } })).json();
+				await fetch("/api/fs/write", {
+					method: "PUT",
+					headers: { "x-gyre-token": tok, "content-type": "application/json" },
+					body: JSON.stringify({ projectId: pid, path: "src/app.ts", content, baseVersion: current.version }),
+				});
+			},
+			[projectId, token, original.content] as const,
+		);
+	}
+});
+
+await step("Hook Studio generates a hook from the guided form", async () => {
+	await page.evaluate(() => (window as unknown as { __gyre: Mc }).__gyre.useApp.getState().addPane({ kind: "hooks" }));
+	const pane = page.locator('[data-pane][data-kind="hooks"]').last();
+	await pane.getByTestId("new-hook").click();
+	await pane.getByTestId("new-hook-form").waitFor();
+	await pane.getByTestId("hook-action").selectOption("block");
+	await pane.getByTestId("generate-hook").click();
+	await pane.locator(".monaco-editor").waitFor({ timeout: 15_000 });
+	await pane.getByText("block: true").first().waitFor({ timeout: 5000 });
+	if ((await pane.getByTestId("hook-name").inputValue()) !== "bash.ts") throw new Error("unexpected suggested hook name");
+	await shot(page, "23-hook-studio");
+	// Not saved: the fixture project gets no hook. Closing asks about the unsaved hook.
+	page.once("dialog", dialog => void dialog.accept());
+	await pane.locator('[data-jump="close"]').click();
+});
+
+await step("background jobs pane lists the agent's jobs", async () => {
+	const chatId = await chatIdOf();
+	const jobs = (list: unknown[] | undefined) =>
+		page.evaluate(
+			([id, lines]) =>
+				(window as unknown as { __gyre: Mc }).__gyre.useChats
+					.getState()
+					.apply(id, { type: "extension_ui_request", id: `jobs-${Math.random()}`, method: "setWidget", widgetKey: "gyre.jobs", widgetLines: lines ?? undefined }),
+			[chatId, list ? [JSON.stringify({ jobs: list })] : null] as const,
+		);
+	await jobs([{ id: "e2e-job", type: "bash", status: "running", label: "sleep 60", intent: "Waiting on the build", command: "sleep 60", startTime: Date.now() }]);
+	await page.evaluate(() => (window as unknown as { __gyre: Mc }).__gyre.useApp.getState().addPane({ kind: "jobs" }));
+	const pane = page.locator('[data-pane][data-kind="jobs"]').last();
+	await pane.locator('[data-job="e2e-job"]').waitFor({ timeout: 5000 });
+	await pane.getByText("Waiting on the build").waitFor();
+	await shot(page, "24-jobs");
+	await jobs(undefined);
+	await pane.getByText("No background jobs.").waitFor({ timeout: 5000 });
+	await pane.locator('[data-jump="close"]').click();
+});
+
+await step("review pane opens for the chat (Alt+R)", async () => {
+	const chatId = await chatIdOf();
+	await page.evaluate(id => (window as unknown as { __gyre: Mc }).__gyre.useApp.getState().focusPane(id), chatId);
+	await page.keyboard.press("Alt+r");
+	const pane = page.locator('[data-pane][data-kind="review"]').last();
+	await pane.waitFor({ timeout: 5000 });
+	// The real extension has published this session's turns (none yet: no model calls in this run).
+	await pane.getByText(/No turns recorded yet|git repository|Waiting for the chat/).waitFor({ timeout: 10_000 });
+	await shot(page, "25-review");
+	await pane.locator('[data-jump="close"]').click();
+});
+
+await step("notification center collects warnings (Alt+N)", async () => {
+	const chatId = await chatIdOf();
+	await page.evaluate(
+		id => (window as unknown as { __gyre: Mc }).__gyre.useChats.getState().apply(id, { type: "notice", level: "warning", message: "e2e warning" }),
+		chatId,
+	);
+	await page.keyboard.press("Alt+n");
+	const center = page.locator("[data-notification-center]");
+	await center.waitFor({ timeout: 5000 });
+	await center.locator('[data-notification="warning"]').first().waitFor();
+	await center.getByText("e2e warning").first().waitFor();
+	await shot(page, "26-notifications");
+	await page.keyboard.press("Escape");
+	await center.waitFor({ state: "detached", timeout: 5000 });
+});
+
+await step("browser pane shows a local page", async () => {
+	await page.evaluate(u => (window as unknown as { __gyre: Mc }).__gyre.useApp.getState().addPane({ kind: "browser", url: `${u}/api/health` }), url);
+	const pane = page.locator('[data-pane][data-kind="browser"]').last();
+	await pane.locator("iframe").waitFor({ timeout: 5000 });
+	await pane.frameLocator("iframe").locator("body").getByText('"ok":true').waitFor({ timeout: 10_000 });
+	await shot(page, "27-browser");
+	await pane.locator('[data-jump="close"]').click();
+});
+
 await step("KaTeX and file links render in replies", async () => {
 	const chatId = await chatIdOf();
 	await page.evaluate(id => {

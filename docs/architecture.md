@@ -17,7 +17,7 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
 |---|---|
 | `packages/protocol` | UI ↔ gateway message types. omp commands and frames are typed loosely and passed through. |
 | `packages/gateway` | Local server (`Bun.serve`). It manages omp processes, owns product state, serves the web build, and provides project-scoped file reads and terminals. |
-| `packages/omp-extension` | Gyre's omp extension (TypeScript loaded by omp with `-e`): plan mode over RPC with Plannotator or Gyre review. |
+| `packages/omp-extension` | Gyre's omp extension (TypeScript loaded by omp with `-e`): plan mode over RPC with Plannotator or Gyre review, background-job snapshots (`gyre.jobs`) and per-turn work-tree snapshots (`gyre.turns`). |
 | `packages/web` | The UI (React 19, Tailwind 4, Radix, cmdk, zustand, shiki, Monaco, xterm.js, mermaid, KaTeX, @xyflow/react). |
 | `packages/e2e` | Playwright-driven end-to-end checks against a running gateway and real omp. |
 | `apps/desktop` | Tauri shell: sidecar lifecycle, single instance, external links open in the system browser. |
@@ -39,11 +39,13 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
   - A `close_chat` that arrives while the same socket's `open_chat` for that chat is still starting stops the process that open creates, unless a newer open for the same chat has taken it over.
 - **`server.ts`**: HTTP API and WebSocket.
   - Security: binds to 127.0.0.1 by default, requires a per-launch token, and rejects `Host` headers that are not loopback or listed in `GYRE_ALLOWED_HOSTS` (DNS-rebinding guard). The token is injected into the page only for loopback clients or clients holding the HttpOnly login cookie (`POST /api/login`).
-  - Other endpoints include `/api/omp/config` (allowlisted `omp config` keys), `/api/omp/skills`, `/api/agents`, `/api/mcp`, `/api/chats/:id/{restart,kill,plan-prefs}`, `/api/projects/:id/restart-chats`, `/api/projects/:id/git/*` (Git pane), `/api/ptys`, `/api/fs/stat`, `/api/kv/ui.*`, `/api/remote`.
+  - Other endpoints include `/api/omp/config` (allowlisted `omp config` keys), `/api/omp/skills`, `/api/agents`, `/api/mcp`, `/api/hooks` and `/api/hooks/file` (Hook Studio), `/api/chats/:id/{restart,kill,plan-prefs}`, `/api/projects/:id/restart-chats`, `/api/projects/:id/git/*` (Git pane), `/api/projects/:id/review/{files,diff,revert}` (Review pane), `/api/preview` (browser pane proxies), `/api/ptys`, `/api/fs/stat`, `/api/fs/write`, `/api/kv/ui.*`, `/api/remote`.
+  - Cookies do not separate ports, so a page on another origin of the same host (a preview proxy, any local dev server) could send the login cookie. API writes authenticated only by that cookie must carry the gateway's own `Origin`, and the app page (which carries the token) is served with `X-Frame-Options: DENY` and `frame-ancestors 'none'`.
   - `PATCH /api/omp/config` edits one `{key, name, value}` assignment in `modelRoles` or `task.agentModelOverrides`; `null` removes it. The gateway serializes config mutations and merges against the latest saved map.
   - Workspace saves compare revisions and return `409` on conflict. Deleted workspace IDs remain tombstoned; a new workspace must use a new ID.
   - `/api/kv/ui.*` GET returns an `ETag` (a hash of the stored JSON, or `"absent"`). A PUT with `If-Match` writes only if the record still has that version, atomically in one sqlite transaction, and returns `412` otherwise. Every Agent Studio draft mutation (`web/src/lib/agent-drafts.ts`) uses it: saves and publish cleanup change only their own key, re-read and retry on `412`, and a save never silently replaces a newer draft of the same agent (it reports a conflict instead).
   - File access is confined to the project root after `realpath` (no `..` or symlink escapes).
+  - **File writes:** `/api/fs/read` returns `version`, the sha256 of the bytes (absent when the file was too large to read whole). `PUT /api/fs/write {projectId, path, content, baseVersion}` saves only if the file still has that version (`412` with `currentVersion` otherwise) and creates the file when `baseVersion` is null. `contained-file.ts` writes through a pinned directory descriptor (openat2 `RESOLVE_BENEATH` on Linux): a synced temporary sibling renamed over the target, keeping its mode. A symlink inside the project is written at its target.
   - **Folder browser:** `GET /api/fs/browse?path=&hidden=1` lists directories (with a `.git` marker) anywhere the gateway user can read, for the Add Project dialog. It is not project-scoped on purpose. It sits behind the same token as everything else, and a token holder can already open a shell (terminals), so it grants nothing new.
   - **Projects:** `DELETE /api/projects/:id` stops the project's chats and terminals, then removes the row (`404` for unknown ids). Files on disk are untouched. `GET /api/projects/:id/usage` counts running chats and terminals for the confirmation.
   - **omp setup status:** at startup the gateway runs `omp --version` and, in the background, `omp models --json`. `ompStatus` is `missing` (no omp), `no-models` (no provider: omp exits with "No models available" in RPC mode), `ok`, or `unknown` (the check itself failed; chats are allowed). It is reported in `/api/health` and `welcome`. While the status is `missing`/`no-models`, `open_chat` fails fast with code `omp_setup` instead of spawning omp. A chat that exits with "No models available" flips the status back to `no-models`. `POST /api/omp/recheck` re-runs the checks after the user installs omp or adds a provider.
@@ -58,6 +60,9 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
   - Work-tree reads go through `openContained`.
 - **`commit-message.ts`**: Generate in the Git pane runs `omp commit --legacy --dry-run --no-changelog`, the generator omp's own git UI uses, and parses the printed message. omp stages everything when the index is empty, so the gateway refuses unless something is staged and holds the repository's lock while omp runs. It uses the CLI instead of importing `generateGitCommit`, because that import pulls omp's whole SDK into the compiled gateway, and the build fails.
 - **`studio.ts`**: reads and writes omp agent files and `mcp.json` (validated names, fixed locations).
+- **`hooks.ts`**: Hook Studio's backend for omp hook modules in `<agentDir>/hooks/{pre,post}/` and `<project>/.omp/hooks/{pre,post}/`. Names are a tool name or `*` plus `.ts`/`.js`. A save is checked with `Bun.Transpiler` (syntax) and for a default export (`422` with diagnostics), then written with `writeText`, conditional on the version read.
+- **Review** (`git.ts`): turn snapshots are tree ids published by the extension. The gateway verifies each is a tree object, snapshots the work tree the same way when asked to compare against it (a temporary index seeded from the real one, `add -A`, `write-tree`), diffs with `diff-tree`, and reverts a file (`git restore --source=<tree> --worktree`, or a delete for a file the turn added) or one hunk (`git apply -R` of the hunk, found again by id) in the work tree only.
+- **`preview.ts`**: the browser pane's proxies for remote browsers. One `Bun.serve` per target port on its own port (a separate origin), HTTP streamed with `decompress: false`, WebSockets bridged, redirects to the dev server's own address rewritten. A one-time token in the link becomes a proxy-scoped HttpOnly cookie; Gyre's cookies are stripped before forwarding; a proxy stops when no pane holds it (`DELETE /api/preview?paneId=` from `closePaneResources`).
 
 ### Wire protocol (UI ↔ gateway)
 
@@ -84,6 +89,8 @@ packages/web (React) ──WebSocket /ws + HTTP /api──> packages/gateway (Bu
   - Unknown tools use the generic tool renderer.
 - **`store/app.ts`** holds projects, workspaces and the window manager: pane specs, the split-tree layout, hidden and floating panes and focus recency (saved to the gateway after a short debounce), plus the fit pass that auto-hides and restores panes, theme, keyboard/jump modes and overlays.
 - Plan mode state comes from the extension's `gyre.plan` widget (`ChatState.plan`); a store subscription opens the Plan pane when a plan is submitted.
+- Background jobs come from the `gyre.jobs` widget (`ChatState.jobs`) and turn snapshots from `gyre.turns` (`ChatState.turns`).
+- **`store/notifications.ts`** raises notifications from chat-store transitions (`lib/notifications.ts`, pure), keeps the newest 200 in `localStorage` (`gyre.notifications`) and, when enabled, shows system notifications while the page is hidden.
 
 ## Desktop
 
@@ -141,6 +148,10 @@ Gyre aims to expose every omp feature without maintaining a fork. These rules ke
 | omp's `/git` is TUI-only (`handleTui`, so missing from `get_available_commands`) | `chat/localCommands.ts` | Gyre's `/git` steps aside automatically if omp advertises one |
 | Sub-agent frames (`subagent_lifecycle`/`progress` payloads, the `events` level and `subagent_event {id, event}` with no `messageId`, `get_subagent_messages`) | `store/chats.ts`, `store/session-events.ts`, `SubagentCard`, `SubagentPane`, gateway `chats.ts` | UI degrades to the plain task card; without live events the Sub-agent pane polls `get_subagent_messages` |
 | omp agent and MCP file formats/locations | `studio.ts` | gateway unit tests |
+| omp hook discovery (`<configDir>/hooks/{pre,post}/*.ts`, default-export module, loaded at chat start) | `hooks.ts`, Hook Studio templates | contract test (a hook Gyre writes registers a command omp lists); web tests load every template and generated hook against a mock API |
+| `ctx.getAsyncJobSnapshot()` item fields; `/jobs kill <id>` as an RPC builtin (`agentInvoked: false`, `command_output`) | `omp-extension/src/jobs.ts`, Jobs pane | extension unit tests; contract tests (snapshot API in the pinned source, `/jobs kill` without a model call) |
+| `agent_start` / `agent_end` handlers awaited by omp, `before_agent_start.prompt` | `omp-extension/src/turns.ts` | extension unit tests against real git; contract test (`gyre.turns` is published) |
+| `extension_error` frames (`extensionPath`, `event`, `error`) | `store/chats.ts` (notice), notifications | falls back to a generic notice |
 
 ### Plan mode and upstream
 

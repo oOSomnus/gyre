@@ -16,6 +16,10 @@
  * State is published as JSON in the `gyre.plan` widget, which Gyre
  * reads; Gyre answers through `/gyre-plan <json>` and a prefs file
  * (`GYRE_PLAN_PREFS`) holding the role and context choices.
+ *
+ * The same extension also publishes the agent's background jobs (`jobs.ts`,
+ * `gyre.jobs`) and per-turn work-tree snapshots for the Review pane
+ * (`turns.ts`, `gyre.turns`).
  */
 import { readFileSync } from "node:fs";
 import type { PlanPrefs, PlanState } from "@gyre/protocol";

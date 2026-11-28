@@ -790,3 +790,16 @@ export function openOrRevealPane(spec: Omit<PaneSpec, "id">, match: (pane: PaneS
 }
 
 export const openJobsPane = (nextTo?: string) => openOrRevealPane({ kind: "jobs" }, p => p.kind === "jobs", nextTo);
+
+/** Show `url` in a browser pane: the first one in the active workspace, else a new one. */
+export function openBrowserPane(url: string, nextTo?: string): string {
+	const app = useApp.getState();
+	const existing = Object.values(app.activeWorkspace()?.panes ?? {}).find(p => p.kind === "browser");
+	if (existing) {
+		app.updatePane(existing.id, { url });
+		app.revealPane(existing.id);
+		return existing.id;
+	}
+	const inLayout = nextTo !== undefined && paneIdsInOrder(app.activeWorkspace()?.layout ?? null).includes(nextTo);
+	return app.addPane({ kind: "browser", url }, inLayout ? { nextTo, direction: "row" } : {});
+}

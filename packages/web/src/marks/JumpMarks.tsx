@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { tableText } from "../chat/Markdown";
-import { useApp } from "../store/app";
+import { openBrowserPane, useApp } from "../store/app";
 
 interface MarkAction {
 	label: string;
@@ -39,6 +39,7 @@ function actionsFor(el: HTMLElement): { kind: string; actions: MarkAction[] } | 
 				kind,
 				actions: [
 					{ label: "Open link", run: () => a.click() },
+					...(/^https?:/.test(a.href) ? [{ label: "Open in browser pane", run: () => void openBrowserPane(a.href) }] : []),
 					{ label: "Copy URL", run: () => copy(a.href) },
 					{ label: "Copy text", run: () => copy(a.textContent ?? "") },
 				],

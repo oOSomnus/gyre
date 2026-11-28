@@ -26,6 +26,7 @@ import { GitError, GitRepo } from "./git";
 import { generateCommitMessage } from "./commit-message";
 import { listSessions } from "./sessions";
 import { deleteHook, HookSyntaxError, listHooks, readHook, saveHook } from "./hooks";
+import { PreviewError, PreviewProxies, previewTarget } from "./preview";
 import { deleteAgent, deleteMcp, listAgents, listMcp, type Scope, StudioError, saveAgent, saveMcp, setMcpEnabled } from "./studio";
 
 export interface GatewayConfig {
@@ -405,6 +406,25 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				}
 				return fail("unknown git action", 404);
 			}
+			// ---- Browser pane: preview proxies for remote browsers ----
+			if (path === "/api/preview" && method === "POST") {
+				const body = (await req.json()) as { url?: unknown; paneId?: unknown };
+				if (typeof body.paneId !== "string" || !body.paneId) return fail("paneId is required");
+				const target = previewTarget(body.url);
+				const opened = previews.open(target.port, body.paneId);
+				const host = (req.headers.get("host") ?? "localhost").replace(/:\d+$/, "");
+				const separator = target.path.includes("?") ? "&" : "?";
+				const [pathAndQuery, hash = ""] = target.path.split("#");
+				return json({ url: `http://${host}:${opened.port}${pathAndQuery}${separator}gyre_preview=${opened.token}${hash ? `#${hash}` : ""}`, port: opened.port });
+			}
+			if (path === "/api/preview" && method === "DELETE") {
+				const paneId = url.searchParams.get("paneId");
+				if (!paneId) return fail("paneId is required");
+				previews.release(paneId);
+				return json({ ok: true });
+			}
+			if (path === "/api/preview" && method === "GET") return json(previews.list());
+
 			// ---- Review pane (per-turn snapshots from Gyre's omp extension) ----
 			const reviewMatch = path.match(/^\/api\/projects\/([^/]+)\/review\/(files|diff|revert)$/);
 			if (reviewMatch?.[1] && reviewMatch[2]) {
@@ -604,6 +624,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 		} catch (error) {
 			if (error instanceof WorkspaceConflictError) return fail(error.message, 409);
 			if (error instanceof FsAccessError) return json({ error: error.message, ...error.data }, error.status);
+			if (error instanceof PreviewError) return fail(error.message, error.status);
 			if (error instanceof HookSyntaxError) return json({ error: error.message, diagnostics: error.diagnostics }, error.status);
 			if (error instanceof SyntaxError) return fail("malformed JSON body", 400);
 			if (error instanceof OmpCliError || error instanceof StudioError || error instanceof GitError) return fail(error.message, error.status);
@@ -651,7 +672,13 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 		}
 		const boot = `<script>window.__GYRE__=${JSON.stringify(trusted ? { token: config.token } : { remote: true })}</script>`;
 		return new Response(index.replace("</head>", `${boot}</head>`), {
-			headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+			headers: {
+				"content-type": "text/html; charset=utf-8",
+				"cache-control": "no-store",
+				// The page holds the token; no other site may frame it.
+				"x-frame-options": "DENY",
+				"content-security-policy": "frame-ancestors 'none'",
+			},
 		});
 	}
 
@@ -823,6 +850,18 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 	}
 
 	const isAllowedHost = (hostName: string) => LOOPBACK_HOSTS.has(hostName) || hostName === config.host || allowedHosts.has(hostName) || allowedHosts.has("*");
+	const previews = new PreviewProxies({ hostname: config.host, isAllowedHost });
+	const crossOriginCookieWrite = (req: Request, url: URL) => {
+		if (req.method === "GET" || req.method === "HEAD") return false;
+		if (req.headers.get("x-gyre-token") === config.token || url.searchParams.get("token") === config.token) return false;
+		const origin = req.headers.get("origin");
+		if (!origin) return false;
+		try {
+			return new URL(origin).host !== req.headers.get("host");
+		} catch {
+			return true;
+		}
+	};
 
 	const server: ReturnType<typeof Bun.serve<SocketData, never>> = Bun.serve<SocketData, never>({
 		hostname: config.host,
@@ -847,6 +886,10 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			}
 			if (url.pathname.startsWith("/api/")) {
 				if (url.pathname !== "/api/health" && !authorized(req, url)) return fail("unauthorized", 401);
+				// Cookies are shared across ports, so a page on another origin of this host (a preview
+				// proxy, any local dev server) could send the session cookie. Writes authenticated only
+				// by the cookie must come from the gateway's own origin.
+				if (crossOriginCookieWrite(req, url)) return fail("cross-origin request refused", 403);
 				return track(handleApi(req, url));
 			}
 			const peer = srv.requestIP(req)?.address ?? "";
@@ -914,6 +957,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 			stopping = true;
 			chats.stopping = true;
 			server.stop(true);
+			previews.stop();
 			ompCli.stop();
 			stopPromise = (async () => {
 				await Promise.allSettled([ptys.closeAll(), chats.closeAll()]);

@@ -5,7 +5,7 @@
  */
 import type { PaneSpec, Workspace } from "@gyre/protocol";
 import type { Terminal } from "@xterm/xterm";
-import { gateway } from "../lib/gateway";
+import { api, gateway } from "../lib/gateway";
 import type { AgentMessage } from "../lib/omp";
 import { textOf } from "../lib/omp";
 import { openChatPane, paneIdsInOrder, useApp } from "./app";
@@ -28,6 +28,8 @@ export const snapshots = new Map<string, { text: string; role: string; model?: s
 
 export function closePaneResources(pane: PaneSpec): void {
 	if (pane.kind === "chat") closeChat(pane.id);
+	// A remote browser pane may hold a preview proxy; the gateway stops it when nobody does.
+	if (pane.kind === "browser") void api(`/api/preview?paneId=${encodeURIComponent(pane.id)}`, { method: "DELETE" }).catch(() => undefined);
 	if (pane.kind === "terminal") {
 		terminalCloser.get(pane.id)?.();
 		if (pane.projectId) gateway.send({ t: "pty_close_key", key: pane.id, projectId: pane.projectId });

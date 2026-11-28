@@ -20,6 +20,7 @@ import {
 	Webhook,
 	Cpu,
 	FileDiff,
+	Globe,
 	type LucideIcon,
 } from "lucide-react";
 import { useChats } from "../store/chats";
@@ -47,6 +48,7 @@ export const PANE_META: Record<PaneKind, PaneMeta> = {
 	hooks: { icon: Webhook, title: "Hook Studio", needsProject: false, creatable: true },
 	jobs: { icon: Cpu, title: "Background jobs", needsProject: false, creatable: true },
 	review: { icon: FileDiff, title: "Review", needsProject: false, chatBound: true },
+	browser: { icon: Globe, title: "Browser", needsProject: false, creatable: true },
 	settings: { icon: Settings, title: "Settings", needsProject: false, creatable: true },
 	events: { icon: ScrollText, title: "Events", needsProject: false, chatBound: true, creatable: true },
 	plan: { icon: ClipboardList, title: "Plan", needsProject: false, chatBound: true },
@@ -74,6 +76,7 @@ export function paneTitle(pane: PaneSpec): string {
 	if (pane.title) return pane.title;
 	if (pane.kind === "chat") return chatName(pane.id);
 	if (pane.kind === "git") return pane.revision ? `Git · ${pane.revision}` : "Git";
+	if (pane.kind === "browser" && pane.url) return pane.url.replace(/^https?:\/\//, "");
 	if (pane.kind === "file") return pane.filePath ? (pane.filePath.split("/").pop() ?? "Files") : "Files";
 	const base = PANE_META[pane.kind]?.title ?? pane.kind;
 	if (pane.kind === "subagent") {

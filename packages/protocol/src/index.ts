@@ -163,7 +163,8 @@ export type PaneKind =
 	| "git"
 	| "hooks"
 	| "jobs"
-	| "review";
+	| "review"
+	| "browser";
 
 /** A pane in the tiled workspace. `kind` decides the component. */
 export interface PaneSpec {
@@ -184,6 +185,8 @@ export interface PaneSpec {
 	section?: string;
 	/** git: the commit the pane is pinned to (any revision `git rev-parse` accepts). */
 	revision?: string;
+	/** browser: the page shown. */
+	url?: string;
 	title?: string;
 }
 

@@ -7,7 +7,8 @@ import remarkMath from "remark-math";
 import { downloadText } from "../lib/download";
 import { api } from "../lib/gateway";
 import { openFile, openImage } from "../store/actions";
-import { useApp } from "../store/app";
+import { openBrowserPane, useApp } from "../store/app";
+import { isLoopbackUrl } from "../lib/browser";
 import { useChats } from "../store/chats";
 import { THEMES } from "../lib/themes";
 
@@ -239,7 +240,18 @@ function FileLink({ text, chatId }: { text: string; chatId?: string }) {
 const MarkdownChat = createContext<string | undefined>(undefined);
 const markdownComponents: Components = {
 	a: ({ href, children }) => (
-		<a href={href} target="_blank" rel="noreferrer" data-jump-kind="link">
+		<a
+			href={href}
+			target="_blank"
+			rel="noreferrer"
+			data-jump-kind="link"
+			// The app the agent is building (a localhost link) opens in a browser pane; Ctrl/Cmd-click still opens a tab.
+			onClick={event => {
+				if (!href || !isLoopbackUrl(href) || event.ctrlKey || event.metaKey || event.shiftKey) return;
+				event.preventDefault();
+				openBrowserPane(href);
+			}}
+		>
 			{children}
 		</a>
 	),

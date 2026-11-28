@@ -37,6 +37,7 @@ import { GitPane } from "../panes/GitPane";
 import { HookStudioPane } from "../panes/HookStudioPane";
 import { JobsPane } from "../panes/JobsPane";
 import { ReviewPane } from "../panes/ReviewPane";
+import { BrowserPane } from "../panes/BrowserPane";
 import { runningJobCount } from "../lib/jobs";
 import { SubagentPane } from "../panes/SubagentPane";
 import { SubagentsPane } from "../panes/SubagentsPane";
@@ -249,6 +250,8 @@ export function PaneContent({ pane, focused }: { pane: PaneSpec; focused: boolea
 			return <JobsPane pane={pane} />;
 		case "review":
 			return <ReviewPane pane={pane} />;
+		case "browser":
+			return <BrowserPane pane={pane} />;
 		default:
 			return null;
 	}

@@ -126,14 +126,18 @@ test("the extension snapshots around each run and publishes the turn list", asyn
 	await h.emit("before_agent_start", { prompt: "edit a" });
 	await h.emit("agent_start");
 	writeFileSync(join(dir, "a.txt"), "edited\n");
+	// agent_end resolves only once the "after" snapshot is taken and published.
 	await h.emit("agent_end");
-	const end = Date.now() + 3000;
-	while (!h.widgets.at(-1)?.turns[0]?.after && Date.now() < end) await Bun.sleep(10);
 	const state = h.widgets.at(-1)!;
 	expect(state.sessionId).toBe("sess");
 	expect(state.turns[0]).toMatchObject({ n: 1, prompt: "edit a" });
-	expect(state.turns[0]!.before).not.toBe(state.turns[0]!.after);
-	expect(JSON.parse(readFileSync(join(dir, ".git/gyre/turns/sess.json"), "utf8")).turns).toHaveLength(1);
+	const { before, after } = state.turns[0]!;
+	expect(before).toMatch(/^[0-9a-f]{40}/);
+	expect(after).toMatch(/^[0-9a-f]{40}/);
+	expect(before).not.toBe(after);
+	const saved = JSON.parse(readFileSync(join(dir, ".git/gyre/turns/sess.json"), "utf8")).turns;
+	expect(saved).toHaveLength(1);
+	expect(saved[0]).toMatchObject({ before, after });
 });
 
 test("outside a git repository the widget says why review is unavailable", async () => {

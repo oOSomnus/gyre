@@ -36,7 +36,11 @@ export function jobsFromSnapshot(snapshot: unknown): JobInfo[] {
 
 export function registerJobs(pi: ExtensionAPI, options: { intervalMs?: number } = {}): void {
 	let ctx: ExtensionContext | undefined;
-	let last = "";
+	/**
+	 * The text last delivered. A new process starts with no widget (""), so an empty list
+	 * needs no clear; after a session switch it is undefined, forcing even "no jobs" out.
+	 */
+	let last: string | undefined = "";
 	let timer: ReturnType<typeof setInterval> | undefined;
 	const isMain = (c: ExtensionContext | undefined) => !!c && (c as { agent?: { kind?: string } }).agent?.kind !== "sub";
 
@@ -51,9 +55,10 @@ export function registerJobs(pi: ExtensionAPI, options: { intervalMs?: number } 
 		const jobs = jobsFromSnapshot(snapshot);
 		const text = jobs.length ? JSON.stringify({ jobs } satisfies JobsState) : "";
 		if (text === last) return;
-		last = text;
 		try {
 			ctx.ui.setWidget(JOBS_WIDGET_KEY, text ? [text] : undefined);
+			// Recorded only once delivered, so a failed publish is retried on the next poll.
+			last = text;
 		} catch (error) {
 			pi.logger.warn("gyre jobs: publish failed", { error: String(error) });
 		}
@@ -70,7 +75,7 @@ export function registerJobs(pi: ExtensionAPI, options: { intervalMs?: number } 
 	};
 	for (const event of ["session_start", "agent_start", "agent_end", "tool_execution_end"] as const) pi.on(event as "session_start", track);
 	pi.on("session_switch", (event, c) => {
-		last = "";
+		last = undefined;
 		track(event, c);
 	});
 	pi.on("session_shutdown", () => {

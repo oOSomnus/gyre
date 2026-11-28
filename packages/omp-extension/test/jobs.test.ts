@@ -50,6 +50,14 @@ test("the widget is published when jobs appear, only on change, and cleared when
 	h.setSnapshot({ running: [], recent: [] });
 	h.emit("agent_end");
 	expect(h.widgets.at(-1)).toBeUndefined();
+	// A switch to a session with no jobs still clears whatever was shown before it.
+	h.setSnapshot({ running: [job("b", "running")], recent: [] });
+	h.emit("agent_end");
+	const count = h.widgets.length;
+	h.setSnapshot({ running: [], recent: [] });
+	h.emit("session_switch");
+	expect(h.widgets).toHaveLength(count + 1);
+	expect(h.widgets.at(-1)).toBeUndefined();
 	h.emit("session_shutdown");
 });
 

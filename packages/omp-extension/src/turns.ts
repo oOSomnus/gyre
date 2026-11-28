@@ -27,12 +27,12 @@ interface GitResult {
 
 const REPO_LOCATION_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_NAMESPACE", "GIT_PREFIX"];
 
-export async function git(cwd: string, args: string[], env: Record<string, string> = {}, timeoutMs = SNAPSHOT_TIMEOUT_MS): Promise<GitResult> {
+export async function git(cwd: string, args: string[], env: Record<string, string> = {}, timeoutMs = SNAPSHOT_TIMEOUT_MS, input?: string): Promise<GitResult> {
 	const base: Record<string, string | undefined> = { ...process.env };
 	for (const name of REPO_LOCATION_VARS) delete base[name];
 	const proc = Bun.spawn(["git", ...args], {
 		cwd,
-		stdin: "ignore",
+		stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
 		stdout: "pipe",
 		stderr: "pipe",
 		env: { ...base, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C", ...env },
@@ -108,10 +108,11 @@ function saveTurns(repo: Repo, key: string, turns: TurnRecord[]): void {
 	renameSync(`${file}.tmp`, file);
 }
 
+/** Apply `update-ref --stdin` lines in the repository `cwd` selects; throws if git refuses. */
 async function updateRefs(repo: Repo, lines: string[]): Promise<void> {
 	if (!lines.length) return;
-	const proc = Bun.spawn(["git", "update-ref", "--stdin"], { cwd: repo.root, stdin: new TextEncoder().encode(`${lines.join("\n")}\n`), stdout: "ignore", stderr: "ignore" });
-	await proc.exited;
+	const result = await git(repo.root, ["update-ref", "--stdin"], {}, SNAPSHOT_TIMEOUT_MS, `${lines.join("\n")}\n`);
+	if (result.code !== 0) throw new Error(result.stderr.trim() || "git update-ref failed");
 }
 
 /** Remove turn lists (and their refs) of sessions untouched for `ttlMs`. */
@@ -132,8 +133,14 @@ export async function pruneSessions(repo: Repo, keep: string, ttlMs = SESSION_TT
 		} catch {
 			continue;
 		}
+		// The list file is how a later pass finds the session, so it goes only once its refs have.
 		const refs = await git(repo.root, ["for-each-ref", "--format=%(refname)", `${refBase(key)}/`]);
-		await updateRefs(repo, refs.stdout.split("\n").filter(Boolean).map(ref => `delete ${ref}`));
+		if (refs.code !== 0) continue;
+		try {
+			await updateRefs(repo, refs.stdout.split("\n").filter(Boolean).map(ref => `delete ${ref}`));
+		} catch {
+			continue;
+		}
 		rmSync(file, { force: true });
 	}
 }
@@ -144,20 +151,35 @@ export interface TurnRecorder {
 	turns: TurnRecord[];
 }
 
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** Save the list; a failure is recorded on `turn`, so Review shows it instead of losing it. */
+function persist(rec: TurnRecorder, turn: TurnRecord): void {
+	try {
+		saveTurns(rec.repo, rec.key, rec.turns);
+	} catch (error) {
+		turn.error = `${turn.error ? `${turn.error}; ` : ""}could not save the turn list: ${message(error)}`;
+	}
+}
+
 /** Record the start of a run: snapshot the "before" tree. */
 export async function beginTurn(rec: TurnRecorder, prompt: string, now = Date.now()): Promise<TurnRecord> {
 	const turn: TurnRecord = { n: (rec.turns.at(-1)?.n ?? 0) + 1, prompt: prompt.trim().slice(0, PROMPT_CHARS), startedAt: now };
 	try {
-		turn.before = await snapshot(rec.repo);
-		await updateRefs(rec.repo, [`update ${refBase(rec.key)}/${turn.n}-before ${turn.before}`]);
+		const tree = await snapshot(rec.repo);
+		// Published only once a ref keeps it from garbage collection.
+		await updateRefs(rec.repo, [`update ${refBase(rec.key)}/${turn.n}-before ${tree}`]);
+		turn.before = tree;
 	} catch (error) {
-		turn.error = error instanceof Error ? error.message : String(error);
+		turn.error = message(error);
 	}
 	rec.turns = [...rec.turns, turn];
 	const dropped = rec.turns.slice(0, Math.max(0, rec.turns.length - MAX_TURNS));
 	rec.turns = rec.turns.slice(-MAX_TURNS);
-	await updateRefs(rec.repo, dropped.flatMap(t => [`delete ${refBase(rec.key)}/${t.n}-before`, `delete ${refBase(rec.key)}/${t.n}-after`]));
-	saveTurns(rec.repo, rec.key, rec.turns);
+	// Refs of dropped turns that fail to go only cost space; a later drop retries nothing,
+	// but the session's refs all go when it is pruned.
+	await updateRefs(rec.repo, dropped.flatMap(t => [`delete ${refBase(rec.key)}/${t.n}-before`, `delete ${refBase(rec.key)}/${t.n}-after`])).catch(() => {});
+	persist(rec, turn);
 	return turn;
 }
 
@@ -168,14 +190,15 @@ export async function endTurn(rec: TurnRecorder, now = Date.now()): Promise<Turn
 	turn.endedAt = now;
 	if (turn.before) {
 		try {
-			turn.after = await snapshot(rec.repo);
-			await updateRefs(rec.repo, [`update ${refBase(rec.key)}/${turn.n}-after ${turn.after}`]);
+			const tree = await snapshot(rec.repo);
+			await updateRefs(rec.repo, [`update ${refBase(rec.key)}/${turn.n}-after ${tree}`]);
+			turn.after = tree;
 		} catch (error) {
-			turn.error = error instanceof Error ? error.message : String(error);
+			turn.error = message(error);
 		}
 	}
 	rec.turns = [...rec.turns];
-	saveTurns(rec.repo, rec.key, rec.turns);
+	persist(rec, turn);
 	return turn;
 }
 
@@ -245,14 +268,16 @@ export function registerTurns(pi: ExtensionAPI): void {
 			if (!rec) return;
 			await beginTurn(rec, prompt);
 			publish();
-		});
+		}).catch(error => pi.logger.warn("gyre turns: start snapshot failed", { error: String(error) }));
 	});
+	// Returned so omp waits for the "after" snapshot before later agent_end handlers (another
+	// extension's hook could otherwise write a file into this turn's tree).
 	pi.on("agent_end", (_event, c) => {
 		if (!isMain(c)) return;
 		ctx = c;
-		void enqueue(async () => {
+		return enqueue(async () => {
 			if (!rec) return;
 			if (await endTurn(rec)) publish();
-		});
+		}).catch(error => pi.logger.warn("gyre turns: end snapshot failed", { error: String(error) }));
 	});
 }

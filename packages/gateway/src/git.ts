@@ -10,7 +10,7 @@
  */
 import type { GitCommitInfo, GitDiff, GitFile, GitHunk, GitHunkAction, GitStatus, ReviewChanges, ReviewFile } from "@gyre/protocol";
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, copyFileSync, fstatSync, lstatSync, readSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, copyFileSync, fstatSync, lstatSync, readSync, realpathSync, rmSync, statSync, utimesSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -593,14 +593,25 @@ export class GitRepo {
 	 * The work tree as a tree object, ignored files excluded: `git add -A` into a temporary
 	 * index seeded from the real one (to reuse its stat cache), then `write-tree`. The real
 	 * index and refs are untouched.
+	 *
+	 * The copy keeps the real index's mtime. Git trusts a cached stat only for entries older
+	 * than the index file itself, and re-reads the rest ("racy git"). A fresh mtime would make
+	 * every entry look settled, so a same-size rewrite within the same second would be missed.
 	 */
 	async snapshotWorktree(): Promise<string> {
 		const gitDir = text(await this.git(["rev-parse", "--absolute-git-dir"])).trim();
 		const index = join(tmpdir(), `gyre-index-${process.pid}-${randomBytes(6).toString("hex")}`);
 		try {
 			try {
-				copyFileSync(join(gitDir, "index"), index);
-			} catch {}
+				const real = join(gitDir, "index");
+				copyFileSync(real, index);
+				const { atime, mtimeMs } = statSync(real);
+				// Rounded down: an earlier index time only makes git re-read more entries, never fewer.
+				utimesSync(index, atime, Math.floor(mtimeMs) / 1000);
+			} catch {
+				// No usable seed: start from an empty index, which hashes every file.
+				rmSync(index, { force: true });
+			}
 			const env = { GIT_INDEX_FILE: index };
 			const add = await runGit(this.root, ["add", "-A", "--", "."], { env, timeoutMs: 30_000 });
 			if (add.code !== 0) throw new GitError(add.stderr.trim() || "could not snapshot the work tree");

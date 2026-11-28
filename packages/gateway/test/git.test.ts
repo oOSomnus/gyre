@@ -1,6 +1,6 @@
 /** The Git pane's gateway side: porcelain parsing, staging, hunks, commits and the HTTP routes. */
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitCommitInfo, GitDiff, GitStatus } from "@gyre/protocol";
@@ -449,6 +449,23 @@ describe("per-turn review", () => {
 		await expect(repo.resolveTree("0".repeat(40))).rejects.toMatchObject({ status: 404 });
 		const commit = sh(dir, "rev-parse", "HEAD").trim();
 		await expect(repo.resolveTree(commit)).rejects.toMatchObject({ status: 404 });
+	});
+
+	test("a same-size rewrite in the same second as the index is still seen", async () => {
+		const dir = repoWith({ "a.txt": "a\n" });
+		// Only mtime, size and inode decide; ctime would differ from run to run.
+		sh(dir, "config", "core.trustctime", "false");
+		const T = 1_700_000_000.5;
+		utimesSync(join(dir, "a.txt"), T, T);
+		sh(dir, "update-index", "--refresh");
+		// The index was written in the same second as a.txt's mtime, so git has to re-read
+		// a.txt instead of trusting its cached stat.
+		utimesSync(join(dir, ".git/index"), T, T);
+		const repo = await GitRepo.open(dir);
+		const before = await repo.snapshotWorktree();
+		writeFileSync(join(dir, "a.txt"), "b\n");
+		utimesSync(join(dir, "a.txt"), T, T);
+		expect((await repo.reviewChanges(before, "worktree")).files.map(f => f.path)).toEqual(["a.txt"]);
 	});
 
 	test("review routes over HTTP", async () => {

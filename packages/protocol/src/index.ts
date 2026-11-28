@@ -160,7 +160,8 @@ export type PaneKind =
 	| "image"
 	| "subagent"
 	| "studio"
-	| "git";
+	| "git"
+	| "hooks";
 
 /** A pane in the tiled workspace. `kind` decides the component. */
 export interface PaneSpec {
@@ -334,3 +335,18 @@ export const PLAN_WIDGET_KEY = "gyre.plan";
 export const GATEWAY_VERSION = "0.2.0";
 
 export * from "./ui-requests";
+
+/** omp hook modules: `<agentDir>/hooks/{pre,post}/` (user) and `<project>/.omp/hooks/{pre,post}/` (project). */
+export type HookPhase = "pre" | "post";
+
+export interface HookFile {
+	scope: "user" | "project";
+	phase: HookPhase;
+	/** File name; its base name is the tool the hook is filed under (`*` for every tool). */
+	name: string;
+	tool: string;
+	path: string;
+	/** Present when one hook is read. */
+	content?: string;
+	version?: string;
+}

@@ -25,6 +25,7 @@ import { PtyManager, type PtyListener } from "./pty";
 import { GitError, GitRepo } from "./git";
 import { generateCommitMessage } from "./commit-message";
 import { listSessions } from "./sessions";
+import { deleteHook, HookSyntaxError, listHooks, readHook, saveHook } from "./hooks";
 import { deleteAgent, deleteMcp, listAgents, listMcp, type Scope, StudioError, saveAgent, saveMcp, setMcpEnabled } from "./studio";
 
 export interface GatewayConfig {
@@ -490,6 +491,39 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 				}
 			}
 
+			// ---- Hook Studio ----
+			if (path === "/api/hooks" || path === "/api/hooks/file") {
+				const agentDir = await ompCli.agentDir();
+				if (path === "/api/hooks" && method === "GET") {
+					return json(listHooks({ agentDir, projectPath: optionalProject(url.searchParams.get("projectId"))?.path }));
+				}
+				if (path === "/api/hooks/file" && method === "GET") {
+					const where = { agentDir, projectPath: optionalProject(url.searchParams.get("projectId"))?.path };
+					return json(await readHook(where, scopeOf(url.searchParams.get("scope")), url.searchParams.get("phase"), url.searchParams.get("name")));
+				}
+				if (path === "/api/hooks" && method === "PUT") {
+					const body = (await req.json()) as Record<string, unknown>;
+					const previous = body.previous as { phase?: unknown; name?: unknown } | undefined;
+					return json(
+						await saveHook({
+							agentDir,
+							projectPath: optionalProject(typeof body.projectId === "string" ? body.projectId : null)?.path,
+							scope: scopeOf(body.scope),
+							phase: body.phase,
+							name: body.name,
+							content: body.content,
+							baseVersion: body.baseVersion === undefined ? null : body.baseVersion,
+							previous: previous && typeof previous === "object" ? { phase: previous.phase, name: previous.name } : undefined,
+						}),
+					);
+				}
+				if (path === "/api/hooks" && method === "DELETE") {
+					const where = { agentDir, projectPath: optionalProject(url.searchParams.get("projectId"))?.path };
+					deleteHook(where, scopeOf(url.searchParams.get("scope")), url.searchParams.get("phase"), url.searchParams.get("name"));
+					return json({ ok: true });
+				}
+			}
+
 			// ---- MCP servers ----
 			if (path === "/api/mcp" || path === "/api/mcp/enabled") {
 				const agentDir = await ompCli.agentDir();
@@ -554,6 +588,7 @@ export async function startGateway(config: GatewayConfig): Promise<Gateway> {
 		} catch (error) {
 			if (error instanceof WorkspaceConflictError) return fail(error.message, 409);
 			if (error instanceof FsAccessError) return json({ error: error.message, ...error.data }, error.status);
+			if (error instanceof HookSyntaxError) return json({ error: error.message, diagnostics: error.diagnostics }, error.status);
 			if (error instanceof SyntaxError) return fail("malformed JSON body", 400);
 			if (error instanceof OmpCliError || error instanceof StudioError || error instanceof GitError) return fail(error.message, error.status);
 			return fail(error instanceof Error ? error.message : String(error), 500);

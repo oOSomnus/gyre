@@ -55,6 +55,7 @@ const kinds = new Set([
 	"subagent",
 	"studio",
 	"git",
+	"hooks",
 ]);
 export function validWorkspace(v: unknown): v is Workspace {
 	if (!record(v) || !text(v.name) || !record(v.panes) || !finite(v.updatedAt)) return false;

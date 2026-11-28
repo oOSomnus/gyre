@@ -34,6 +34,7 @@ import { SessionsPane } from "../panes/SessionsPane";
 import { SettingsPane } from "../panes/SettingsPane";
 import { StudioPane } from "../panes/StudioPane";
 import { GitPane } from "../panes/GitPane";
+import { HookStudioPane } from "../panes/HookStudioPane";
 import { SubagentPane } from "../panes/SubagentPane";
 import { SubagentsPane } from "../panes/SubagentsPane";
 import { TasksPane } from "../panes/TasksPane";
@@ -238,6 +239,8 @@ export function PaneContent({ pane, focused }: { pane: PaneSpec; focused: boolea
 			return <StudioPane pane={pane} />;
 		case "git":
 			return <GitPane pane={pane} focused={focused} />;
+		case "hooks":
+			return <HookStudioPane pane={pane} />;
 		default:
 			return null;
 	}

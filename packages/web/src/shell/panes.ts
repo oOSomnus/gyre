@@ -17,6 +17,7 @@ import {
 	Workflow,
 	Activity,
 	Sparkles,
+	Webhook,
 	type LucideIcon,
 } from "lucide-react";
 import { useChats } from "../store/chats";
@@ -41,6 +42,7 @@ export const PANE_META: Record<PaneKind, PaneMeta> = {
 	subagents: { icon: Network, title: "Agents", needsProject: false, creatable: true },
 	studio: { icon: Sparkles, title: "Agent Studio", needsProject: false, creatable: true },
 	git: { icon: GitBranch, title: "Git", needsProject: true, creatable: true },
+	hooks: { icon: Webhook, title: "Hook Studio", needsProject: false, creatable: true },
 	settings: { icon: Settings, title: "Settings", needsProject: false, creatable: true },
 	events: { icon: ScrollText, title: "Events", needsProject: false, chatBound: true, creatable: true },
 	plan: { icon: ClipboardList, title: "Plan", needsProject: false, chatBound: true },

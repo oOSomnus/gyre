@@ -207,3 +207,27 @@ describe.skipIf(!version)("Git pane: omp's commit-message generator", () => {
 		expect(result.stderr).toContain("No changes to commit");
 	}, 90_000);
 });
+
+describe.skipIf(!version)("Hook Studio: omp discovers project hooks Gyre writes", () => {
+	test("a hook saved to <project>/.omp/hooks/pre loads when a chat starts", async () => {
+		const { saveHook } = await import("../src/hooks");
+		const project = mkdtempSync(join(tmpdir(), "gyre-contract-hooks-"));
+		await saveHook({
+			agentDir: join(project, "unused-agent-dir"),
+			projectPath: project,
+			scope: "project",
+			phase: "pre",
+			name: "*.ts",
+			content: 'export default function (pi) {\n\tpi.registerCommand("gyre-hook-check", { description: "contract", handler: async () => {} });\n}\n',
+			baseVersion: null,
+		});
+		const hooked = new OmpProcess({ cwd: project, ompPath, args: ["--no-session"], onFrame: () => {}, onExit: () => {} });
+		await hooked.start();
+		try {
+			const data = await hooked.call<{ commands: Array<{ name: string }> }>({ type: "get_available_commands" });
+			expect(data.commands.some(c => c.name === "gyre-hook-check")).toBe(true);
+		} finally {
+			await hooked.stop();
+		}
+	}, 90_000);
+});

@@ -1,6 +1,6 @@
 import * as Dropdown from "@radix-ui/react-dropdown-menu";
 import type { PaneKind, Workspace } from "@gyre/protocol";
-import { AlertTriangle, Bell, Bot, Command, FolderCog, FolderPlus, Home, Pencil, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Bot, Command, FolderCog, FolderPlus, Home, Pencil, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { gateway, useConnectionState } from "../lib/gateway";
 import { needsSetup, useOmpStatus } from "../lib/ompStatus";
@@ -10,6 +10,7 @@ import { computeRects, useApp } from "../store/app";
 import { useChats } from "../store/chats";
 import { PANE_META } from "./panes";
 import { Gyroscope } from "./Gyroscope";
+import { NotificationCenter } from "./NotificationCenter";
 
 const itemCls = "gy-menu-item";
 
@@ -200,12 +201,7 @@ export function TopBar() {
 
 			{/* right */}
 			<div className="flex min-w-0 items-center gap-2">
-				<button type="button" className="gy-chrome-icon shrink-0" title={waiting ? `${waiting} chat(s) need you` : "Nothing needs you"} onClick={jumpToWaiting} data-jump="needs-you">
-					<Bell size={14} />
-					<span className={`gy-badge ${waiting ? "hot" : ""}`}>
-						{waiting}
-					</span>
-				</button>
+				<NotificationCenter onJumpToWaiting={jumpToWaiting} />
 				<button type="button" className="gy-chrome-icon shrink-0" title={`${subagents} sub-agent(s) running`} onClick={() => app.addPane({ kind: "tasks" })} data-jump="tasks">
 					<Bot size={14} />
 					<span className="gy-badge">{subagents}</span>

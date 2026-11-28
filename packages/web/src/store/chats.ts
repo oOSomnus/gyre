@@ -272,6 +272,20 @@ export function applyFrame(chat: ChatState, frame: OmpFrame): ChatState {
 				},
 			];
 			break;
+		case "extension_error":
+			// A hook or extension handler threw; Hook Studio can open it when it is a hook file.
+			next.items = [
+				...next.items,
+				{
+					kind: "notice",
+					key: nextKey("n"),
+					level: "error",
+					message: `${String(f.extensionPath ?? "extension")} failed in ${String(f.event ?? "a handler")}: ${String(f.error ?? "")}`,
+					ts: now,
+					extensionPath: typeof f.extensionPath === "string" ? f.extensionPath : undefined,
+				},
+			];
+			break;
 		case "queue_update":
 			next.queue = { steering: (f.steering as string[]) ?? [], followUp: (f.followUp as string[]) ?? [] };
 			break;

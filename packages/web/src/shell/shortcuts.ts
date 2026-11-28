@@ -4,6 +4,7 @@
  */
 import { type Direction, focusedChatId, openChatPane, paneIdsInOrder, useApp } from "../store/app";
 import { closePaneAndResources, numberedPanes } from "../store/actions";
+import { useNotifications } from "../store/notifications";
 
 export const SHORTCUT_HELP: Array<{ title: string; keys: Array<[string, string]> }> = [
 	{
@@ -17,6 +18,7 @@ export const SHORTCUT_HELP: Array<{ title: string; keys: Array<[string, string]>
 			["Alt ← ↑ → ↓", "Move focus between panes"],
 			["Alt Z", "Maximize / restore the focused pane"],
 			["Alt R", "Review the focused chat's changes turn by turn"],
+			["Alt N", "Notifications"],
 			["Ctrl Shift Enter", "New chat beside the focused pane"],
 			["Alt Shift 1…9", "Switch workspace"],
 			["Alt 1…9", "Answer the newest dialog in the focused chat"],
@@ -202,6 +204,12 @@ export function installShortcuts(): () => void {
 		if (event.altKey && !mod && key.startsWith("arrow")) {
 			stop();
 			moveFocus(key.slice(5) as Direction);
+			return;
+		}
+		if (event.altKey && !mod && !event.shiftKey && isKey("n")) {
+			stop();
+			const notifications = useNotifications.getState();
+			notifications.setOpen(!notifications.open);
 			return;
 		}
 		if (event.altKey && !mod && !event.shiftKey && isKey("r")) {

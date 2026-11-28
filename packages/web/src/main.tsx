@@ -6,6 +6,7 @@ import { wireOmpStatus } from "./lib/ompStatus";
 import { readTheme, useApp } from "./store/app";
 import { chatLifecycle } from "./store/chat-lifecycle";
 import { useChats, wireChatStore } from "./store/chats";
+import { useNotifications, wireNotifications } from "./store/notifications";
 import "./styles.css";
 
 // Report UI errors to the gateway log (desktop webviews have no devtools).
@@ -23,8 +24,9 @@ window.addEventListener("unhandledrejection", e => report("rejection", String((e
 document.documentElement.dataset.theme = readTheme();
 wireChatStore({ accepts: chatLifecycle.accepts });
 wireOmpStatus();
+wireNotifications();
 // Store handles for tests and debugging from the devtools console.
-(window as unknown as { __gyre: unknown }).__gyre = { useApp, useChats };
+(window as unknown as { __gyre: unknown }).__gyre = { useApp, useChats, useNotifications };
 gateway.connect();
 
 const root = document.getElementById("root");

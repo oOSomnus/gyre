@@ -20,6 +20,7 @@
 import { readFileSync } from "node:fs";
 import type { PlanPrefs, PlanState } from "@gyre/protocol";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { registerJobs } from "./jobs";
 import { planApprovedPrompt, planDecisionReminder, planFeedbackPrompt, planModeContext } from "./prompts";
 
 export const PLAN_WIDGET_KEY = "gyre.plan";
@@ -248,6 +249,7 @@ async function readLocalPlan(sessionFile: string | undefined, planFilePath: stri
 }
 
 export default function gyrePlanMode(pi: ExtensionAPI): void {
+	registerJobs(pi);
 	let rt = initial();
 	const z = pi.zod;
 

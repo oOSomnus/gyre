@@ -1,6 +1,7 @@
 /** Traffic-light status of a pane, shared by frames, the minimap and the hidden bar. */
 import type { PaneSpec } from "@gyre/protocol";
 import type { ChatState } from "../store/chats";
+import { runningJobCount } from "./jobs";
 
 export type PaneStatus = "running" | "waiting" | "error" | "idle" | "none";
 
@@ -17,6 +18,7 @@ export function chatStatus(chat: ChatState | undefined): PaneStatus {
 
 export function paneStatus(pane: PaneSpec, chats: Record<string, ChatState>): PaneStatus {
 	if (pane.kind === "chat") return chatStatus(chats[pane.id]);
+	if (pane.kind === "jobs") return runningJobCount(chats) > 0 ? "running" : "none";
 	if (pane.chatId) {
 		const s = chatStatus(chats[pane.chatId]);
 		return pane.kind === "plan" && chats[pane.chatId]?.plan?.phase === "reviewing" ? "waiting" : s;

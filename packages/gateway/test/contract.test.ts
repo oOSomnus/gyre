@@ -141,6 +141,23 @@ describe.skipIf(!version)(`omp ${version ?? "(missing)"} + Gyre extension contra
 		expect(after.dumpTools?.some(t => t.name === "submit_plan")).toBe(false);
 	});
 
+	test("Jobs pane: `/jobs kill <id>` is a builtin that answers with command_output and no model call", async () => {
+		const before = frames.length;
+		const data = await proc.call<{ agentInvoked: boolean }>({ type: "prompt", message: "/jobs kill gyre-missing-job" });
+		expect(data.agentInvoked).toBe(false);
+		const start = Date.now();
+		while (!frames.slice(before).some(f => f.type === "command_output") && Date.now() - start < 10_000) await Bun.sleep(50);
+		expect(frames.slice(before).some(f => f.type === "command_output")).toBe(true);
+	});
+
+	test("Jobs pane: the extension context still exposes getAsyncJobSnapshot", async () => {
+		const rel = "@oh-my-pi/pi-coding-agent/src/extensibility/extensions/types.ts";
+		const path = join(import.meta.dir, "../node_modules", rel);
+		const alt = join(import.meta.dir, "../../../node_modules", rel);
+		const source = await Bun.file((await Bun.file(path).exists()) ? path : alt).text();
+		expect(source).toMatch(/getAsyncJobSnapshot\(\): AsyncJobSnapshot \| null/);
+	});
+
 	test("model roles: the picker lists role rows for '@'", async () => {
 		const picker = await proc.call<{ rows: Array<{ role?: string }> }>({ type: "get_model_picker", query: "@", limit: 50 });
 		expect(Array.isArray(picker.rows)).toBe(true);

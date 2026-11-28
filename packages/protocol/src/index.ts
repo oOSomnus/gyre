@@ -161,7 +161,8 @@ export type PaneKind =
 	| "subagent"
 	| "studio"
 	| "git"
-	| "hooks";
+	| "hooks"
+	| "jobs";
 
 /** A pane in the tiled workspace. `kind` decides the component. */
 export interface PaneSpec {
@@ -349,4 +350,25 @@ export interface HookFile {
 	/** Present when one hook is read. */
 	content?: string;
 	version?: string;
+}
+
+/** The agent's background jobs, published by the Gyre omp extension as the `gyre.jobs` widget. */
+export const JOBS_WIDGET_KEY = "gyre.jobs";
+
+/** One async job (omp `getAsyncJobSnapshot`): a backgrounded bash command, task or eval. */
+export interface JobInfo {
+	id: string;
+	type: string;
+	status: "running" | "completed" | "failed" | "cancelled";
+	label: string;
+	intent?: string;
+	command?: string;
+	caption?: string;
+	startTime: number;
+	endTime?: number;
+}
+
+export interface JobsState {
+	/** Running jobs first, then recently settled ones. */
+	jobs: JobInfo[];
 }

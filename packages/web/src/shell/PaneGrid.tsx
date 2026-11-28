@@ -35,6 +35,8 @@ import { SettingsPane } from "../panes/SettingsPane";
 import { StudioPane } from "../panes/StudioPane";
 import { GitPane } from "../panes/GitPane";
 import { HookStudioPane } from "../panes/HookStudioPane";
+import { JobsPane } from "../panes/JobsPane";
+import { runningJobCount } from "../lib/jobs";
 import { SubagentPane } from "../panes/SubagentPane";
 import { SubagentsPane } from "../panes/SubagentsPane";
 import { TasksPane } from "../panes/TasksPane";
@@ -150,6 +152,7 @@ function PaneFrame({
 	const project = useApp(s => s.projects.find(p => p.id === pane.projectId));
 	// Subscribe so titles and status lights update as chats stream.
 	useChats(s => {
+		if (pane.kind === "jobs") return `jobs|${runningJobCount(s.chats)}`;
 		const id = pane.kind === "chat" ? pane.id : pane.chatId;
 		const chat = id ? s.chats[id] : undefined;
 		return chat ? `${chat.state?.sessionName ?? ""}|${chat.items.length}|${chat.busy}|${chat.pendingUi.length}|${chat.plan?.phase ?? ""}` : "";
@@ -241,6 +244,8 @@ export function PaneContent({ pane, focused }: { pane: PaneSpec; focused: boolea
 			return <GitPane pane={pane} focused={focused} />;
 		case "hooks":
 			return <HookStudioPane pane={pane} />;
+		case "jobs":
+			return <JobsPane pane={pane} />;
 		default:
 			return null;
 	}

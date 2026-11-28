@@ -86,7 +86,8 @@ function readContained(realRoot: string, abs: string, limit = MAX_READ_BYTES): O
 	let fd: number;
 	try {
 		fd = openContained(realRoot, abs);
-	} catch {
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new FsAccessError("not found", 404);
 		throw new FsAccessError("file changed or escapes project", 403);
 	}
 	try {
@@ -175,7 +176,14 @@ export async function writeText(root: string, relPath: string, content: string, 
 			if (baseVersion === null) throw new FsAccessError("file already exists", 412, { currentVersion: null });
 			// An early check spares writing bytes that would be refused; the commit checks again
 			// on the very file it replaces.
-			const current = readContained(realRoot, target, MAX_READ_BYTES);
+			let current: OpenedFile;
+			try {
+				current = readContained(realRoot, target, MAX_READ_BYTES);
+			} catch (error) {
+				// Deleted since it was resolved: the same 412 the commit's own check gives.
+				if (error instanceof FsAccessError && error.status === 404) expectVersion(null, baseVersion);
+				throw error;
+			}
 			expectVersion(current, baseVersion);
 			try {
 				writeContained(realRoot, dirname(target), basename(target), bytes, {

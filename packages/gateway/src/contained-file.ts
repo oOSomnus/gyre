@@ -49,6 +49,11 @@ export function isContained(root: string, target: string): boolean {
 	return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
 }
 
+/** The error for a refused open; a missing file carries `code: "ENOENT"` so callers can tell it from a refusal. */
+function openError(errno: number): Error {
+	return Object.assign(new Error("file changed or cannot be opened inside project"), errno === 2 ? { code: "ENOENT" } : {});
+}
+
 /**
  * Open `target` (inside `root`) read-only. `extraFlags` adds open flags such as
  * `O_DIRECTORY`; they apply to the final component only.
@@ -67,7 +72,7 @@ export function openContained(root: string, target: string, extraFlags = 0): num
 			if (fd >= 0) return fd;
 			const error = lastErrno();
 			// Only ENOSYS means this kernel lacks openat2. All security errors stay authoritative.
-			if (error !== 38) throw new Error("file changed or cannot be opened inside project");
+			if (error !== 38) throw openError(error);
 		}
 		// Canonical paths contain no symlinks. Pin each directory and reject
 		// any component replaced by a symlink before its descriptor is opened.
@@ -76,7 +81,7 @@ export function openContained(root: string, target: string, extraFlags = 0): num
 			const name = cstr(parts[i]!);
 			const flags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | (i < parts.length - 1 ? constants.O_DIRECTORY : extraFlags);
 			const fd = libc.symbols.openat(dir, ptr(name), flags, 0);
-			if (fd < 0) throw new Error("file changed or cannot be opened inside project");
+			if (fd < 0) throw openError(lastErrno());
 			if (i === parts.length - 1) return fd;
 			closeSync(dir);
 			dir = fd;

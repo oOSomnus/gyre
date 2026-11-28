@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeContained } from "../src/contained-file";
+import { openContained, writeContained } from "../src/contained-file";
 import { contentVersion, readText, writeText } from "../src/fs";
 import { startGateway, type Gateway } from "../src/server";
 
@@ -139,4 +139,16 @@ test("a create never replaces a file that appears meanwhile and leaves no tempor
 	expect(() => writeContained(root, root, "n.txt", Buffer.from("second"), { mode: "create" })).toThrow("file already exists");
 	expect(readFileSync(join(root, "n.txt"), "utf8")).toBe("first");
 	expect(readdirSync(root)).toEqual(["n.txt"]);
+});
+
+test("opening a missing file is told apart from a refused open", () => {
+	const root = join(dir, "missing");
+	mkdirSync(root, { recursive: true });
+	let caught: unknown;
+	try {
+		openContained(root, join(root, "gone.txt"));
+	} catch (error) {
+		caught = error;
+	}
+	expect(caught).toMatchObject({ code: "ENOENT" });
 });

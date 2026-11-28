@@ -65,6 +65,9 @@ interface RunResult {
 const decoder = new TextDecoder();
 const text = (bytes: Uint8Array) => decoder.decode(bytes);
 const isBinary = (bytes: Uint8Array) => bytes.subarray(0, 8000).includes(0);
+/** A diff side larger than MAX_SIDE_BYTES, left unread. */
+const TOO_BIG = "too-big";
+type Side = Uint8Array | null | typeof TOO_BIG;
 
 /** Run git with `args` in `cwd`. Never throws for a non-zero exit; see `GitRepo.git` for that. */
 export async function runGit(cwd: string, args: string[], options: { stdin?: string; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<RunResult> {
@@ -363,6 +366,17 @@ export class GitRepo {
 		return result.code === 0 ? result.stdout : null;
 	}
 
+	/**
+	 * One side of a diff: the blob's bytes, null when it does not exist, or TOO_BIG (checked
+	 * with `cat-file -s` first) so a large object is never buffered just to be refused.
+	 */
+	async #side(spec: string): Promise<Side> {
+		const size = await runGit(this.root, ["cat-file", "-s", spec]);
+		if (size.code !== 0) return null;
+		if (Number(text(size.stdout).trim()) > MAX_SIDE_BYTES) return TOO_BIG;
+		return this.#blob(spec);
+	}
+
 	/** The work-tree file, opened beneath the root so a symlink cannot point the read elsewhere. */
 	#worktree(path: string): Uint8Array | null {
 		let fd: number;
@@ -406,8 +420,8 @@ export class GitRepo {
 		const hasHead = (await runGit(this.root, ["rev-parse", "--verify", "--quiet", "HEAD"])).code === 0;
 		const [diffText, oldBytes, newBytes] = await Promise.all([
 			this.#diffText(file, staged),
-			file.untracked ? null : staged ? (hasHead ? this.#blob(`HEAD:${oldPath}`) : null) : this.#blob(`:0:${file.path}`),
-			staged ? this.#blob(`:0:${file.path}`) : this.#worktree(file.path),
+			file.untracked ? null : staged ? (hasHead ? this.#side(`HEAD:${oldPath}`) : null) : this.#side(`:0:${file.path}`),
+			staged ? this.#side(`:0:${file.path}`) : this.#worktree(file.path),
 		]);
 		return this.#buildDiff({ path: file.path, oldPath, staged, diffText, oldBytes, newBytes, actionable: !file.untracked && !file.conflicted });
 	}
@@ -423,8 +437,8 @@ export class GitRepo {
 		const paths = entry.origPath ? [entry.origPath, path] : [path];
 		const [diffText, oldBytes, newBytes] = await Promise.all([
 			this.git(["diff-tree", "-p", "-M", ...DIFF_FLAGS, "-U3", ...range, "--", ...paths]).then(text),
-			base ? this.#blob(`${base}:${oldPath}`) : null,
-			this.#blob(`${sha}:${path}`),
+			base ? this.#side(`${base}:${oldPath}`) : null,
+			this.#side(`${sha}:${path}`),
 		]);
 		return { ...this.#buildDiff({ path, oldPath, staged: false, diffText, oldBytes, newBytes, actionable: false }), revision: sha };
 	}
@@ -434,13 +448,16 @@ export class GitRepo {
 		oldPath: string;
 		staged: boolean;
 		diffText: string;
-		oldBytes: Uint8Array | null;
-		newBytes: Uint8Array | null;
+		oldBytes: Side;
+		newBytes: Side;
 		actionable: boolean;
 	}): GitDiff {
 		const parsed = parseFileDiff(input.diffText);
-		const binary = parsed.binary || (input.oldBytes ? isBinary(input.oldBytes) : false) || (input.newBytes ? isBinary(input.newBytes) : false);
-		const tooBig = (b: Uint8Array | null) => (b?.length ?? 0) > MAX_SIDE_BYTES;
+		const bytes = (b: Side) => (b instanceof Uint8Array ? b : null);
+		const oldBytes = bytes(input.oldBytes);
+		const newBytes = bytes(input.newBytes);
+		const binary = parsed.binary || (oldBytes ? isBinary(oldBytes) : false) || (newBytes ? isBinary(newBytes) : false);
+		const tooBig = (b: Side) => b === TOO_BIG || (b?.length ?? 0) > MAX_SIDE_BYTES;
 		const truncated = tooBig(input.oldBytes) || tooBig(input.newBytes);
 		const side = (b: Uint8Array | null) => (!b || binary || truncated ? "" : text(b));
 		return {
@@ -448,8 +465,8 @@ export class GitRepo {
 			oldPath: input.oldPath,
 			staged: input.staged,
 			binary,
-			oldText: side(input.oldBytes),
-			newText: side(input.newBytes),
+			oldText: side(oldBytes),
+			newText: side(newBytes),
 			truncated: truncated || undefined,
 			// Untracked and conflicted files have no hunks to apply; the lines are still shown in the split view.
 			hunks: binary ? [] : input.actionable ? parsed.hunks : parsed.hunks.map(h => ({ ...h, id: "" })),
@@ -615,10 +632,10 @@ export class GitRepo {
 		const paths = entry.origPath ? [entry.origPath, path] : [path];
 		const [diffText, oldBytes, newBytes] = await Promise.all([
 			this.git(["diff-tree", "-p", "-M", ...DIFF_FLAGS, "-U3", changes.from, changes.to, "--", ...paths]).then(text),
-			entry.status === "A" ? null : this.#blob(`${changes.from}:${oldPath}`),
+			entry.status === "A" ? null : this.#side(`${changes.from}:${oldPath}`),
 			// The snapshot, not the live file: the hunks were computed from it, so the text shown
 			// beside them must be the same bytes even if the file changes meanwhile.
-			entry.status === "D" ? null : this.#blob(`${changes.to}:${path}`),
+			entry.status === "D" ? null : this.#side(`${changes.to}:${path}`),
 		]);
 		return this.#buildDiff({ path, oldPath, staged: false, diffText, oldBytes, newBytes, actionable: to === "worktree" });
 	}

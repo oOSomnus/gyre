@@ -102,23 +102,41 @@ test("PUT /api/fs/write saves, reports conflicts and rejects malformed bodies", 
 	expect(malformed.status).toBe(400);
 });
 
-test("a change landing while the new bytes are written is a 412, and a cancelled write leaves no temporary file", async () => {
+test("the commit checks the file it replaces: a version committed meanwhile is put back, never lost", () => {
 	const root = join(dir, "late");
 	mkdirSync(root, { recursive: true });
 	writeFileSync(join(root, "f.txt"), "one\n");
-	expect(() =>
-		writeContained(root, root, "f.txt", Buffer.from("mine\n"), {
-			mode: "replace",
-			beforeReplace: () => {
-				throw new Error("changed");
-			},
-		}),
-	).toThrow("changed");
+	const base = contentVersion("one\n");
+	const expectBase = (fd: number | null) => {
+		if (fd === null || contentVersion(readFileSync(fd)) !== base) throw new Error("changed");
+	};
+	// Another writer commits after the caller's own check, just before this write's commit.
+	writeFileSync(join(root, "f.txt"), "theirs\n");
+	expect(() => writeContained(root, root, "f.txt", Buffer.from("mine\n"), { mode: "replace", verify: expectBase })).toThrow("changed");
+	expect(readFileSync(join(root, "f.txt"), "utf8")).toBe("theirs\n");
 	expect(readdirSync(root)).toEqual(["f.txt"]);
-	expect(readFileSync(join(root, "f.txt"), "utf8")).toBe("one\n");
+	// Unchanged: the new bytes land and nothing is left behind.
+	writeFileSync(join(root, "f.txt"), "one\n");
+	writeContained(root, root, "f.txt", Buffer.from("mine\n"), { mode: "replace", verify: expectBase });
+	expect(readFileSync(join(root, "f.txt"), "utf8")).toBe("mine\n");
+	expect(readdirSync(root)).toEqual(["f.txt"]);
+	// Deleted meanwhile: the check sees no file, and nothing is created.
+	rmSync(join(root, "f.txt"));
+	expect(() => writeContained(root, root, "f.txt", Buffer.from("mine\n"), { mode: "replace", verify: expectBase })).toThrow("changed");
+	expect(readdirSync(root)).toEqual([]);
 	// A name near the byte limit still gets a temporary sibling.
 	const long = "é".repeat(120);
 	writeFileSync(join(root, long), "x");
 	writeContained(root, root, long, Buffer.from("y"), { mode: "replace" });
 	expect(readFileSync(join(root, long), "utf8")).toBe("y");
+});
+
+test("a create never replaces a file that appears meanwhile and leaves no temporary file", () => {
+	const root = join(dir, "create");
+	mkdirSync(root, { recursive: true });
+	writeContained(root, root, "n.txt", Buffer.from("first"), { mode: "create" });
+	expect(statSync(join(root, "n.txt")).mode & 0o777).toBe(0o666 & ~process.umask());
+	expect(() => writeContained(root, root, "n.txt", Buffer.from("second"), { mode: "create" })).toThrow("file already exists");
+	expect(readFileSync(join(root, "n.txt"), "utf8")).toBe("first");
+	expect(readdirSync(root)).toEqual(["n.txt"]);
 });

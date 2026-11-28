@@ -90,19 +90,24 @@ function readContained(realRoot: string, abs: string, limit = MAX_READ_BYTES): O
 		throw new FsAccessError("file changed or escapes project", 403);
 	}
 	try {
-		const info = fstatSync(fd);
-		if (!info.isFile()) throw new FsAccessError("not a file", 400);
-		const buffer = Buffer.alloc(Math.min(info.size, limit));
-		let length = 0;
-		while (length < buffer.length) {
-			const n = readSync(fd, buffer, length, buffer.length - length, null);
-			if (!n) break;
-			length += n;
-		}
-		return { bytes: buffer.subarray(0, length), size: info.size, mode: info.mode & 0o7777, truncated: info.size > limit };
+		return readOpened(fd, limit);
 	} finally {
 		closeSync(fd);
 	}
+}
+
+/** Read up to `limit` bytes of an open regular file. */
+function readOpened(fd: number, limit: number): OpenedFile {
+	const info = fstatSync(fd);
+	if (!info.isFile()) throw new FsAccessError("not a file", 400);
+	const buffer = Buffer.alloc(Math.min(info.size, limit));
+	let length = 0;
+	while (length < buffer.length) {
+		const n = readSync(fd, buffer, length, buffer.length - length, null);
+		if (!n) break;
+		length += n;
+	}
+	return { bytes: buffer.subarray(0, length), size: info.size, mode: info.mode & 0o7777, truncated: info.size > limit };
 }
 
 export async function readText(root: string, relPath: string): Promise<FsFile> {
@@ -122,8 +127,8 @@ export async function readText(root: string, relPath: string): Promise<FsFile> {
 
 const writeLocks = new Map<string, Promise<unknown>>();
 /**
- * Serialise Gyre's own writes to one file. Other processes are not coordinated: the
- * version is checked again just before the rename, leaving only the rename itself open.
+ * Serialise Gyre's own writes to one file. Other processes (the agent) are not locked out;
+ * the commit itself checks the replaced file's version (see `writeContained`).
  */
 function withWriteLock<T>(key: string, work: () => Promise<T>): Promise<T> {
 	const next = (writeLocks.get(key) ?? Promise.resolve()).catch(() => {}).then(work);
@@ -132,6 +137,14 @@ function withWriteLock<T>(key: string, work: () => Promise<T>): Promise<T> {
 		if (writeLocks.get(key) === next) writeLocks.delete(key);
 	}).catch(() => {});
 	return next;
+}
+
+/** Throws the 412 (or 413) for a file that is no longer at `baseVersion`. */
+function expectVersion(current: OpenedFile | null, baseVersion: string): void {
+	if (!current) throw new FsAccessError("file was deleted since it was opened", 412, { currentVersion: null });
+	if (current.truncated) throw new FsAccessError("file is too large to save from Gyre", 413);
+	const currentVersion = contentVersion(current.bytes);
+	if (currentVersion !== baseVersion) throw new FsAccessError("file changed on disk since it was opened", 412, { currentVersion });
 }
 
 /**
@@ -160,18 +173,16 @@ export async function writeText(root: string, relPath: string, content: string, 
 	if (target) {
 		return withWriteLock(target, async () => {
 			if (baseVersion === null) throw new FsAccessError("file already exists", 412, { currentVersion: null });
-			const check = () => {
-				const current = readContained(realRoot, target, MAX_READ_BYTES);
-				if (current.truncated) throw new FsAccessError("file is too large to save from Gyre", 413);
-				const currentVersion = contentVersion(current.bytes);
-				if (currentVersion !== baseVersion) throw new FsAccessError("file changed on disk since it was opened", 412, { currentVersion });
-				return current;
-			};
-			const current = check();
+			// An early check spares writing bytes that would be refused; the commit checks again
+			// on the very file it replaces.
+			const current = readContained(realRoot, target, MAX_READ_BYTES);
+			expectVersion(current, baseVersion);
 			try {
-				// Checked again once the new bytes are synced: a change another process (the
-				// agent, say) made meanwhile is a 412 instead of being overwritten.
-				writeContained(realRoot, dirname(target), basename(target), bytes, { mode: "replace", permissions: current.mode, beforeReplace: check });
+				writeContained(realRoot, dirname(target), basename(target), bytes, {
+					mode: "replace",
+					permissions: current.mode,
+					verify: fd => expectVersion(fd === null ? null : readOpened(fd, MAX_READ_BYTES), baseVersion),
+				});
 			} catch (error) {
 				if (error instanceof FsAccessError) throw error;
 				throw new FsAccessError(error instanceof Error ? error.message : String(error), 403);

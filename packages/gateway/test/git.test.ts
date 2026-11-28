@@ -432,6 +432,16 @@ describe("per-turn review", () => {
 		expect(readFileSync(join(dir, "config/keep"), "utf8")).toBe("k\n");
 	});
 
+	test("a side over the size limit is reported as too large without being read", async () => {
+		const dir = repoWith({ "a.txt": "a\n" });
+		const repo = await GitRepo.open(dir);
+		const before = await repo.snapshotWorktree();
+		writeFileSync(join(dir, "big.bin"), Buffer.alloc(1024 * 1024 + 1, 1));
+		const diff = await repo.reviewDiff(before, "worktree", "big.bin");
+		expect(diff.truncated).toBe(true);
+		expect(diff.newText).toBe("");
+	});
+
 	test("tree ids are validated before git sees them", async () => {
 		const dir = repoWith({ "a.txt": "a\n" });
 		const repo = await GitRepo.open(dir);

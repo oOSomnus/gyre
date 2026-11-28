@@ -125,7 +125,16 @@ export async function saveHook(input: SaveHook): Promise<HookFile> {
 		try {
 			checkVersion(source, sourceVersion);
 		} catch (error) {
-			rmSync(join(dir, name), { force: true });
+			// Undo the copy only while it is still this move's: an edit made to it meanwhile stays.
+			const copy = join(dir, name);
+			let kept = false;
+			try {
+				kept = contentVersion(readFileSync(copy)) !== result.version;
+			} catch {}
+			if (!kept) rmSync(copy, { force: true });
+			else if (error instanceof FsAccessError) {
+				throw new FsAccessError(`${error.message}; ${name} was edited meanwhile and was kept`, error.status, error.data);
+			}
 			throw error;
 		}
 	}
